@@ -2,8 +2,8 @@
 
 > 你与它立下契约，每日以一言续之，焰不可熄。
 
-[![CI](https://github.com/oinzc/flame-contractor-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/oinzc/flame-contractor-oss/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/oinzc/flame-contractor-oss)](https://github.com/oinzc/flame-contractor-oss/releases)
+[![CI](https://github.com/oinzc/flame-contractor/actions/workflows/ci.yml/badge.svg)](https://github.com/oinzc/flame-contractor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/oinzc/flame-contractor)](https://github.com/oinzc/flame-contractor/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
@@ -75,8 +75,8 @@ flowchart LR
 需要 Docker Desktop（Windows/macOS）或 Docker Engine + Compose（Linux）。容器内自带 Chromium，宿主机不需要装浏览器。
 
 ```bash
-git clone https://github.com/oinzc/flame-contractor-oss.git
-cd flame-contractor-oss
+git clone https://github.com/oinzc/flame-contractor.git
+cd flame-contractor
 
 cp .env.example .env
 # 生成一个至少 32 位的随机密钥，填入 .env 的 FLAME_SECRET_KEY
