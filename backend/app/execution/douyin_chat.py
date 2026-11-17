@@ -49,6 +49,100 @@ CONVERSATION_RESPONSE_PATHS = (
 IDENTITY_LABEL_FIELDS = ("remark_name", "nickname", "unique_id", "short_id")
 IDENTITY_ID_FIELDS = ("sec_uid", "sec_user_id", "uid", "user_id")
 
+# 抖音网页版 IM 会把最近拉取过的用户信息缓存在浏览器的 IndexedDB（如 <uid>_user）中；
+# 缓存未过期时打开会话不再重发 /aweme/v1/web/im/user/info 请求。网络响应未观察到
+# 身份时只读读取本地 IndexedDB 缓存，仍走同一套严格去重/同名冲突校验。
+_READ_INDEXEDDB_IDENTITIES_JS = """async () => {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') {
+    return [];
+  }
+  const pick = (item) => {
+    if (!item || typeof item !== 'object') return null;
+    const v = item.value && typeof item.value === 'object' ? item.value : item;
+    if (!v || typeof v !== 'object') return null;
+    const secUid = v.sec_uid || v.sec_user_id || v.secUid || v.secUserId || null;
+    const uid = v.uid || v.user_id || v.userId || null;
+    if (!secUid && !uid) return null;
+    return {
+      sec_uid: secUid,
+      uid: uid,
+      unique_id: v.unique_id || v.uniqueId || null,
+      short_id: v.short_id || v.shortId || null,
+      nickname: v.nickname || v.nickName || null,
+      remark_name: v.remark_name || v.remarkName || null,
+    };
+  };
+  const readDb = (name) => new Promise((resolve) => {
+    let settled = false;
+    const done = (rows) => {
+      if (!settled) {
+        settled = true;
+        resolve(rows);
+      }
+    };
+    const timer = setTimeout(() => done([]), 1500);
+    try {
+      const req = indexedDB.open(name);
+      req.onerror = () => { clearTimeout(timer); done([]); };
+      req.onblocked = () => { clearTimeout(timer); done([]); };
+      req.onsuccess = () => {
+        const db = req.result;
+        const stores = Array.from(db.objectStoreNames || []);
+        if (!stores.length) {
+          clearTimeout(timer);
+          try { db.close(); } catch {}
+          done([]);
+          return;
+        }
+        const out = [];
+        let pending = stores.length;
+        const finishOne = () => {
+          pending -= 1;
+          if (pending <= 0) {
+            clearTimeout(timer);
+            try { db.close(); } catch {}
+            done(out);
+          }
+        };
+        for (const storeName of stores) {
+          try {
+            const tx = db.transaction(storeName, 'readonly');
+            const store = tx.objectStore(storeName);
+            const allReq = store.getAll();
+            allReq.onsuccess = () => {
+              for (const raw of allReq.result || []) {
+                const picked = pick(raw);
+                if (picked) out.push(picked);
+              }
+              finishOne();
+            };
+            allReq.onerror = () => finishOne();
+          } catch {
+            finishOne();
+          }
+        }
+      };
+    } catch {
+      clearTimeout(timer);
+      done([]);
+    }
+  });
+  try {
+    const dbs = await indexedDB.databases();
+    const userDbs = (dbs || [])
+      .map((d) => d && d.name)
+      .filter((name) => typeof name === 'string' && name.toLowerCase().includes('user'));
+    const results = [];
+    for (const name of userDbs) {
+      const rows = await readDb(name);
+      results.push(...rows);
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}"""
+
 
 def _item_selectors() -> tuple:
     """运行期返回「会话列表项 + 搜索结果行」两组选择器（随 bundle 热更）。"""
@@ -324,6 +418,7 @@ class DouyinChat:
         self._identity_ids_by_label: dict[str, set[str]] = {}
         self._identity_records_by_id: dict[str, IdentityRecord] = {}
         self._identity_tasks: set[asyncio.Task] = set()
+        self._cached_identities_loaded = False
         # 群聊的唯一会话 ID 在 imapi protobuf 中；同名群聊也必须保留集合，
         # 不能为了方便把一个 ID 猜给另一个同名会话。
         self._conversation_ids_by_label: dict[str, set[str]] = {}
@@ -359,11 +454,8 @@ class DouyinChat:
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
-    async def _capture_identity_response(self, response) -> None:
-        try:
-            payload = await response.json()
-        except Exception:
-            return
+    def _ingest_identity_payload(self, payload: object) -> None:
+        """解析并收录用户身份记录（供网络响应与 IndexedDB 缓存共用）。"""
         for record in self._iter_identity_records(payload):
             platform_user_id = self._first_non_empty(
                 self._field_value(record, "sec_uid", "sec_user_id", "secUid", "secUserId"),
@@ -408,6 +500,28 @@ class DouyinChat:
                 if label is not None:
                     key = self._normalize_identity_label(label)
                     self._identity_ids_by_label.setdefault(key, set()).add(platform_user_id)
+
+    async def _load_cached_identities(self) -> None:
+        """从浏览器 IndexedDB 读取抖音本地缓存的用户身份信息（仅读一次，异常保底忽略）。"""
+        if self._cached_identities_loaded:
+            return
+        self._cached_identities_loaded = True
+        evaluate = getattr(self.page, "evaluate", None)
+        if not callable(evaluate):
+            return
+        try:
+            records = await evaluate(_READ_INDEXEDDB_IDENTITIES_JS)
+        except Exception:
+            return
+        if isinstance(records, (list, dict)) and records:
+            self._ingest_identity_payload(records)
+
+    async def _capture_identity_response(self, response) -> None:
+        try:
+            payload = await response.json()
+        except Exception:
+            return
+        self._ingest_identity_payload(payload)
 
     async def _capture_conversation_response(self, response) -> None:
         try:
@@ -984,6 +1098,13 @@ class DouyinChat:
                     right_title,
                     platform_user_id,
                 )
+                if not matched and observed is None and not self._cached_identities_loaded:
+                    await self._load_cached_identities()
+                    matched, observed = self._opened_identity_matches(
+                        name,
+                        right_title,
+                        platform_user_id,
+                    )
                 if matched:
                     return ConversationOpen(
                         opened=True,
@@ -992,7 +1113,7 @@ class DouyinChat:
                         platform_user_id=observed,
                         identity_verified=True,
                     )
-                if observed is not None:
+                if observed is not None and primary == name:
                     return ConversationOpen(
                         opened=True,
                         title=right_title,
@@ -1184,6 +1305,7 @@ class DouyinChat:
             await self.page.evaluate("(el) => { el.scrollTop += 900 }", scroll_element)
             await self._sleep(0.8)
         await self._wait_for_identity_updates()
+        await self._load_cached_identities()
         for entry in entries:
             entry.update(self.identity_match_for_label(entry["title"]).as_entry_fields())
             entry.update(self.conversation_match_for_label(entry["title"]).as_entry_fields())

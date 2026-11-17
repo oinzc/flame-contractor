@@ -14,13 +14,22 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.database import build_engine
 from app.core.errors import describe_exception
 from app.core.migrations import run_migrations
-from app.execution.browser_manager import BrowserManager, ScanProgress
-from app.models import Account, ScanTask, ScanTaskStatus
+from app.execution.browser_manager import BrowserManager, ScanProgress, SendProgress
+from app.models import (
+    Account,
+    ContractTarget,
+    JobStatus,
+    MessageTemplate,
+    ScanTask,
+    ScanTaskStatus,
+    SendJob,
+)
+from tests.fakes import FakeContext, FakePage
 
 
 def _account(engine) -> str:
@@ -117,3 +126,155 @@ def test_http_exception_detail_survives_into_user_facing_reason():
     assert plain == "未配置发送执行器"
 
     assert describe_exception(ValueError()) == "ValueError"
+
+
+def _seed_account_and_target(engine) -> tuple[str, str]:
+    with Session(engine) as session:
+        account = Account(display_name="取消发送账号")
+        template = MessageTemplate(name="模板", content="续火")
+        session.add(account)
+        session.add(template)
+        session.flush()
+        target = ContractTarget(
+            account_id=account.id,
+            nickname_snapshot="好友A",
+            template_id=template.id,
+        )
+        session.add(target)
+        session.commit()
+        return account.id, target.id
+
+
+def test_cancelled_send_before_attempt_releases_progress_and_allows_retry(settings):
+    """发送前（定位阶段）被超时取消时，必须释放 running 进度并允许后续重试。"""
+    engine = build_engine(settings.database_url)
+    run_migrations(settings.database_url)
+    account_id, target_id = _seed_account_and_target(engine)
+
+    class _HangSearchPage(FakePage):
+        def __init__(self, entered: asyncio.Event, **kwargs):
+            super().__init__(**kwargs)
+            self._entered = entered
+
+        async def fill(self, selector: str, value: str) -> None:
+            if value.strip():
+                self._entered.set()
+                await asyncio.Event().wait()
+            await super().fill(selector, value)
+
+    async def scenario():
+        entered = asyncio.Event()
+        pages = [
+            _HangSearchPage(entered, logged_in=True, conversation_titles=("好友A",), right_title="好友A"),
+            FakePage(logged_in=True, conversation_titles=("好友A",), right_title="好友A"),
+        ]
+
+        async def factory(_profile_path, _headless):
+            page = pages.pop(0)
+            return FakeContext(page), page
+
+        async def online() -> bool:
+            return True
+
+        manager = BrowserManager(
+            engine,
+            settings,
+            browser_factory=factory,
+            network_checker=online,
+            sleep=lambda _seconds: asyncio.sleep(0),
+        )
+        task = asyncio.create_task(manager.run_send(account_id))
+        await entered.wait()
+        assert manager._active_send(account_id) is not None
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert manager._active_send(account_id) is None
+        assert manager.send_progress(account_id)["status"] == "failed"
+
+        with Session(engine) as session:
+            jobs = session.exec(select(SendJob)).all()
+            assert len(jobs) == 1
+            assert jobs[0].status == JobStatus.FAILED_RETRYABLE
+
+        retry = await manager.run_send_for_targets(account_id, [target_id])
+        assert retry["overall"] == "ok"
+        assert retry["results"][0]["status"] == "succeeded"
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_send_after_attempt_marks_unknown_requires_review(settings):
+    """已触发发送后被超时取消：必须释放 running 进度且把任务标为 UNKNOWN_REQUIRES_REVIEW。"""
+    engine = build_engine(settings.database_url)
+    run_migrations(settings.database_url)
+    account_id, _target_id = _seed_account_and_target(engine)
+
+    class _HangSendPage(FakePage):
+        def __init__(self, sending: asyncio.Event, **kwargs):
+            super().__init__(**kwargs)
+            self._sending = sending
+
+        async def press_key(self, key: str) -> None:
+            if key == "Enter":
+                self._sending.set()
+                await asyncio.Event().wait()
+            await super().press_key(key)
+
+    async def scenario():
+        sending = asyncio.Event()
+        page = _HangSendPage(sending, logged_in=True, conversation_titles=("好友A",), right_title="好友A")
+
+        async def factory(_profile_path, _headless):
+            return FakeContext(page), page
+
+        async def online() -> bool:
+            return True
+
+        manager = BrowserManager(
+            engine,
+            settings,
+            browser_factory=factory,
+            network_checker=online,
+            sleep=lambda _seconds: asyncio.sleep(0),
+        )
+        task = asyncio.create_task(manager.run_send(account_id))
+        await sending.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert manager._active_send(account_id) is None
+        assert manager.send_progress(account_id)["status"] == "failed"
+        with Session(engine) as session:
+            jobs = session.exec(select(SendJob)).all()
+            assert len(jobs) == 1
+            assert jobs[0].status == JobStatus.UNKNOWN_REQUIRES_REVIEW
+
+    asyncio.run(scenario())
+
+
+def test_stale_send_progress_is_released(settings):
+    """兜底：发送进度超时未收束时，_active_send 自动释放占用。"""
+    engine, manager = _manager(settings)
+    account_id = _account(engine)
+    manager._send_stale_after = 60.0
+
+    progress = SendProgress(
+        account_id=account_id,
+        total=1,
+        status="running",
+        stage="定位并发送",
+        started_at=datetime.now(timezone.utc) - timedelta(seconds=120),
+    )
+    manager._send_progress[account_id] = progress
+
+    assert manager._active_send(account_id) is None
+    assert progress.status == "failed"
+    assert progress.stage == "发送超时"

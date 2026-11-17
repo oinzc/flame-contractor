@@ -455,3 +455,54 @@ def test_conversation_id_defaults_to_group_identity_type(client):
 
     assert response.status_code == 201, response.text
     assert response.json()["conversationType"] == "group"
+
+
+def test_open_conversation_uses_indexeddb_identity_when_network_skips_request():
+    async def scenario():
+        page = FakePage(
+            logged_in=True,
+            conversation_titles=("好友",),
+            right_title="好友",
+            indexeddb_identities=[
+                {
+                    "nickname": "平台昵称",
+                    "remark_name": "好友",
+                    "sec_uid": "sec-cached-1",
+                }
+            ],
+        )
+        chat = DouyinChat(page, sleep=lambda _: asyncio.sleep(0), confirm_timeout=0.1)
+
+        opened = await chat.open_conversation("好友", platform_user_id="sec-cached-1")
+
+        assert opened.opened is True
+        assert opened.exact is True
+        assert opened.identity_verified is True
+        assert opened.platform_user_id == "sec-cached-1"
+
+    asyncio.run(scenario())
+
+
+def test_scan_all_chats_uses_indexeddb_identity_when_network_skips_request():
+    async def scenario():
+        page = FakePage(
+            logged_in=True,
+            conversation_titles=("好友",),
+            indexeddb_identities=[
+                {
+                    "nickname": "平台昵称",
+                    "remark_name": "好友",
+                    "unique_id": "cached_handle",
+                    "sec_uid": "sec-cached-1",
+                }
+            ],
+        )
+        chat = DouyinChat(page, sleep=lambda _: asyncio.sleep(0))
+
+        entries = await chat.scan_all_chats()
+
+        assert entries[0]["identity_status"] == "bound"
+        assert entries[0]["platform_user_id"] == "sec-cached-1"
+        assert entries[0]["platform_handle"] == "cached_handle"
+
+    asyncio.run(scenario())

@@ -275,6 +275,8 @@ class BrowserManager:
         self._scan_timeout = max(30.0, float(scan_timeout))
         # 僵尸扫描判定阈值：超时收束本身失效（连 cancel 都挂住）时的最后一道放行线。
         self._scan_stale_after = self._scan_timeout + 60.0
+        # 僵尸发送判定阈值：发送被外部取消或底层 Playwright 卡死时，防止进度永久停在 running 锁死后续发送。
+        self._send_stale_after = max(self._scan_stale_after, 660.0)
         self._send_cooldown = send_cooldown
         # 冷却随机抖动上限：实际等待 = send_cooldown + uniform(0, jitter)，
         # 消除固定间隔的机器节律；0 = 关闭抖动（保持固定间隔，测试默认）。
@@ -361,6 +363,37 @@ class BrowserManager:
             "started_at": progress.started_at,
             "finished_at": progress.finished_at,
         }
+
+    def _send_is_stale(self, progress: SendProgress) -> bool:
+        started = progress.started_at
+        if started is None:
+            return False
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return (_utcnow() - started).total_seconds() > self._send_stale_after
+
+    def _active_send(self, account_id: str) -> SendProgress | None:
+        """该账号是否正在发送；超时未收束的僵尸进度自动释放占用。"""
+        progress = self._send_progress.get(account_id)
+        if progress is None or progress.status != "running":
+            return None
+        if self._send_is_stale(progress):
+            logger.warning(
+                "账号 %s 的发送任务已超过 %.0f 秒仍未结束（阶段：%s），判为僵尸发送并释放占用",
+                account_id,
+                self._send_stale_after,
+                progress.stage,
+            )
+            self._finish_send_progress(
+                account_id,
+                status="failed",
+                completed=progress.completed,
+                stage="发送超时",
+                overall="error",
+                detail=f"发送超过 {int(self._send_stale_after)} 秒仍未结束，已自动释放占用",
+            )
+            return None
+        return progress
 
     def _active_scan(self, account_id: str) -> ScanProgress | None:
         """该账号是否正在扫描；顺手释放「僵尸扫描」。
@@ -512,8 +545,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能扫描会话")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有会话扫描进行中")
-        send_progress = self._send_progress.get(account_id)
-        if send_progress is not None and send_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在发送，暂不能扫描会话")
 
         with Session(self._engine) as session:
@@ -826,8 +858,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能补采身份")
         if self._active_identity_hydration(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有身份补采进行中")
-        send_progress = self._send_progress.get(account_id)
-        if send_progress is not None and send_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在发送，暂不能补采身份")
 
         ordered_ids = list(dict.fromkeys(target_id.strip() for target_id in target_ids if target_id.strip()))
@@ -1876,8 +1907,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能扫描会话")
         if progress is None and self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有会话扫描进行中")
-        send_progress = self._send_progress.get(account_id)
-        if send_progress is not None and send_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在发送，暂不能扫描会话")
 
         with Session(self._engine) as session:
@@ -2238,8 +2268,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
-        existing_progress = self._send_progress.get(account_id)
-        if existing_progress is not None and existing_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有发送任务进行中")
 
         with Session(self._engine) as session:
@@ -2292,8 +2321,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
-        existing_progress = self._send_progress.get(account_id)
-        if existing_progress is not None and existing_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有发送任务进行中")
 
         with Session(self._engine) as session:
@@ -2333,8 +2361,7 @@ class BrowserManager:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
-        existing_progress = self._send_progress.get(account_id)
-        if existing_progress is not None and existing_progress.status == "running":
+        if self._active_send(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有发送任务进行中")
 
         with Session(self._engine) as session:
@@ -2371,6 +2398,16 @@ class BrowserManager:
         checker = self._network_checker or self._default_network_ok
         try:
             network_ok = await checker()
+        except asyncio.CancelledError:
+            self._finish_send_progress(
+                account_id,
+                status="failed",
+                completed=0,
+                stage="发送中止",
+                overall="error",
+                detail="CancelledError",
+            )
+            raise
         except Exception as exc:
             self._finish_send_progress(
                 account_id,
@@ -2483,7 +2520,19 @@ class BrowserManager:
                     )
                     if result["status"] not in ("succeeded", "duplicate_succeeded", "skipped"):
                         overall = "partial"
-        except Exception as exc:
+        except asyncio.CancelledError:
+            overall = "error"
+            detail = "CancelledError"
+            self._finish_send_progress(
+                account_id,
+                status="failed",
+                completed=len(results),
+                stage="发送中止",
+                overall=overall,
+                detail=detail,
+            )
+            raise
+        except BaseException as exc:
             overall = "error"
             detail = type(exc).__name__
             self._finish_send_progress(
@@ -2494,35 +2543,50 @@ class BrowserManager:
                 overall=overall,
                 detail=detail,
             )
+            if not isinstance(exc, Exception):
+                raise
         finally:
             if context is not None:
                 try:
                     await context.close()
-                except Exception:
+                except BaseException:
                     pass
 
-        artifact_path = self._write_send_artifact(
-            account_id, overall, detail, results, diagnostics=diagnostics
-        )
-        if overall in ("ok", "partial"):
-            self._finish_send_progress(
-                account_id,
-                status="completed",
-                completed=len(targets),
-                stage="发送完成",
-                overall=overall,
-                detail=detail,
+        try:
+            artifact_path = self._write_send_artifact(
+                account_id, overall, detail, results, diagnostics=diagnostics
             )
-        elif overall != "auth_expired":
-            # auth_expired 已在上面的诊断分支记录；其它终态也要让任务坞保持可见。
-            self._finish_send_progress(
-                account_id,
-                status="failed",
-                completed=len(results),
-                stage="发送结束",
-                overall=overall,
-                detail=detail,
-            )
+            if overall in ("ok", "partial"):
+                self._finish_send_progress(
+                    account_id,
+                    status="completed",
+                    completed=len(targets),
+                    stage="发送完成",
+                    overall=overall,
+                    detail=detail,
+                )
+            elif overall != "auth_expired":
+                # auth_expired 已在上面的诊断分支记录；其它终态也要让任务坞保持可见。
+                self._finish_send_progress(
+                    account_id,
+                    status="failed",
+                    completed=len(results),
+                    stage="发送结束",
+                    overall=overall,
+                    detail=detail,
+                )
+        except BaseException as exc:
+            progress = self._send_progress.get(account_id)
+            if progress is not None and progress.status == "running":
+                self._finish_send_progress(
+                    account_id,
+                    status="failed",
+                    completed=len(results),
+                    stage="流程中断",
+                    overall="error",
+                    detail=type(exc).__name__,
+                )
+            raise
         return {
             "account_id": account_id,
             "overall": overall,
@@ -2590,7 +2654,10 @@ class BrowserManager:
         if not template_ok and not raw_text:
             return {"target": nickname, "status": "skipped",
                     "detail": "未绑定可用模板", "failure_class": None, "message": None}
-        if any(job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW for job in daily_jobs):
+        if any(
+            job.status in (JobStatus.UNKNOWN_REQUIRES_REVIEW, JobStatus.SENDING, JobStatus.CONFIRMING)
+            for job in daily_jobs
+        ):
             return {
                 "target": nickname,
                 "status": "duplicate_unknown",
@@ -2660,15 +2727,27 @@ class BrowserManager:
             if job.status == JobStatus.SUCCEEDED:
                 return {"target": nickname, "status": "duplicate_succeeded",
                         "detail": "今日已发送，已跳过", "failure_class": None, "message": message}
-            if job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW:
+            if job.status in (
+                JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                JobStatus.SENDING,
+                JobStatus.CONFIRMING,
+            ):
                 return {"target": nickname, "status": "duplicate_unknown",
                         "detail": "今日结果未确认，已跳过以防重复", "failure_class": None, "message": message}
 
-        opened = await chat.open_conversation(
-            nickname,
-            platform_user_id,
-            platform_conversation_id,
-        )
+        try:
+            opened = await chat.open_conversation(
+                nickname,
+                platform_user_id,
+                platform_conversation_id,
+            )
+        except asyncio.CancelledError:
+            self._finalize_send(
+                job.id, target.id, account.id,
+                status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.OTHER,
+                confirmed=False,
+            )
+            raise
         if not opened.opened:
             screenshot = await self._capture_shot(chat, account.id, "target_not_found")
             self._finalize_send(
@@ -2700,21 +2779,60 @@ class BrowserManager:
 
         attempt_no = self._record_attempt(job.id)
         try:
-            if template_type == TemplateType.IMAGE:
-                await chat.send_image(image_path)
-            elif template_type == TemplateType.STICKER:
-                await chat.send_sticker(
-                    Sticker(
-                        name=sticker_name,
-                        label=sticker_label,
-                        category=sticker_category,
-                        fallback_index=sticker_fallback_index,
+            try:
+                if template_type == TemplateType.IMAGE:
+                    await chat.send_image(image_path)
+                elif template_type == TemplateType.STICKER:
+                    await chat.send_sticker(
+                        Sticker(
+                            name=sticker_name,
+                            label=sticker_label,
+                            category=sticker_category,
+                            fallback_index=sticker_fallback_index,
+                        )
                     )
+                else:
+                    await chat.send_text(message)
+            except SendOutcomeUnknownError as exc:
+                screenshot = await self._capture_shot(chat, account.id, "unknown_outcome")
+                self._finalize_send(
+                    job.id, target.id, account.id,
+                    status=JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    failure=FailureClass.UNKNOWN_OUTCOME,
+                    confirmed=False,
+                    attempt_no=attempt_no,
                 )
-            else:
-                await chat.send_text(message)
-        except SendOutcomeUnknownError as exc:
-            screenshot = await self._capture_shot(chat, account.id, "unknown_outcome")
+                return {"target": nickname, "status": "unknown_requires_review",
+                        "failure_class": FailureClass.UNKNOWN_OUTCOME.value,
+                        "detail": str(exc) or "已触发发送但结果未确认，已阻止自动重试",
+                        "message": message,
+                        "screenshot": screenshot, "page_url": self._page_url(chat)}
+            except DomChangedError as exc:
+                screenshot = await self._capture_shot(chat, account.id, "dom_changed")
+                self._finalize_send(
+                    job.id, target.id, account.id,
+                    status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.DOM_CHANGED,
+                    confirmed=False, attempt_no=attempt_no,
+                )
+                return {"target": nickname, "status": "failed_retryable",
+                        "failure_class": FailureClass.DOM_CHANGED.value,
+                        "detail": str(exc) or "页面结构变化", "message": message,
+                        "screenshot": screenshot, "page_url": self._page_url(chat)}
+            except Exception as exc:
+                screenshot = await self._capture_shot(chat, account.id, "send_error")
+                self._finalize_send(
+                    job.id, target.id, account.id,
+                    status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.OTHER,
+                    confirmed=False, attempt_no=attempt_no,
+                )
+                return {"target": nickname, "status": "failed_retryable",
+                        "failure_class": FailureClass.OTHER.value,
+                        "detail": type(exc).__name__, "message": message,
+                        "screenshot": screenshot, "page_url": self._page_url(chat)}
+
+            self._update_job_status(job.id, JobStatus.CONFIRMING)
+            outcome = await self._confirm_send(chat, template_type)
+        except asyncio.CancelledError:
             self._finalize_send(
                 job.id, target.id, account.id,
                 status=JobStatus.UNKNOWN_REQUIRES_REVIEW,
@@ -2722,36 +2840,7 @@ class BrowserManager:
                 confirmed=False,
                 attempt_no=attempt_no,
             )
-            return {"target": nickname, "status": "unknown_requires_review",
-                    "failure_class": FailureClass.UNKNOWN_OUTCOME.value,
-                    "detail": str(exc) or "已触发发送但结果未确认，已阻止自动重试",
-                    "message": message,
-                    "screenshot": screenshot, "page_url": self._page_url(chat)}
-        except DomChangedError as exc:
-            screenshot = await self._capture_shot(chat, account.id, "dom_changed")
-            self._finalize_send(
-                job.id, target.id, account.id,
-                status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.DOM_CHANGED,
-                confirmed=False, attempt_no=attempt_no,
-            )
-            return {"target": nickname, "status": "failed_retryable",
-                    "failure_class": FailureClass.DOM_CHANGED.value,
-                    "detail": str(exc) or "页面结构变化", "message": message,
-                    "screenshot": screenshot, "page_url": self._page_url(chat)}
-        except Exception as exc:
-            screenshot = await self._capture_shot(chat, account.id, "send_error")
-            self._finalize_send(
-                job.id, target.id, account.id,
-                status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.OTHER,
-                confirmed=False, attempt_no=attempt_no,
-            )
-            return {"target": nickname, "status": "failed_retryable",
-                    "failure_class": FailureClass.OTHER.value,
-                    "detail": type(exc).__name__, "message": message,
-                    "screenshot": screenshot, "page_url": self._page_url(chat)}
-
-        self._update_job_status(job.id, JobStatus.CONFIRMING)
-        outcome = await self._confirm_send(chat, template_type)
+            raise
 
         screenshot: str | None = None
         if outcome != "succeeded":

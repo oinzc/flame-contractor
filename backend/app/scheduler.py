@@ -49,8 +49,9 @@ logger = logging.getLogger(__name__)
 
 # 账号级租约默认时长：调度点到触发发送的宽限，防另一 worker 误抢正在跑的账号
 DEFAULT_LEASE_SECONDS = 5.0
-# 触发后发给 run_send 的软超时（后台任务不管，仅用于租约判断），与 run_send 内部超时无关
-DEFAULT_RUN_TIMEOUT = 180.0
+# 触发后发给 run_send 的软超时（后台任务不管，仅用于租约判断），与 run_send 内部超时无关；
+# 需容纳多好友 3–8 秒随机冷却、会话页重载复判及搜索定位耗时，并与 scan_timeout=600s 对齐。
+DEFAULT_RUN_TIMEOUT = 600.0
 # 会话状态同步默认每 24 小时一次；官方火花展示为天级状态，没必要高频访问会话列表。
 DEFAULT_AUTO_SCAN_INTERVAL_HOURS = 24
 # 服务启动后给手动登录/发送留出缓冲，再启动首次自动扫描。
@@ -707,6 +708,11 @@ class Scheduler:
                 continue
             due_at = self._target_time_aware(account, target.send_time_hhmm, now)
             if due_at is None or due_at - now > self._due_tolerance:
+                continue
+            if (
+                self._window_expiry_policy == "skip"
+                and now >= due_at + timedelta(minutes=self._fixed_time_grace_minutes)
+            ):
                 continue
             resend_slot = (
                 f"sched{self._clock().astimezone(ZoneInfo(account.timezone)).date():%Y%m%d}"

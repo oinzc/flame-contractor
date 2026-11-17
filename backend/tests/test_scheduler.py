@@ -1604,3 +1604,41 @@ def test_max_concurrent_sends_allows_parallel_when_raised(engine):
         assert sorted(calls) == sorted([account_a.id, account_b.id])
 
     asyncio.run(scenario())
+
+
+def test_exact_time_target_stops_retrying_after_grace_period(engine):
+    """好友级准点发送在 skip 策略下超过宽限期后不再继续重试。"""
+    account = make_account(engine, send_time_hhmm="02:22")
+    with Session(engine) as session:
+        session.add(
+            ContractTarget(account_id=account.id, nickname_snapshot="准点好友", send_time_hhmm="02:22")
+        )
+        session.commit()
+
+    calls: list[list[str]] = []
+
+    async def send_targets(account_id: str, ids: list[str], *, force_run_id=None) -> dict:
+        calls.append(ids)
+        return {"overall": "error", "detail": "临时失败", "results": []}
+
+    # 02:51 Asia/Shanghai = 18:51 UTC（仍在 30 分钟宽限内）
+    clock = make_clock(datetime(2026, 8, 27, 18, 51, 0, tzinfo=timezone.utc))
+    sched = Scheduler(
+        engine,
+        settings=None,
+        send_targets=send_targets,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+        window_expiry_policy="skip",
+        fixed_time_grace_minutes=30,
+    )
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 1
+
+    # 02:52 Asia/Shanghai = 18:52 UTC（满 30 分钟宽限期，停止继续派发）
+    clock.set(datetime(2026, 8, 27, 18, 52, 0, tzinfo=timezone.utc))
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 1

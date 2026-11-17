@@ -92,6 +92,7 @@ class FakePage:
         search_requires_warmup: bool = False,
         search_results_after_polls: int = 0,
         identity_payloads: dict[str, dict] | None = None,
+        indexeddb_identities: list[dict] | None = None,
         image_bubble_render: bool = False,
         sticker_items: list[str] = (),
         sticker_button_available: bool = True,
@@ -112,6 +113,7 @@ class FakePage:
         self.search_requires_warmup = search_requires_warmup
         self.search_results_after_polls = search_results_after_polls
         self.identity_payloads = identity_payloads or {}
+        self.indexeddb_identities = list(indexeddb_identities or ())
         self._handlers: dict[str, list] = {}
         self._search_polls = 0
         self.warmed = False
@@ -269,6 +271,9 @@ class FakePage:
         # 登录二维码查询脚本（结构与 class 无关，只认 data:image 前缀）
         if "data:image" in _expression:
             return self.qr_data_url
+        # IndexedDB 缓存用户信息查询脚本
+        if "indexedDB" in _expression:
+            return list(self.indexeddb_identities)
         # 读取自身昵称等「取值型」evaluate：测试显式设置 evaluate_result 时优先返回
         if self.evaluate_result is not None:
             return self.evaluate_result
