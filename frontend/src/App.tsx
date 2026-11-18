@@ -423,6 +423,7 @@ export default function App() {
         <DryRunDrawer
           open={drawer.kind === 'dry-run'}
           account={selectedAccount}
+          canManageSelectors={currentUser.isSuperuser}
           onClose={closeDrawer}
           onChanged={refresh}
         />

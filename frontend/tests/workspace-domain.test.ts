@@ -3,11 +3,13 @@ import assert from 'node:assert/strict'
 import { dateInAccountTimezone, weekdayToPoolBit } from '../src/lib/date.ts'
 import { previewTemplateForTarget, renderTemplateVariables } from '../src/lib/preview.ts'
 import {
+  buildInitialOverridesDraft,
   collectAccountReviewItems,
   deriveTargetDayMap,
   describeBarkCardState,
   mergeAccountSendPreview,
   parseSchedulerSettingsForm,
+  parseSelectorOverridesDraft,
   pickDefaultScreenshotAttempt,
   resolveDrawerOnViewChange,
   shouldFinalizeRecoveredScan,
@@ -407,4 +409,71 @@ test('describeBarkCardState reflects configured status and disables test button 
   assert.equal(conf.configured, true)
   assert.equal(conf.badgeLabel, '已启用')
   assert.equal(conf.canSendTest, true)
+})
+
+test('parseSelectorOverridesDraft extracts changed keys and rejects invalid types or CHAT_URL', () => {
+  const base = {
+    CHAT_URL: 'https://www.douyin.com/chat',
+    CHAT_EDITOR: 'div[data-slate-editor="true"]',
+    STICKER_BUTTONS: ['svg.messageMsgInputiconAction', 'button[aria-label*="表情"]'],
+    SEND_BUTTONS: ['[class*="publishBtn"]'],
+  }
+  const editableKeys = ['CHAT_EDITOR', 'STICKER_BUTTONS', 'SEND_BUTTONS']
+
+  // 默认草稿预填常用核心键；即使已有单项覆盖，草稿也保留其余核心键供对照编辑
+  const draft = buildInitialOverridesDraft(
+    {
+      ...base,
+      STICKER_ITEM_NAME: '.emojiDesc',
+    },
+    { CHAT_EDITOR: '.custom-editor' },
+  )
+  assert.equal(typeof draft, 'string')
+  const draftObj = JSON.parse(draft) as Record<string, unknown>
+  assert.equal(draftObj.CHAT_EDITOR, '.custom-editor')
+  assert.ok('STICKER_BUTTONS' in draftObj)
+  assert.ok('STICKER_ITEM_NAME' in draftObj)
+
+  // 仅提取相对 base 发生变化的键
+  const parsed = parseSelectorOverridesDraft(
+    JSON.stringify({
+      CHAT_EDITOR: 'div[data-slate-editor="true"]',
+      STICKER_BUTTONS: ['.dy-new-emoji-btn'],
+    }),
+    base,
+    editableKeys,
+  )
+  assert.equal(parsed.ok, true)
+  if (parsed.ok) {
+    assert.deepEqual(parsed.overrides, {
+      STICKER_BUTTONS: ['.dy-new-emoji-btn'],
+    })
+  }
+
+  // 拦截非法 JSON、CHAT_URL 越界与数组/字符串类型错配
+  assert.equal(parseSelectorOverridesDraft('{bad', base, editableKeys).ok, false)
+  assert.equal(
+    parseSelectorOverridesDraft(
+      JSON.stringify({ CHAT_URL: 'https://evil.example.com' }),
+      base,
+      editableKeys,
+    ).ok,
+    false,
+  )
+  assert.equal(
+    parseSelectorOverridesDraft(
+      JSON.stringify({ STICKER_BUTTONS: '.not-an-array' }),
+      base,
+      editableKeys,
+    ).ok,
+    false,
+  )
+  assert.equal(
+    parseSelectorOverridesDraft(
+      JSON.stringify({ CHAT_EDITOR: ['.not-a-string'] }),
+      base,
+      editableKeys,
+    ).ok,
+    false,
+  )
 })

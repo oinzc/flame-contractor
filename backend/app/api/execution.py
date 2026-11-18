@@ -17,6 +17,7 @@ from ..schemas import (
     ScanChatsRead,
     ScanHistoryRead,
     ScanProgressRead,
+    SelectorProbeRead,
     SendPreviewRead,
     SendProgressRead,
     SendRead,
@@ -71,6 +72,16 @@ async def dry_run(
     _require_account(session, account_id, user.id)
     manager = request.app.state.browser_manager
     return await manager.run_dry_run(account_id)
+
+
+@router.post("/probe-selectors", response_model=SelectorProbeRead)
+async def probe_account_selectors(
+    account_id: str, request: Request, session: SessionDep, user: CurrentUser
+) -> dict:
+    """只读执行当前账号抖音聊天页的关键选择器与表情面板体检，绝不发送任何消息。"""
+    _require_account(session, account_id, user.id)
+    manager = request.app.state.browser_manager
+    return await manager.probe_selectors(account_id)
 
 
 @router.post("/scan-chats", response_model=ScanChatsRead)

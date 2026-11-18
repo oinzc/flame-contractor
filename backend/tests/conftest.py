@@ -67,9 +67,11 @@ def _headed_login_available(monkeypatch):
     直接走 no_desktop 分支，导致与桌面环境下不同的行为。需要验证无显示分支的
     测试（test_qr_login）自行 monkeypatch 覆盖本默认值。
     """
-    from app.execution import browser_manager
+    from app.execution import browser_manager, selectors
 
     monkeypatch.setattr(browser_manager, "headed_login_available", lambda: True)
+    yield
+    selectors._reset_for_tests()
 
 
 @pytest.fixture

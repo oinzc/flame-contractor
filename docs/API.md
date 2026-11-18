@@ -607,3 +607,10 @@ password, cookie, token, storageState, profilePath
   后端重启会把遗留 `running` 收束为 `interrupted`，不自动续跑。
 - `POST /api/accounts/{id}/identity-hydration/cancel?taskId={taskId}`：取消正在执行的补采并保留已完成结果；不撤销已经安全写入的身份绑定。
 - 补采仅接受好友列表中已存在的普通好友 ID，不从扫描结果猜测目标，不处理群聊；成功绑定时同时保存内部稳定核对键 `platformUserId` 和可读平台号 `platformHandle`（若响应提供）。
+
+### 抖音页面定位器热更新（/api/selectors）
+- `GET /api/selectors`：返回当前合并生效的 `selectors`、内置只读基线 `base_selectors`、当前持久卷覆盖项 `overrides`、`has_overrides`、允许编辑的白名单键 `editable_keys`（不含 `CHAT_URL`）及版本摘要 `bundle_digest`。
+- `POST /api/selectors/reload`：显式重新读取磁盘基线与覆盖文件并刷新内存缓存。
+- `PUT /api/selectors`（仅管理员 `isSuperuser`）：请求体 `{"overrides": {...}}`，校验键名白名单与字符串/字符串数组类型同构后，将与基线不同的增量项原子写入 `data/selectors_override.json` 并立即热生效；非法键名、`CHAT_URL` 或类型错配返回 `422`，非管理员返回 `403`。
+- `DELETE /api/selectors/override`（仅管理员 `isSuperuser`）：删除 `data/selectors_override.json`，立即恢复镜像内置默认定位词。
+- `POST /api/accounts/{id}/probe-selectors`：校验账号归属及登录/扫描/发送/身份补采四重互斥锁后，以无头只读模式打开抖音聊天页与首个可用会话框，核验列表、搜索框、右侧标题、消息输入框、发送按钮、表情触发按钮、表情面板及表情项（含「比心」匹配度），随后关闭表情面板并释放浏览器；全程零输入、零点击具体表情、零发送。返回 `{accountId, overall: "ok"|"degraded"|"auth_expired"|"error", detail, sampleConversation, heartStickerFound, bundleDigest, hasOverrides, items}`。

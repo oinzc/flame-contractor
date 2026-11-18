@@ -34,7 +34,7 @@ flowchart LR
 
 - Scheduler：按发送窗口生成任务、租约与有界重试，并按可配置间隔触发只读会话状态同步；调度循环是进程内 APScheduler，持久语义由 SQLite 记录承载，自动同步周期和暂停开关写入 `AppSetting`；
 - BrowserManager：按账号复用独立持久 Profile，串行执行登录、扫描、定位和发送，账号级流程互斥；
-- Douyin Adapter：selector、身份确认、输入和发送终态确认；无法可靠判断时记录 `unknown_requires_review`，不自动重发；
+- Douyin Adapter：selector、身份确认、输入和发送终态确认；内置 `selectors_bundle.json` 叠加持久卷 `data/selectors_override.json` 双层热重载与零副作用页面结构体检，无法可靠判断时记录 `unknown_requires_review`，不自动重发；
 - ScanTask：把后台会话扫描的进度和已发现条目持久化到 SQLite，后端重启将遗留任务收束为 `interrupted`，不自动续跑；
 - 会话状态自动同步：Scheduler 默认每 24 小时触发一次后台扫描，避开发送窗口保护区；完成后只回写已存在 `ContractTarget` 的官方状态快照，并在已启用好友出现火花恶化跃迁时合并推送一条 `timeSensitive` 只读 Bark 提醒，不自动导入新会话、不改写 `streak_days`、不自动重发消息；
 - Artifact Store：短期保存失败/未知结果的诊断截图与元数据，不保存 Cookie、Token 或消息正文。

@@ -11,6 +11,7 @@ from .core.config import Settings, get_settings
 from .core.database import build_engine
 from .core.migrations import run_migrations
 from .core.security import hash_password
+from .execution import selectors as selector_bundle
 from .execution.browser_manager import BrowserManager
 from .models import Account, MessageTemplate, User
 from .notifications import BarkNotifier
@@ -66,6 +67,9 @@ def create_app(
     scheduler: Scheduler | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    selector_bundle.configure_override_path(
+        settings.profiles_dir.parent / "selectors_override.json"
+    )
     engine = build_engine(settings.database_url)
     # 通知器由调度器与浏览器流程共享：扫码登录的结果也要能主动回音。
     notifier = BarkNotifier(base_url=settings.bark_url)

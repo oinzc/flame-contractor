@@ -251,6 +251,7 @@ class BrowserManager:
         # 扫码登录是账号恢复自动续火的唯一入口：失败/超时必须能主动回音，不能只在日志留痕。
         self._notifier: Notifier = notifier or NullNotifier()
         self._flows: dict[str, LoginFlow] = {}
+        self._active_checks: dict[str, str] = {}
         self._send_progress: dict[str, SendProgress] = {}
         self._scan_progress: dict[str, ScanProgress] = {}
         self._scan_tasks: dict[str, asyncio.Task] = {}
@@ -372,6 +373,9 @@ class BrowserManager:
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         return (_utcnow() - started).total_seconds() > self._send_stale_after
+
+    def _active_check(self, account_id: str) -> str | None:
+        return self._active_checks.get(account_id)
 
     def _active_send(self, account_id: str) -> SendProgress | None:
         """该账号是否正在发送；超时未收束的僵尸进度自动释放占用。"""
@@ -544,6 +548,8 @@ class BrowserManager:
             raise ValueError("扫描任务来源无效")
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能扫描会话")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能扫描会话")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有会话扫描进行中")
         if self._active_send(account_id) is not None:
@@ -855,6 +861,8 @@ class BrowserManager:
         """为已存在的普通好友逐个打开会话，补采并安全回填稳定身份。"""
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能补采身份")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能补采身份")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能补采身份")
         if self._active_identity_hydration(account_id) is not None:
@@ -1306,6 +1314,8 @@ class BrowserManager:
         """
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="该账号已有登录流程进行中")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，请稍后再登录")
         profile_path = ensure_profile_dir(self._settings, account_id)
         flow = LoginFlow(account_id=account_id)
         self._flows[account_id] = flow
@@ -1475,6 +1485,8 @@ class BrowserManager:
         """
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="该账号已有登录流程进行中")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，请稍后再登录")
         self._qr_image_file(account_id).unlink(missing_ok=True)
         profile_path = ensure_profile_dir(self._settings, account_id)
         flow = LoginFlow(account_id=account_id, state="preparing")
@@ -1906,6 +1918,8 @@ class BrowserManager:
         """执行一次全量扫描；progress 存在时把真实扫描阶段写入内存快照。"""
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能扫描会话")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能扫描会话")
         if progress is None and self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号已有会话扫描进行中")
         if self._active_send(account_id) is not None:
@@ -2110,8 +2124,14 @@ class BrowserManager:
     async def run_dry_run(self, account_id: str) -> dict:
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能执行 Dry Run")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号已有演练或页面结构体检进行中")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能执行 Dry Run")
+        if self._active_send(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在发送消息，暂不能执行 Dry Run")
+        if self._active_identity_hydration(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在补采好友身份，暂不能执行 Dry Run")
 
         with Session(self._engine) as session:
             account = session.get(Account, account_id)
@@ -2126,6 +2146,7 @@ class BrowserManager:
         if not targets:
             raise HTTPException(status_code=409, detail="该账号还没有契约对象，请先添加好友")
 
+        self._active_checks[account_id] = "Dry Run 演练"
         profile_path = ensure_profile_dir(self._settings, account_id)
         results: list[DryRunTargetResult] = []
         overall = "ok"
@@ -2200,6 +2221,7 @@ class BrowserManager:
                     await context.close()
                 except Exception:
                     pass
+            self._active_checks.pop(account_id, None)
 
         artifact_path = self._write_dry_run_artifact(account_id, overall, detail, results)
         return {
@@ -2218,6 +2240,104 @@ class BrowserManager:
             "visible_titles": visible_titles,
             "diagnostics": diagnostics,
             "artifact_path": str(artifact_path),
+        }
+
+    async def probe_selectors(self, account_id: str) -> dict:
+        """只读探测当前账号抖音聊天页的关键 DOM 选择器与表情面板，绝不发消息也不改写登录状态。"""
+        from . import selectors as _sel_mod
+
+        if self._active_flow(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能执行页面结构体检")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号已有演练或页面结构体检进行中")
+        if self._active_scan(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能执行页面结构体检")
+        if self._active_send(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在发送消息，暂不能执行页面结构体检")
+        if self._active_identity_hydration(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在补采好友身份，暂不能执行页面结构体检")
+
+        sample_target: tuple[str, str | None, str | None] | None = None
+        with Session(self._engine) as session:
+            account = session.get(Account, account_id)
+            if account is None:
+                raise HTTPException(status_code=404, detail="账号不存在")
+            first_enabled = session.exec(
+                select(ContractTarget)
+                .where(
+                    ContractTarget.account_id == account_id,
+                    ContractTarget.enabled == True,  # noqa: E712
+                    ContractTarget.deleted_at.is_(None),
+                )
+                .order_by(ContractTarget.created_at.asc())
+            ).first()
+            if first_enabled is not None:
+                sample_target = (
+                    first_enabled.nickname_snapshot,
+                    first_enabled.platform_user_id,
+                    first_enabled.platform_conversation_id,
+                )
+
+        self._active_checks[account_id] = "页面结构体检"
+        profile_path = ensure_profile_dir(self._settings, account_id)
+        overall = "ok"
+        detail: str | None = None
+        sample_conversation: str | None = None
+        heart_sticker_found: bool | None = None
+        items: list[dict] = []
+        context = None
+        try:
+            context, page = await self._open(profile_path, headless=True)
+            chat = self._make_chat(page)
+            await chat.open_chat_page()
+            # 注意：不调用会累加失败计数并改写 AccountStatus.AUTH_EXPIRED 的 _confirm_session，
+            # 防止 CONVERSATION_LIST 改版或误配时既看不到 missing 明细又把健康账号误标失效自锁。
+            logged_in = await chat.wait_logged_in(
+                timeout=min(self._login_check_timeout, 5.0),
+                poll_interval=self._login_poll_interval,
+            )
+            page_url = self._page_url(chat)
+            if not logged_in and self._looks_like_load_failure(page_url):
+                overall = "error"
+                detail = "抖音页面未能正常加载（网络异常）"
+            elif not logged_in and await self._has_logged_out_signal(chat):
+                overall = "auth_expired"
+                detail = "页面存在明确登出/扫码信号，请先重新扫码登录"
+            else:
+                probe_res = await chat.probe_page_structure(
+                    sample_target=sample_target
+                )
+                sample_conversation = probe_res.get("sample_conversation")
+                heart_sticker_found = probe_res.get("heart_sticker_found")
+                items = list(probe_res.get("items") or [])
+                missing_labels = [
+                    row["label"] for row in items if row.get("status") == "missing"
+                ]
+                if missing_labels:
+                    overall = "degraded"
+                    detail = f"有 {len(missing_labels)} 项关键定位未命中：{'、'.join(missing_labels)}"
+                elif logged_in:
+                    self._touch_verified(account_id)
+        except Exception as exc:  # noqa: BLE001
+            overall = "error"
+            detail = type(exc).__name__
+        finally:
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._active_checks.pop(account_id, None)
+
+        return {
+            "account_id": account_id,
+            "overall": overall,
+            "detail": detail,
+            "sample_conversation": sample_conversation,
+            "heart_sticker_found": heart_sticker_found,
+            "bundle_digest": _sel_mod.bundle_digest(),
+            "has_overrides": _sel_mod.has_overrides(),
+            "items": items,
         }
 
     def _write_dry_run_artifact(
@@ -2268,6 +2388,8 @@ class BrowserManager:
         """
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
         if self._active_send(account_id) is not None:
@@ -2321,6 +2443,8 @@ class BrowserManager:
         """
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
         if self._active_send(account_id) is not None:
@@ -2361,6 +2485,8 @@ class BrowserManager:
         """对单个好友强制发送：可指定模板或直接输入文本（二选一），始终绕过当天成功记录。"""
         if self._active_flow(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在登录流程中，暂不能发送")
+        if self._active_check(account_id) is not None:
+            raise HTTPException(status_code=409, detail="账号正在执行演练或页面结构体检，暂不能发送")
         if self._active_scan(account_id) is not None:
             raise HTTPException(status_code=409, detail="账号正在扫描会话，暂不能发送")
         if self._active_send(account_id) is not None:

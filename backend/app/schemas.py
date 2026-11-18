@@ -737,6 +737,27 @@ class DryRunRead(APIBase):
     artifact_path: str | None = None
 
 
+class SelectorProbeItemRead(APIBase):
+    key: str
+    label: str
+    stage: Literal["list", "composer", "sticker"]
+    status: Literal["ok", "optional_when_empty", "skipped", "missing"]
+    matched_selector: str | None = None
+    count: int = 0
+    detail: str | None = None
+
+
+class SelectorProbeRead(APIBase):
+    account_id: str
+    overall: Literal["ok", "degraded", "auth_expired", "error"]
+    detail: str | None = None
+    sample_conversation: str | None = None
+    heart_sticker_found: bool | None = None
+    bundle_digest: str
+    has_overrides: bool = False
+    items: list[SelectorProbeItemRead] = []
+
+
 class ScanChatItem(APIBase):
     """扫描到的单个会话。streak_days 为抖音官方火花天数；streak_label 为特殊态
     文字标记（如「重燃中 1/3」「5 天后消失」）；两者都为空且消息未提及火花 = 无火花。"""

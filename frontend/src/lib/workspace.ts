@@ -371,3 +371,106 @@ export function describeBarkCardState(
     canSendTest: false,
   }
 }
+
+const CORE_EDITABLE_SELECTOR_KEYS = [
+  'CONVERSATION_LIST',
+  'CONVERSATION_ITEM',
+  'CONVERSATION_TITLE',
+  'SEARCH_INPUTS',
+  'RIGHT_TITLE',
+  'CHAT_EDITOR_SELECTORS',
+  'SEND_BUTTONS',
+  'STICKER_BUTTONS',
+  'STICKER_PANELS',
+  'STICKER_ITEM',
+  'STICKER_ITEM_NAME',
+] as const
+
+export function buildInitialOverridesDraft(
+  baseSelectors: Record<string, string | string[]>,
+  currentOverrides: Record<string, string | string[]>,
+): string {
+  const seed: Record<string, string | string[]> = {}
+  for (const key of CORE_EDITABLE_SELECTOR_KEYS) {
+    if (key in baseSelectors) {
+      seed[key] = baseSelectors[key]
+    }
+  }
+  for (const [key, value] of Object.entries(currentOverrides)) {
+    seed[key] = value
+  }
+  return JSON.stringify(seed, null, 2)
+}
+
+function sameSelectorValue(
+  a: string | string[] | undefined,
+  b: string | string[],
+): boolean {
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a === b
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((val, idx) => val === b[idx])
+  }
+  return false
+}
+
+export function parseSelectorOverridesDraft(
+  rawJson: string,
+  baseSelectors: Record<string, string | string[]>,
+  editableKeys: string[],
+):
+  | { ok: true; overrides: Record<string, string | string[]> }
+  | { ok: false; error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawJson)
+  } catch {
+    return { ok: false, error: 'JSON 语法无效，请检查引号、逗号与括号是否配对' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: '覆盖配置顶层必须是 JSON 对象（键值对）' }
+  }
+
+  const editableSet = new Set(editableKeys)
+  const deltas: Record<string, string | string[]> = {}
+
+  for (const [key, rawVal] of Object.entries(parsed as Record<string, unknown>)) {
+    if (key === 'CHAT_URL' || !editableSet.has(key)) {
+      return { ok: false, error: `键名 "${key}" 不支持在线覆盖或拼写有误` }
+    }
+    const expected = baseSelectors[key]
+    if (typeof expected === 'string') {
+      if (typeof rawVal !== 'string') {
+        return { ok: false, error: `键名 "${key}" 必须填写单个字符串选择器` }
+      }
+      const trimmed = rawVal.trim()
+      if (!trimmed || trimmed.length > 512 || /[\r\n\0]/.test(trimmed)) {
+        return { ok: false, error: `键名 "${key}" 不能为空、换行或超过 512 个字符` }
+      }
+      if (!sameSelectorValue(expected, trimmed)) {
+        deltas[key] = trimmed
+      }
+    } else if (Array.isArray(expected)) {
+      if (!Array.isArray(rawVal) || rawVal.length === 0 || rawVal.length > 20) {
+        return { ok: false, error: `键名 "${key}" 必须填写包含 1..20 条选择器的字符串数组` }
+      }
+      const cleanedArr: string[] = []
+      for (const item of rawVal) {
+        if (typeof item !== 'string') {
+          return { ok: false, error: `键名 "${key}" 数组内每一项都必须是字符串` }
+        }
+        const trimmed = item.trim()
+        if (!trimmed || trimmed.length > 512 || /[\r\n\0]/.test(trimmed)) {
+          return { ok: false, error: `键名 "${key}" 数组内包含空字符串或非法换行` }
+        }
+        cleanedArr.push(trimmed)
+      }
+      if (!sameSelectorValue(expected, cleanedArr)) {
+        deltas[key] = cleanedArr
+      }
+    }
+  }
+
+  return { ok: true, overrides: deltas }
+}

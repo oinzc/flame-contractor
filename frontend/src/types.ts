@@ -487,6 +487,42 @@ export interface DryRunRead {
   artifactPath: string | null
 }
 
+export type SelectorValue = string | string[]
+
+export interface SelectorBundleRead {
+  file_path: string
+  override_path: string | null
+  count: number
+  loaded_mtime: number | null
+  bundle_digest: string
+  has_overrides: boolean
+  editable_keys: string[]
+  overrides: Record<string, SelectorValue>
+  base_selectors: Record<string, SelectorValue>
+  selectors: Record<string, SelectorValue>
+}
+
+export interface SelectorProbeItem {
+  key: string
+  label: string
+  stage: 'list' | 'composer' | 'sticker'
+  status: 'ok' | 'optional_when_empty' | 'skipped' | 'missing'
+  matchedSelector: string | null
+  count: number
+  detail: string | null
+}
+
+export interface SelectorProbeRead {
+  accountId: string
+  overall: 'ok' | 'degraded' | 'auth_expired' | 'error'
+  detail: string | null
+  sampleConversation: string | null
+  heartStickerFound: boolean | null
+  bundleDigest: string
+  hasOverrides: boolean
+  items: SelectorProbeItem[]
+}
+
 export interface TargetCreateInput {
   accountId: string
   nicknameSnapshot: string

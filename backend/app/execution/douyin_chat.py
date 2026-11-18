@@ -1818,6 +1818,388 @@ class DouyinChat:
         """
         return await self._wait_media_bubble(timeout)
 
+    async def _probe_candidates(
+        self, candidates: list[str] | tuple[str, ...]
+    ) -> tuple[str | None, int]:
+        """在页面只读探测一组候选选择器，返回首个命中的 (selector, count)。"""
+        for sel in candidates:
+            if hasattr(self.page, "query_selector_all"):
+                try:
+                    rows = await self.page.query_selector_all(sel)
+                    if rows:
+                        return sel, len(rows)
+                except Exception:
+                    pass
+            if hasattr(self.page, "query_selector"):
+                try:
+                    node = await self.page.query_selector(sel)
+                    if node is not None:
+                        return sel, 1
+                except Exception:
+                    pass
+            if hasattr(self.page, "locator"):
+                try:
+                    loc = self.page.locator(sel)
+                    cnt = await loc.count()
+                    if cnt > 0:
+                        return sel, int(cnt)
+                except Exception:
+                    pass
+        return None, 0
+
+    async def _visible_locator_with_selector(
+        self, candidates: list[str] | tuple[str, ...]
+    ) -> tuple[str | None, object | None]:
+        """返回首个可见的 (selector, locator)。"""
+        if not hasattr(self.page, "locator"):
+            return None, None
+        for selector in candidates:
+            try:
+                locator = self.page.locator(selector).first
+                if await locator.count() and await locator.is_visible():
+                    return selector, locator
+            except Exception:
+                continue
+        return None, None
+
+    async def _panel_contains_sticker_name(self, panel, target_name: str) -> bool:
+        """只读检查已打开的表情面板中是否存在指定名称的表情（严禁点击任何表情项）。"""
+        try:
+            items = panel.locator(_s.STICKER_ITEM)
+            total = min(await items.count(), 100)
+            for idx in range(total):
+                desc = items.nth(idx).locator(_s.STICKER_ITEM_NAME)
+                if await desc.count():
+                    txt = (await desc.first.inner_text()).strip()
+                    if txt == target_name:
+                        return True
+        except Exception:
+            pass
+        for expr in (
+            f'[role="img"][aria-label="{target_name}"]',
+            f'img[aria-label="{target_name}"]',
+            f'[aria-label="{target_name}"]',
+            f'[title="{target_name}"]',
+            f'[alt="{target_name}"]',
+        ):
+            try:
+                cand = panel.locator(expr).first
+                if await cand.count() and await cand.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def probe_page_structure(
+        self,
+        sample_target: tuple[str, str | None, str | None] | None = None,
+    ) -> dict:
+        """对当前已登录的抖音聊天页执行零副作用页面结构体检（绝不输入文字、绝不点击表情项或发送）。"""
+        items: list[dict] = []
+
+        # 1) 左侧会话列表区
+        list_sel, list_cnt = await self._probe_candidates((_s.CONVERSATION_LIST,))
+        items.append(
+            {
+                "key": "CONVERSATION_LIST",
+                "label": "会话列表容器",
+                "stage": "list",
+                "status": "ok" if list_sel else "missing",
+                "matched_selector": list_sel,
+                "count": list_cnt,
+                "detail": None if list_sel else "未找到左侧会话列表容器",
+            }
+        )
+
+        item_sel, item_cnt = await self._probe_candidates((_s.CONVERSATION_ITEM,))
+        items.append(
+            {
+                "key": "CONVERSATION_ITEM",
+                "label": "会话列表项",
+                "stage": "list",
+                "status": "ok" if item_cnt > 0 else "skipped",
+                "matched_selector": item_sel,
+                "count": item_cnt,
+                "detail": (
+                    f"当前首屏可见 {item_cnt} 条会话"
+                    if item_cnt > 0
+                    else "当前账号会话列表为空"
+                ),
+            }
+        )
+
+        search_candidates = getattr(_s, "SEARCH_INPUTS", (_s.SEARCH_INPUT,))
+        if isinstance(search_candidates, str):
+            search_candidates = (search_candidates,)
+        search_sel, search_cnt = await self._probe_candidates(tuple(search_candidates))
+        items.append(
+            {
+                "key": "SEARCH_INPUTS",
+                "label": "顶部会话搜索框",
+                "stage": "list",
+                "status": "ok" if search_sel else "missing",
+                "matched_selector": search_sel,
+                "count": search_cnt,
+                "detail": None if search_sel else "未找到顶部搜索输入框",
+            }
+        )
+
+        # 2) 打开单个样本会话以渲染右侧聊天输入区（优先直点首屏第一条可见会话，避免无谓滚动搜索耗时）
+        sample_conversation: str | None = None
+        if hasattr(self.page, "query_selector_all"):
+            try:
+                rows = await self.page.query_selector_all(_s.CONVERSATION_ITEM)
+                if rows:
+                    first_row = rows[0]
+                    title_el = await first_row.query_selector(_s.CONVERSATION_TITLE)
+                    first_title = (
+                        (await title_el.inner_text()).strip()
+                        if title_el is not None
+                        else ""
+                    )
+                    await first_row.click()
+                    await self._sleep(0.3)
+                    sample_conversation = first_title or "首个可见会话"
+            except Exception:
+                sample_conversation = None
+
+        if sample_conversation is None and sample_target is not None:
+            nickname, p_uid, p_cid = sample_target
+            opened = await self.open_conversation(nickname, p_uid, p_cid)
+            if opened.opened:
+                sample_conversation = opened.title or nickname
+
+        if sample_conversation is None:
+            skip_note = "当前账号暂无可打开的会话，仅完成左侧列表体检"
+            for key, label, stage in (
+                ("RIGHT_TITLE", "右侧会话标题栏", "composer"),
+                ("CHAT_EDITOR_SELECTORS", "消息输入框", "composer"),
+                ("SEND_BUTTONS", "发送按钮", "composer"),
+                ("STICKER_BUTTONS", "表情面板触发按钮", "sticker"),
+                ("STICKER_PANELS", "表情面板容器", "sticker"),
+                ("STICKER_ITEM", "表情项与「比心」核验", "sticker"),
+            ):
+                items.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "stage": stage,
+                        "status": "skipped",
+                        "matched_selector": None,
+                        "count": 0,
+                        "detail": skip_note,
+                    }
+                )
+            return {
+                "sample_conversation": None,
+                "heart_sticker_found": None,
+                "items": items,
+            }
+
+        # 3) 右侧聊天输入区核验
+        title_sel, title_cnt = await self._probe_candidates((_s.RIGHT_TITLE,))
+        items.append(
+            {
+                "key": "RIGHT_TITLE",
+                "label": "右侧会话标题栏",
+                "stage": "composer",
+                "status": "ok" if title_sel else "missing",
+                "matched_selector": title_sel,
+                "count": title_cnt,
+                "detail": (
+                    f"当前打开：{sample_conversation}"
+                    if title_sel
+                    else "已点击会话但未检测到右侧标题栏"
+                ),
+            }
+        )
+
+        editor_sel, editor_cnt = await self._probe_candidates(
+            _chat_editor_selectors()
+        )
+        items.append(
+            {
+                "key": "CHAT_EDITOR_SELECTORS",
+                "label": "消息输入框",
+                "stage": "composer",
+                "status": "ok" if editor_sel else "missing",
+                "matched_selector": editor_sel,
+                "count": editor_cnt,
+                "detail": None if editor_sel else "未找到可编辑消息输入框",
+            }
+        )
+
+        send_candidates = getattr(_s, "SEND_BUTTONS", ())
+        if isinstance(send_candidates, str):
+            send_candidates = (send_candidates,)
+        send_sel, send_cnt = await self._probe_candidates(tuple(send_candidates))
+        items.append(
+            {
+                "key": "SEND_BUTTONS",
+                "label": "发送按钮",
+                "stage": "composer",
+                "status": "ok" if send_sel else "optional_when_empty",
+                "matched_selector": send_sel,
+                "count": send_cnt,
+                "detail": (
+                    None
+                    if send_sel
+                    else "空输入状态下未渲染发布按钮（输入文字后按需出现，属正常现象）"
+                ),
+            }
+        )
+
+        # 4) 表情面板与「比心」表情只读核验（展开后立即 Escape 关闭，绝不点表情项）
+        heart_sticker_found: bool | None = None
+        sticker_btns = getattr(_s, "STICKER_BUTTONS", ())
+        if isinstance(sticker_btns, str):
+            sticker_btns = (sticker_btns,)
+        btn_sel, btn_loc = await self._visible_locator_with_selector(
+            tuple(sticker_btns)
+        )
+        if btn_loc is None:
+            items.append(
+                {
+                    "key": "STICKER_BUTTONS",
+                    "label": "表情面板触发按钮",
+                    "stage": "sticker",
+                    "status": "missing",
+                    "matched_selector": None,
+                    "count": 0,
+                    "detail": "未找到表情图标按钮，可能是抖音更新了工具栏类名",
+                }
+            )
+            items.append(
+                {
+                    "key": "STICKER_PANELS",
+                    "label": "表情面板容器",
+                    "stage": "sticker",
+                    "status": "skipped",
+                    "matched_selector": None,
+                    "count": 0,
+                    "detail": "因未找到表情按钮而跳过",
+                }
+            )
+            items.append(
+                {
+                    "key": "STICKER_ITEM",
+                    "label": "表情项与「比心」核验",
+                    "stage": "sticker",
+                    "status": "skipped",
+                    "matched_selector": None,
+                    "count": 0,
+                    "detail": "因未找到表情按钮而跳过",
+                }
+            )
+        else:
+            items.append(
+                {
+                    "key": "STICKER_BUTTONS",
+                    "label": "表情面板触发按钮",
+                    "stage": "sticker",
+                    "status": "ok",
+                    "matched_selector": btn_sel,
+                    "count": 1,
+                    "detail": None,
+                }
+            )
+            try:
+                await btn_loc.click(force=True)
+                sticker_panels = getattr(_s, "STICKER_PANELS", ())
+                if isinstance(sticker_panels, str):
+                    sticker_panels = (sticker_panels,)
+                panel_sel, panel_loc = await self._visible_locator_with_selector(
+                    tuple(sticker_panels)
+                )
+                if panel_loc is None:
+                    items.append(
+                        {
+                            "key": "STICKER_PANELS",
+                            "label": "表情面板容器",
+                            "stage": "sticker",
+                            "status": "missing",
+                            "matched_selector": None,
+                            "count": 0,
+                            "detail": "已点击表情按钮，但未检测到弹出的表情面板容器",
+                        }
+                    )
+                    items.append(
+                        {
+                            "key": "STICKER_ITEM",
+                            "label": "表情项与「比心」核验",
+                            "stage": "sticker",
+                            "status": "skipped",
+                            "matched_selector": None,
+                            "count": 0,
+                            "detail": "因表情面板未打开而跳过",
+                        }
+                    )
+                else:
+                    items.append(
+                        {
+                            "key": "STICKER_PANELS",
+                            "label": "表情面板容器",
+                            "stage": "sticker",
+                            "status": "ok",
+                            "matched_selector": panel_sel,
+                            "count": 1,
+                            "detail": None,
+                        }
+                    )
+                    sticker_query_err = False
+                    try:
+                        await self._wait_sticker_items(panel_loc, timeout=3.0)
+                        sticker_cnt = int(
+                            await panel_loc.locator(_s.STICKER_ITEM).count()
+                        )
+                    except Exception:
+                        sticker_cnt = 0
+                        sticker_query_err = True
+                    if sticker_cnt > 0:
+                        heart_sticker_found = await self._panel_contains_sticker_name(
+                            panel_loc, "比心"
+                        )
+                        items.append(
+                            {
+                                "key": "STICKER_ITEM",
+                                "label": "表情项与「比心」核验",
+                                "stage": "sticker",
+                                "status": "ok",
+                                "matched_selector": _s.STICKER_ITEM,
+                                "count": sticker_cnt,
+                                "detail": (
+                                    f"检测到 {sticker_cnt} 个表情项，且已匹配「比心」"
+                                    if heart_sticker_found
+                                    else f"检测到 {sticker_cnt} 个表情项（首屏未见名为「比心」的描述文本）"
+                                ),
+                            }
+                        )
+                    else:
+                        heart_sticker_found = False
+                        items.append(
+                            {
+                                "key": "STICKER_ITEM",
+                                "label": "表情项与「比心」核验",
+                                "stage": "sticker",
+                                "status": "missing",
+                                "matched_selector": None,
+                                "count": 0,
+                                "detail": (
+                                    "STICKER_ITEM 选择器语法异常或无法查询，请核对定位词写法"
+                                    if sticker_query_err
+                                    else "表情面板已打开，但未匹配到 STICKER_ITEM 表情项节点"
+                                ),
+                            }
+                        )
+            finally:
+                await self._restore_composer()
+
+        return {
+            "sample_conversation": sample_conversation,
+            "heart_sticker_found": heart_sticker_found,
+            "items": items,
+        }
+
 
 async def read_self_nickname(page) -> str | None:
     """登录后读取当前抖音身份昵称（M8 后续增强）。

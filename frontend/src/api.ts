@@ -306,6 +306,21 @@ export const api = {
     request<import('./types').DryRunRead>(`/api/accounts/${id}/dry-run`, {
       method: 'POST',
     }),
+  probeSelectors: (id: string) =>
+    request<import('./types').SelectorProbeRead>(`/api/accounts/${id}/probe-selectors`, {
+      method: 'POST',
+    }),
+  selectorsBundle: () =>
+    request<import('./types').SelectorBundleRead>('/api/selectors'),
+  saveSelectorOverrides: (overrides: Record<string, import('./types').SelectorValue>) =>
+    request<import('./types').SelectorBundleRead>('/api/selectors', {
+      method: 'PUT',
+      body: JSON.stringify({ overrides }),
+    }),
+  clearSelectorOverrides: () =>
+    request<import('./types').SelectorBundleRead>('/api/selectors/override', {
+      method: 'DELETE',
+    }),
   schedulerStatus: () =>
     request<import('./types').SchedulerStatus>('/api/scheduler'),
   schedulerUpdateSettings: (patch: import('./types').SchedulerSettingsPatch) =>

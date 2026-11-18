@@ -141,3 +141,145 @@ def test_api_reload_reloads_bundle(client):
     body = response.json()
     assert body["selectors"]["CONVERSATION_LIST"] == ".conversationConversationListwrapper"
     assert body["selectors"]["SEND_BUTTONS"]
+
+
+def test_override_file_merges_over_base_and_ignores_chat_url(tmp_path):
+    base_file = tmp_path / "base_bundle.json"
+    override_file = tmp_path / "selectors_override.json"
+    base = _default_dict()
+    _write_bundle(base_file, base)
+    sel._reset_for_tests(base_file, override_path=override_file)
+
+    assert sel.has_overrides() is False
+    assert sel.current("CHAT_URL") == "https://www.douyin.com/chat"
+
+    # 手工写入含非法 CHAT_URL 与合法覆盖项的 override 文件：CHAT_URL 必须被忽略
+    _write_bundle(
+        override_file,
+        {
+            "CHAT_URL": "http://127.0.0.1:9999/ssrf",
+            "CHAT_EDITOR": "div.custom-editor[contenteditable='true']",
+        },
+        advance_mtime=True,
+    )
+    assert sel.current("CHAT_URL") == "https://www.douyin.com/chat"
+    assert sel.current("CHAT_EDITOR") == "div.custom-editor[contenteditable='true']"
+    assert sel.current("CONVERSATION_LIST") == base["CONVERSATION_LIST"]
+    assert sel.has_overrides() is True
+
+    # 清空覆盖后删除文件并回到默认基线
+    sel.clear_overrides()
+    assert not override_file.exists()
+    assert sel.has_overrides() is False
+    assert sel.current("CHAT_EDITOR") == base["CHAT_EDITOR"]
+
+
+def test_api_put_and_delete_selectors_enforces_superuser_schema_and_persists_in_data_dir(
+    settings,
+):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    app = create_app(settings)
+    expected_override_path = settings.profiles_dir.parent / "selectors_override.json"
+
+    with TestClient(app) as client:
+        initial = client.get("/api/selectors").json()
+        assert initial["has_overrides"] is False
+        assert "CHAT_URL" not in initial["editable_keys"]
+        assert "STICKER_BUTTONS" in initial["editable_keys"]
+        assert initial["base_selectors"]["CHAT_EDITOR"] == initial["selectors"]["CHAT_EDITOR"]
+
+        # 1) SSRF 防护：尝试修改 CHAT_URL 必须 422
+        resp_url = client.put(
+            "/api/selectors",
+            json={"overrides": {"CHAT_URL": "https://evil.example.com"}},
+        )
+        assert resp_url.status_code == 422
+
+        # 2) 未知键名必须 422
+        resp_unknown = client.put(
+            "/api/selectors",
+            json={"overrides": {"NOT_EXIST_KEY": ".foo"}},
+        )
+        assert resp_unknown.status_code == 422
+
+        # 3) 数组型键传入裸字符串（防止逐字符遍历 bug）或字符串键传入数组必须 422
+        resp_str_for_list = client.put(
+            "/api/selectors",
+            json={"overrides": {"SEND_BUTTONS": ".single-string"}},
+        )
+        assert resp_str_for_list.status_code == 422
+
+        resp_list_for_str = client.put(
+            "/api/selectors",
+            json={"overrides": {"CHAT_EDITOR": [".arr"]}},
+        )
+        assert resp_list_for_str.status_code == 422
+
+        # 4) 空字符串或空列表必须 422
+        assert (
+            client.put("/api/selectors", json={"overrides": {"CHAT_EDITOR": "   "}}).status_code
+            == 422
+        )
+        assert (
+            client.put("/api/selectors", json={"overrides": {"SEND_BUTTONS": []}}).status_code
+            == 422
+        )
+
+        # 5) 合法保存：持久落盘至 data 目录并立即在 DouyinChat 运行期生效
+        save_resp = client.put(
+            "/api/selectors",
+            json={
+                "overrides": {
+                    "CONVERSATION_LIST": ".customHotList",
+                    "STICKER_BUTTONS": ["svg.newStickerBtn", "button[aria-label*='表情']"],
+                }
+            },
+        )
+        assert save_resp.status_code == 200, save_resp.text
+        saved_body = save_resp.json()
+        assert saved_body["has_overrides"] is True
+        assert saved_body["overrides"] == {
+            "CONVERSATION_LIST": ".customHotList",
+            "STICKER_BUTTONS": ["svg.newStickerBtn", "button[aria-label*='表情']"],
+        }
+        assert expected_override_path.is_file()
+
+        probe_page = _SelectorProbePage(wanted=".customHotList")
+        chat = DouyinChat(probe_page, sleep=lambda _s: asyncio.sleep(0))
+        assert asyncio.run(chat.is_logged_in()) is True
+
+        # 6) 普通非超管用户：可读 GET，但 PUT 与 DELETE 一律 403
+        client.post(
+            "/api/auth/users",
+            json={"username": "member1", "password": "member-password-1"},
+        )
+        member_login = client.post(
+            "/api/auth/login",
+            json={"username": "member1", "password": "member-password-1"},
+        ).json()
+        member_headers = {"Authorization": f"Bearer {member_login['token']}"}
+
+        assert client.get("/api/selectors", headers=member_headers).status_code == 200
+        assert (
+            client.put(
+                "/api/selectors",
+                json={"overrides": {"CHAT_EDITOR": ".hacked"}},
+                headers=member_headers,
+            ).status_code
+            == 403
+        )
+        assert (
+            client.delete("/api/selectors/override", headers=member_headers).status_code
+            == 403
+        )
+
+        # 7) 管理员一键清空覆盖恢复默认
+        del_resp = client.delete("/api/selectors/override")
+        assert del_resp.status_code == 200, del_resp.text
+        del_body = del_resp.json()
+        assert del_body["has_overrides"] is False
+        assert del_body["overrides"] == {}
+        assert not expected_override_path.exists()
+        assert asyncio.run(chat.is_logged_in()) is False
