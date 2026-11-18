@@ -394,7 +394,9 @@
   z-index: 2;
   background: var(--surface-soft);
   text-align: left;
-  padding: 9px 14px;
+  height: 36px;
+  padding: 0 14px;
+  box-sizing: border-box;
   font-size: 12px;
   font-weight: 500;
   color: var(--muted);
@@ -403,10 +405,13 @@
 }
 
 .fc-table td {
-  padding: 11px 14px;
+  height: 46px;
+  padding: 4px 14px;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--hairline-soft);
   font-size: 13.5px;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .fc-table tbody tr:last-child td {
@@ -597,13 +602,16 @@
 }
 
 .fc-rule-card {
-  padding: 14px 18px;
+  height: 64px;
+  padding: 10px 18px;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--hairline);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   cursor: pointer;
+  flex-shrink: 0;
   transition: background-color var(--dur-fast) var(--ease-out-quart);
 }
 
@@ -643,14 +651,14 @@
 .fc-stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .fc-stat-card {
   border: 1px solid var(--hairline);
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 10px 14px;
   background: var(--surface-soft);
 }
 
@@ -660,8 +668,8 @@
 }
 
 .fc-stat-value {
-  margin-top: 4px;
-  font-size: 20px;
+  margin-top: 2px;
+  font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
@@ -671,8 +679,8 @@
   display: flex;
   align-items: flex-end;
   gap: 3px;
-  height: 32px;
-  margin-top: 6px;
+  height: 28px;
+  margin-top: 4px;
 }
 
 .fc-mini-bar {
@@ -694,14 +702,28 @@
   gap: 18px;
 }
 
-.fc-card {
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
-  padding: 18px 20px;
-  background: var(--canvas);
+.fc-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.fc-settings-col {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
+}
+
+.fc-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  background: var(--canvas);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .fc-settings-row {
@@ -709,7 +731,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--hairline-soft);
 }
 
@@ -720,20 +742,20 @@
 
 .fc-form-grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
 }
 
 .fc-form-grid-profile {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: end;
 }
 
 .fc-form-grid-pw {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: end;
   padding-top: 10px;
@@ -742,9 +764,65 @@
 
 .fc-form-grid-admin {
   display: grid;
-  grid-template-columns: 1fr 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: end;
+}
+
+/* Docked Pagination Bar */
+.fc-pagination-bar {
+  height: 42px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.fc-pagination-bar.is-compact {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+
+.fc-pagination-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fc-page-num {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color var(--dur-fast) var(--ease-out-quart),
+    color var(--dur-fast) var(--ease-out-quart),
+    border-color var(--dur-fast) var(--ease-out-quart);
+}
+
+.fc-page-num.is-active {
+  background: var(--canvas);
+  color: var(--ink);
+  border-color: var(--hairline);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
 }
 
 /* Folk-style Sidebar Background Task Stack */
@@ -844,6 +922,12 @@
   gap: 8px;
 }
 
+@media (max-width: 960px) {
+  .fc-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 768px) {
   .fc-needs-you {
     margin-left: 16px;
@@ -903,6 +987,11 @@
   }
 
   .fc-theme-btn:not(.is-active):hover {
+    color: var(--ink);
+  }
+
+  .fc-page-num:not(.is-active):hover {
+    background: var(--surface-card);
     color: var(--ink);
   }
 }

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
 import type { BackgroundTasksController } from '../../hooks/useBackgroundTasks.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import { mergeAccountSendPreview, type TargetDaySummary } from '../../lib/workspace.ts'
 import type { Account, ContractTarget, SendPreviewRead } from '../../types.ts'
 import { DrawerShell } from '../ui/DrawerShell.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
 
 export interface SendAccountDrawerProps {
@@ -26,6 +28,7 @@ export function SendAccountDrawer({
   const [preview, setPreview] = useState<SendPreviewRead | null>(null)
   const [loading, setLoading] = useState(false)
   const [force, setForce] = useState(false)
+  const [page, setPage] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -35,6 +38,7 @@ export function SendAccountDrawer({
     setLoading(true)
     setError(null)
     setForce(false)
+    setPage(1)
     api
       .sendPreview(account.id)
       .then((res) => {
@@ -125,30 +129,46 @@ export function SendAccountDrawer({
           <div>当前账号暂无好友</div>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {rows.map((row) => (
-            <div key={row.target.id} className="fc-preview-stage" style={{ padding: '11px 13px' }}>
-              <div className="fc-preview-head" style={{ marginBottom: 2 }}>
-                <span style={{ color: 'var(--ink)', fontWeight: 600, fontSize: 13.5 }}>
-                  {row.target.nicknameSnapshot}
-                </span>
-                <StatusPill tone={row.willSend ? 'ok' : row.tone}>
-                  {row.willSend ? '本次将发送' : row.skipReason ?? '跳过'}
-                </StatusPill>
-              </div>
-              {row.renderedMessage && (
-                <div
-                  style={{
-                    fontSize: 13,
-                    color: row.willSend ? 'var(--body)' : 'var(--muted)',
-                  }}
-                >
-                  {row.renderedMessage}
+        <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {paginateItems(rows, page, 7).pageItems.map((row) => (
+              <div key={row.target.id} className="fc-preview-stage" style={{ padding: '9px 12px', gap: 4 }}>
+                <div className="fc-preview-head">
+                  <span style={{ color: 'var(--ink)', fontWeight: 600, fontSize: 13 }}>
+                    {row.target.nicknameSnapshot}
+                  </span>
+                  <StatusPill tone={row.willSend ? 'ok' : row.tone}>
+                    {row.willSend ? '本次将发送' : row.skipReason ?? '跳过'}
+                  </StatusPill>
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
+                {row.renderedMessage && (
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: row.willSend ? 'var(--body)' : 'var(--muted)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {row.renderedMessage}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {rows.length > 7 && (
+            <PaginationBar
+              compact
+              page={paginateItems(rows, page, 7).safePage}
+              totalPages={paginateItems(rows, page, 7).totalPages}
+              totalItems={rows.length}
+              rangeStart={paginateItems(rows, page, 7).rangeStart}
+              rangeEnd={paginateItems(rows, page, 7).rangeEnd}
+              onPageChange={setPage}
+            />
+          )}
+        </>
       )}
     </DrawerShell>
   )

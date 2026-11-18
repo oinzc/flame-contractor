@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { api, ApiError } from '../../api.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import type { AccountAttentionItem } from '../../lib/workspace.ts'
 import type { DrawerState } from '../../types.ts'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 
 export interface NeedsYouBannerProps {
   items: AccountAttentionItem[]
@@ -12,8 +14,11 @@ export interface NeedsYouBannerProps {
 export function NeedsYouBanner({ items, onOpenDrawer, onChanged }: NeedsYouBannerProps) {
   const [busyJobId, setBusyJobId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
 
   if (items.length === 0) return null
+
+  const paged = paginateItems(items, page, 2)
 
   async function handleConfirm(jobId: string) {
     setBusyJobId(jobId)
@@ -44,7 +49,7 @@ export function NeedsYouBanner({ items, onOpenDrawer, onChanged }: NeedsYouBanne
   return (
     <section className="fc-needs-you" aria-label="待你确认事项">
       {error && <div className="fc-alert is-error">{error}</div>}
-      {items.map((item) => {
+      {paged.pageItems.map((item) => {
         if (item.kind === 'account_status') {
           return (
             <div key={item.id} className="fc-needs-you-row">
@@ -104,6 +109,17 @@ export function NeedsYouBanner({ items, onOpenDrawer, onChanged }: NeedsYouBanne
           </div>
         )
       })}
+      {paged.totalPages > 1 && (
+        <PaginationBar
+          compact
+          page={paged.safePage}
+          totalPages={paged.totalPages}
+          totalItems={paged.total}
+          rangeStart={paged.rangeStart}
+          rangeEnd={paged.rangeEnd}
+          onPageChange={setPage}
+        />
+      )}
     </section>
   )
 }

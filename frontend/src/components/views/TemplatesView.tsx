@@ -1,7 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
+import { useCardPaginationCapacity } from '../../hooks/useViewportPageSize.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import type { DrawerState, MessageTemplate } from '../../types.ts'
 import { PlusIcon, TrashIcon } from '../ui/Icons.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
 import { Switch } from '../ui/Switch.tsx'
 
@@ -36,6 +39,20 @@ export function TemplatesView({
 }: TemplatesViewProps) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+
+  const { cardRef, pageSize, showPagination } = useCardPaginationCapacity(templates.length, {
+    headerPx: 2,
+    footerPx: 44,
+    rowPx: 65,
+    minRows: 4,
+    maxRows: 20,
+  })
+
+  const paged = useMemo(
+    () => paginateItems(templates, page, pageSize),
+    [templates, page, pageSize],
+  )
 
   async function handleToggle(tpl: MessageTemplate, next: boolean) {
     setBusyId(tpl.id)
@@ -97,12 +114,8 @@ export function TemplatesView({
         </div>
       </header>
 
-      <div className="fc-scroll" style={{ paddingTop: 18 }}>
-        {error && (
-          <div className="fc-alert is-error" style={{ marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
+      <div className="fc-stage" style={{ paddingTop: 14 }}>
+        {error && <div className="fc-alert is-error">{error}</div>}
 
         {templates.length === 0 ? (
           <div className="fc-empty">
@@ -118,74 +131,95 @@ export function TemplatesView({
             </button>
           </div>
         ) : (
-          <div className="fc-rule-list">
-            {templates.map((tpl) => {
-              const selected =
-                drawer.kind === 'template-editor' && drawer.templateId === tpl.id
-              return (
-                <div
-                  key={tpl.id}
-                  className={`fc-rule-card${selected ? ' is-selected' : ''}`}
-                  tabIndex={0}
-                  onClick={() =>
-                    onOpenDrawer({ kind: 'template-editor', templateId: tpl.id })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.target !== e.currentTarget) return
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
+          <div className="fc-paged-card" ref={cardRef}>
+            <div className="fc-paged-body">
+              {paged.pageItems.map((tpl) => {
+                const selected =
+                  drawer.kind === 'template-editor' && drawer.templateId === tpl.id
+                return (
+                  <div
+                    key={tpl.id}
+                    className={`fc-rule-card${selected ? ' is-selected' : ''}`}
+                    tabIndex={0}
+                    onClick={() =>
                       onOpenDrawer({ kind: 'template-editor', templateId: tpl.id })
                     }
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, fontSize: 14.5 }}>{tpl.name}</span>
-                      <StatusPill tone="neutral">{TYPE_LABELS[tpl.type]}</StatusPill>
-                      <span className="fc-mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-                        v{tpl.version}
-                      </span>
-                      {!tpl.enabled && <StatusPill tone="warn">已停用</StatusPill>}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onOpenDrawer({ kind: 'template-editor', templateId: tpl.id })
+                      }
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, fontSize: 14 }}>{tpl.name}</span>
+                        <StatusPill tone="neutral">{TYPE_LABELS[tpl.type]}</StatusPill>
+                        <span className="fc-mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                          v{tpl.version}
+                        </span>
+                        {!tpl.enabled && <StatusPill tone="warn">已停用</StatusPill>}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 3,
+                          fontSize: 12.5,
+                          lineHeight: '17px',
+                          color: 'var(--muted)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {summarizeTemplate(tpl)}
+                      </div>
                     </div>
-                    <div
-                      style={{
-                        marginTop: 4,
-                        fontSize: 13,
-                        color: 'var(--muted)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {summarizeTemplate(tpl)}
-                    </div>
-                  </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                    <Switch
-                      checked={tpl.enabled}
-                      disabled={busyId === tpl.id}
-                      stopPropagation
-                      label={`启用模板 ${tpl.name}`}
-                      onChange={(next) => void handleToggle(tpl, next)}
-                    />
-                    <button
-                      type="button"
-                      className="fc-btn fc-btn-ghost fc-btn-icon"
-                      aria-label={`删除模板 ${tpl.name}`}
-                      title="删除模板"
-                      disabled={busyId === tpl.id}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void handleDelete(tpl)
-                      }}
-                    >
-                      <TrashIcon />
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                      <Switch
+                        checked={tpl.enabled}
+                        disabled={busyId === tpl.id}
+                        stopPropagation
+                        label={`启用模板 ${tpl.name}`}
+                        onChange={(next) => void handleToggle(tpl, next)}
+                      />
+                      <button
+                        type="button"
+                        className="fc-btn fc-btn-ghost fc-btn-icon"
+                        aria-label={`删除模板 ${tpl.name}`}
+                        title="删除模板"
+                        disabled={busyId === tpl.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleDelete(tpl)
+                        }}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+
+            {showPagination && (
+              <PaginationBar
+                page={paged.safePage}
+                totalPages={paged.totalPages}
+                totalItems={paged.total}
+                rangeStart={paged.rangeStart}
+                rangeEnd={paged.rangeEnd}
+                onPageChange={setPage}
+              />
+            )}
           </div>
         )}
       </div>

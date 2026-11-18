@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
+import { useCardPaginationCapacity } from '../../hooks/useViewportPageSize.ts'
 import {
   FAILURE_CLASS_LABELS,
   JOB_STATUS_LABELS,
   JOB_STATUS_LIGHT_TONES,
   formatDateTime,
 } from '../../lib/format.ts'
+import { formatSlotBadge } from '../../lib/pagination.ts'
 import type {
   Account,
   ContractTarget,
@@ -14,6 +16,7 @@ import type {
   StatsSummary,
 } from '../../types.ts'
 import { DownloadIcon } from '../ui/Icons.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
 
@@ -28,8 +31,6 @@ export interface JobsStatsViewProps {
 type ScopeKey = 'current' | 'all'
 type StatusFilterKey = '' | 'succeeded' | 'failed_retryable,failed_terminal' | 'unknown_requires_review'
 
-const PAGE_SIZE = 20
-
 export function JobsStatsView({
   accounts,
   selectedAccount,
@@ -39,7 +40,7 @@ export function JobsStatsView({
 }: JobsStatsViewProps) {
   const [scope, setScope] = useState<ScopeKey>(selectedAccount ? 'current' : 'all')
   const [statusFilter, setStatusFilter] = useState<StatusFilterKey>('')
-  const [offset, setOffset] = useState(0)
+  const [page, setPage] = useState(1)
   const [reloadTick, setReloadTick] = useState(0)
 
   const [jobsData, setJobsData] = useState<JobsPageData | null>(null)
@@ -52,27 +53,56 @@ export function JobsStatsView({
   const effectiveAccountId =
     scope === 'current' && selectedAccount ? selectedAccount.id : undefined
 
+  const { cardRef, pageSize, showPagination, measured } = useCardPaginationCapacity(
+    jobsData?.total ?? null,
+    {
+      headerPx: 38,
+      footerPx: 44,
+      rowPx: 47,
+      minRows: 5,
+      maxRows: 20,
+    },
+  )
+
   useEffect(() => {
-    setOffset(0)
+    setPage(1)
   }, [effectiveAccountId, statusFilter])
 
   useEffect(() => {
+    api
+      .statsSummary()
+      .then(setStats)
+      .catch(() => {
+        /* non-fatal */
+      })
+  }, [reloadTick])
+
+  const totalItems = jobsData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
+  const safePage = jobsData ? Math.min(totalPages, Math.max(1, page)) : Math.max(1, page)
+  const offset = (safePage - 1) * pageSize
+
+  useEffect(() => {
+    if (jobsData && page !== safePage) {
+      setPage(safePage)
+    }
+  }, [jobsData, page, safePage])
+
+  useEffect(() => {
+    if (!measured) return undefined
     let cancelled = false
     setLoading(true)
     setError(null)
-    Promise.all([
-      api.listJobs({
-        limit: PAGE_SIZE,
+    api
+      .listJobs({
+        limit: pageSize,
         offset,
         accountId: effectiveAccountId,
         status: statusFilter || undefined,
-      }),
-      api.statsSummary().catch(() => null),
-    ])
-      .then(([pageData, statsRes]) => {
+      })
+      .then((pageData) => {
         if (cancelled) return
         setJobsData(pageData)
-        if (statsRes) setStats(statsRes)
       })
       .catch((err) => {
         if (!cancelled) {
@@ -85,7 +115,7 @@ export function JobsStatsView({
     return () => {
       cancelled = true
     }
-  }, [effectiveAccountId, offset, reloadTick, statusFilter])
+  }, [effectiveAccountId, measured, offset, pageSize, reloadTick, statusFilter])
 
   const reloadLocal = useCallback(() => {
     setReloadTick((n) => n + 1)
@@ -190,199 +220,191 @@ export function JobsStatsView({
         </div>
       </div>
 
-      <div className="fc-scroll">
-        {error && (
-          <div className="fc-alert is-error" style={{ marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
+      <div className="fc-stage">
+        {error && <div className="fc-alert is-error">{error}</div>}
 
-        {stats && (
-          <div className="fc-stats-grid">
-            <div className="fc-stat-card">
-              <div className="fc-stat-label">全站近 {stats.windowDays} 日成功率</div>
-              <div className="fc-stat-value">
-                {stats.successRate !== null ? `${(stats.successRate * 100).toFixed(1)}%` : '—'}
-              </div>
-              <div className="fc-hint">
-                共 {stats.succeededJobs} / {stats.totalJobs} 次成功
-              </div>
+        <div className="fc-stats-grid">
+          <div className="fc-stat-card">
+            <div className="fc-stat-label">全站近 {stats?.windowDays ?? 30} 日成功率</div>
+            <div className="fc-stat-value">
+              {stats && stats.successRate !== null
+                ? `${(stats.successRate * 100).toFixed(1)}%`
+                : '—'}
             </div>
-
-            <div className="fc-stat-card">
-              <div className="fc-stat-label">全站连续全成天数</div>
-              <div className="fc-stat-value">{stats.currentSuccessStreak} 天</div>
-              <div className="fc-hint">历史最佳纪录 {stats.bestSuccessStreak} 天</div>
-            </div>
-
-            <div className="fc-stat-card">
-              <div className="fc-stat-label">
-                {scope === 'current' && selectedAccount ? '本号待人工复核' : '全站待人工复核'}
-              </div>
-              <div
-                className="fc-stat-value"
-                style={{
-                  color:
-                    (statusCounts.unknown_requires_review ?? 0) > 0
-                      ? 'var(--warn)'
-                      : 'var(--ink)',
-                }}
-              >
-                {statusCounts.unknown_requires_review ?? 0}
-              </div>
-              <div className="fc-hint">未确认前绝不自动重发</div>
-            </div>
-
-            <div className="fc-stat-card">
-              <div className="fc-stat-label">全站近期每日投递分布</div>
-              {dailySlice.length === 0 ? (
-                <div className="fc-hint" style={{ marginTop: 10 }}>
-                  暂无按日统计数据
-                </div>
-              ) : (
-                <div className="fc-mini-bars" aria-label="近期每日投递柱状分布">
-                  {dailySlice.map((row) => {
-                    const heightPct = Math.max(14, Math.round((row.total / maxDailyTotal) * 100))
-                    const hasIssue = row.failed > 0 || row.unknown > 0
-                    return (
-                      <div
-                        key={row.date}
-                        className={`fc-mini-bar${hasIssue ? ' has-issue' : ''}`}
-                        style={{ height: `${heightPct}%` }}
-                        title={`${row.date}：成功 ${row.succeeded} / 失败 ${row.failed} / 待复核 ${row.unknown}`}
-                      />
-                    )
-                  })}
-                </div>
-              )}
+            <div className="fc-hint">
+              {stats ? `共 ${stats.succeededJobs} / ${stats.totalJobs} 次成功` : '统计加载中…'}
             </div>
           </div>
-        )}
 
-        {loading && !jobsData ? (
-          <div className="fc-hint">正在加载发送记录…</div>
-        ) : !jobsData || jobsData.items.length === 0 ? (
-          <div className="fc-empty">
-            <div style={{ fontWeight: 600 }}>当前筛选条件下暂无任务记录</div>
-            <p className="fc-hint">切换状态胶囊或账号范围可查看其他流水。</p>
-          </div>
-        ) : (
-          <>
-            <div className="fc-table-wrap">
-              <table className="fc-table" aria-label="发送任务流水表">
-                <thead>
-                  <tr>
-                    <th>业务日期 · 更新时间</th>
-                    {scope === 'all' && <th>所属账号</th>}
-                    <th>发送对象</th>
-                    <th>模板 · 幂等槽位</th>
-                    <th>状态与原因</th>
-                    <th style={{ textAlign: 'right' }}>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobsData.items.map((job) => {
-                    const acctName = accountsById.get(job.accountId)?.displayName ?? '已删账号'
-                    const targetName =
-                      targetsById.get(job.targetId)?.nicknameSnapshot ?? '已移除会话'
-                    const tplName = job.templateId
-                      ? (templatesById.get(job.templateId)?.name ?? '模板')
-                      : '临时直发文字'
-                    const isReview = job.status === 'unknown_requires_review'
-                    const busy = busyJobId === job.id
-
-                    return (
-                      <tr key={job.id}>
-                        <td className="fc-mono">
-                          <div style={{ fontWeight: 600 }}>{job.businessDate.slice(0, 10)}</div>
-                          <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-                            {formatDateTime(job.updatedAt)}
-                          </div>
-                        </td>
-                        {scope === 'all' && <td>{acctName}</td>}
-                        <td style={{ fontWeight: 600 }}>{targetName}</td>
-                        <td>
-                          <div>{tplName}</div>
-                          <div className="fc-mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-                            {job.messageSlotId}
-                          </div>
-                        </td>
-                        <td>
-                          <StatusPill tone={JOB_STATUS_LIGHT_TONES[job.status]}>
-                            {JOB_STATUS_LABELS[job.status]}
-                          </StatusPill>
-                          {job.failureClass && (
-                            <div style={{ fontSize: 11.5, color: 'var(--warn)', marginTop: 2 }}>
-                              {FAILURE_CLASS_LABELS[job.failureClass]}
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          {isReview ? (
-                            <div style={{ display: 'inline-flex', gap: 6 }}>
-                              <button
-                                type="button"
-                                className="fc-btn fc-btn-secondary fc-btn-sm"
-                                disabled={busy}
-                                onClick={() => void handleJobReview(job.id, 'release')}
-                              >
-                                释放重算
-                              </button>
-                              <button
-                                type="button"
-                                className="fc-btn fc-btn-primary fc-btn-sm"
-                                disabled={busy}
-                                onClick={() => void handleJobReview(job.id, 'confirm')}
-                              >
-                                确认已发
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="fc-hint">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+          <div className="fc-stat-card">
+            <div className="fc-stat-label">全站连续全成天数</div>
+            <div className="fc-stat-value">
+              {stats ? `${stats.currentSuccessStreak} 天` : '—'}
             </div>
+            <div className="fc-hint">
+              {stats ? `历史最佳纪录 ${stats.bestSuccessStreak} 天` : '统计加载中…'}
+            </div>
+          </div>
 
-            {jobsData.total > PAGE_SIZE && (
-              <div
-                style={{
-                  marginTop: 14,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <span className="fc-hint fc-tabular">
-                  显示第 {offset + 1} – {Math.min(offset + PAGE_SIZE, jobsData.total)} 条，共{' '}
-                  {jobsData.total} 条
-                </span>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    type="button"
-                    className="fc-btn fc-btn-secondary fc-btn-sm"
-                    disabled={offset === 0}
-                    onClick={() => setOffset((prev) => Math.max(0, prev - PAGE_SIZE))}
-                  >
-                    上一页
-                  </button>
-                  <button
-                    type="button"
-                    className="fc-btn fc-btn-secondary fc-btn-sm"
-                    disabled={offset + PAGE_SIZE >= jobsData.total}
-                    onClick={() => setOffset((prev) => prev + PAGE_SIZE)}
-                  >
-                    下一页
-                  </button>
-                </div>
+          <div className="fc-stat-card">
+            <div className="fc-stat-label">
+              {scope === 'current' && selectedAccount ? '本号待人工复核' : '全站待人工复核'}
+            </div>
+            <div
+              className="fc-stat-value"
+              style={{
+                color:
+                  (statusCounts.unknown_requires_review ?? 0) > 0
+                    ? 'var(--warn)'
+                    : 'var(--ink)',
+              }}
+            >
+              {statusCounts.unknown_requires_review ?? 0}
+            </div>
+            <div className="fc-hint">未确认前绝不自动重发</div>
+          </div>
+
+          <div className="fc-stat-card">
+            <div className="fc-stat-label">全站近期每日投递分布</div>
+            {dailySlice.length === 0 ? (
+              <div className="fc-mini-bars" style={{ alignItems: 'center' }}>
+                <span className="fc-hint">{stats ? '暂无按日统计数据' : '加载中…'}</span>
+              </div>
+            ) : (
+              <div className="fc-mini-bars" aria-label="近期每日投递柱状分布">
+                {dailySlice.map((row) => {
+                  const heightPct = Math.max(14, Math.round((row.total / maxDailyTotal) * 100))
+                  const hasIssue = row.failed > 0 || row.unknown > 0
+                  return (
+                    <div
+                      key={row.date}
+                      className={`fc-mini-bar${hasIssue ? ' has-issue' : ''}`}
+                      style={{ height: `${heightPct}%` }}
+                      title={`${row.date}：成功 ${row.succeeded} / 失败 ${row.failed} / 待复核 ${row.unknown}`}
+                    />
+                  )
+                })}
               </div>
             )}
-          </>
-        )}
+          </div>
+        </div>
+
+        <div className="fc-paged-card" ref={cardRef}>
+          {loading && !jobsData ? (
+            <div className="fc-paged-body" style={{ padding: 20 }}>
+              <div className="fc-hint">正在加载发送记录…</div>
+            </div>
+          ) : !jobsData || jobsData.items.length === 0 ? (
+            <div className="fc-paged-body" style={{ justifyContent: 'center', padding: 24 }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontWeight: 600 }}>当前筛选条件下暂无任务记录</div>
+                <p className="fc-hint" style={{ marginTop: 4 }}>
+                  切换状态胶囊或账号范围可查看其他流水。
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="fc-paged-body">
+                <table className="fc-table" aria-label="发送任务流水表">
+                  <thead>
+                    <tr>
+                      <th>业务日期 · 更新时间</th>
+                      {scope === 'all' && <th>所属账号</th>}
+                      <th>发送对象</th>
+                      <th>模板 · 触发方式</th>
+                      <th>状态与原因</th>
+                      <th style={{ textAlign: 'right' }}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobsData.items.slice(0, pageSize).map((job) => {
+                      const acctName = accountsById.get(job.accountId)?.displayName ?? '已删账号'
+                      const targetName =
+                        targetsById.get(job.targetId)?.nicknameSnapshot ?? '已移除会话'
+                      const tplName = job.templateId
+                        ? (templatesById.get(job.templateId)?.name ?? '模板')
+                        : '临时直发文字'
+                      const isReview = job.status === 'unknown_requires_review'
+                      const busy = busyJobId === job.id
+
+                      return (
+                        <tr key={job.id}>
+                          <td className="fc-mono">
+                            <div style={{ fontWeight: 600, lineHeight: '17px' }}>
+                              {job.businessDate.slice(0, 10)}
+                            </div>
+                            <div style={{ fontSize: 11.5, lineHeight: '15px', color: 'var(--muted)' }}>
+                              {formatDateTime(job.updatedAt)}
+                            </div>
+                          </td>
+                          {scope === 'all' && <td>{acctName}</td>}
+                          <td style={{ fontWeight: 600 }}>{targetName}</td>
+                          <td title={job.messageSlotId}>
+                            <div style={{ lineHeight: '17px' }}>{tplName}</div>
+                            <div
+                              className="fc-mono"
+                              style={{ fontSize: 11.5, lineHeight: '15px', color: 'var(--muted)' }}
+                            >
+                              {formatSlotBadge(job.messageSlotId)}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <StatusPill tone={JOB_STATUS_LIGHT_TONES[job.status]}>
+                                {JOB_STATUS_LABELS[job.status]}
+                              </StatusPill>
+                              {job.failureClass && (
+                                <span style={{ fontSize: 11.5, color: 'var(--warn)' }}>
+                                  {FAILURE_CLASS_LABELS[job.failureClass]}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {isReview ? (
+                              <div style={{ display: 'inline-flex', gap: 6 }}>
+                                <button
+                                  type="button"
+                                  className="fc-btn fc-btn-secondary fc-btn-sm"
+                                  disabled={busy}
+                                  onClick={() => void handleJobReview(job.id, 'release')}
+                                >
+                                  释放重算
+                                </button>
+                                <button
+                                  type="button"
+                                  className="fc-btn fc-btn-primary fc-btn-sm"
+                                  disabled={busy}
+                                  onClick={() => void handleJobReview(job.id, 'confirm')}
+                                >
+                                  确认已发
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="fc-hint">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {(showPagination || jobsData.total > pageSize) && (
+                <PaginationBar
+                  page={safePage}
+                  totalPages={totalPages}
+                  totalItems={jobsData.total}
+                  rangeStart={offset + 1}
+                  rangeEnd={offset + Math.min(jobsData.items.length, pageSize)}
+                  onPageChange={setPage}
+                />
+              )}
+            </>
+          )}
+        </div>
       </div>
     </>
   )

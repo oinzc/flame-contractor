@@ -10,6 +10,12 @@ import {
   shouldFinalizeRecoveredScan,
 } from '../src/lib/workspace.ts'
 import { normalizeStatsSummary } from '../src/api.ts'
+import {
+  computePageSizeFromHeight,
+  formatSlotBadge,
+  paginateItems,
+  resolveCardPageCapacity,
+} from '../src/lib/pagination.ts'
 import { normalizeThemePreference, resolveEffectiveTheme } from '../src/lib/theme.ts'
 
 test('dateInAccountTimezone resolves Asia/Shanghai across UTC midnight', () => {
@@ -267,4 +273,44 @@ test('theme helpers normalize preference and resolve system dark/light preferenc
   assert.equal(resolveEffectiveTheme('dark', false), 'dark')
   assert.equal(resolveEffectiveTheme('system', true), 'dark')
   assert.equal(resolveEffectiveTheme('system', false), 'light')
+})
+
+test('computePageSizeFromHeight and paginateItems fit viewport without overflow and clamp pages', () => {
+  // 640px body height with 48px rows -> 13 rows fit cleanly without scrolling
+  assert.equal(computePageSizeFromHeight(640, 48, 5, 25), 13)
+  assert.equal(computePageSizeFromHeight(120, 48, 5, 25), 5)
+
+  const items = Array.from({ length: 15 }, (_, i) => `item-${i + 1}`)
+  const page2 = paginateItems(items, 2, 10)
+  assert.equal(page2.totalPages, 2)
+  assert.equal(page2.safePage, 2)
+  assert.equal(page2.rangeStart, 11)
+  assert.equal(page2.rangeEnd, 15)
+  assert.equal(page2.pageItems.length, 5)
+
+  // Filtering down clamps out-of-range page 3 -> page 1
+  const clamped = paginateItems(['only-one'], 3, 10)
+  assert.equal(clamped.safePage, 1)
+  assert.deepEqual(clamped.pageItems, ['only-one'])
+})
+
+test('formatSlotBadge condenses verbose UUID slot strings into readable single-line labels', () => {
+  assert.equal(
+    formatSlotBadge('0f15bc8b-a4b7-4cb6-b58d-f16753eedf94:v1:force:1784255cb525'),
+    'v1 · 手动发送',
+  )
+  assert.equal(formatSlotBadge('2026-11-18:v2'), 'v2 · 每日排程')
+})
+
+test('resolveCardPageCapacity avoids footer oscillation on boundary item counts', () => {
+  const opts = { headerPx: 38, footerPx: 44, rowPx: 47, minRows: 5, maxRows: 25 }
+  // 660px card: withoutFooter = floor((660-38)/47) = 13, withFooter = floor((660-38-44)/47) = 12
+  assert.deepEqual(resolveCardPageCapacity(660, 13, opts), {
+    pageSize: 13,
+    showPagination: false,
+  })
+  assert.deepEqual(resolveCardPageCapacity(660, 14, opts), {
+    pageSize: 12,
+    showPagination: true,
+  })
 })

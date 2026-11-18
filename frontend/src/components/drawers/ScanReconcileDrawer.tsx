@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
 import type { BackgroundTasksController } from '../../hooks/useBackgroundTasks.ts'
 import { formatDateTime } from '../../lib/format.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import { sparkLabelForSnapshot } from '../../lib/spark.ts'
 import type {
   Account,
@@ -14,6 +15,7 @@ import type {
   TargetBatchResult,
 } from '../../types.ts'
 import { DrawerShell } from '../ui/DrawerShell.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { SparkChip } from '../ui/SparkChip.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -49,6 +51,7 @@ export function ScanReconcileDrawer({
   const [accountLatestScan, setAccountLatestScan] = useState<ScanProgress | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string>('latest')
   const [category, setCategory] = useState<ScanReconciliationCategory>('new')
+  const [page, setPage] = useState(1)
   const [selectedNewTitles, setSelectedNewTitles] = useState<Set<string>>(new Set())
   const [defaultTemplateId, setDefaultTemplateId] = useState('')
   const [batchSubmitting, setBatchSubmitting] = useState(false)
@@ -344,7 +347,10 @@ export function ScanReconcileDrawer({
           <PillTabs
             items={tabs}
             value={category}
-            onChange={setCategory}
+            onChange={(next) => {
+              setCategory(next)
+              setPage(1)
+            }}
             ariaLabel="扫描对账分类"
           />
 
@@ -395,86 +401,99 @@ export function ScanReconcileDrawer({
               <span className="fc-hint">该分类下没有会话条目</span>
             </div>
           ) : (
-            <div className="fc-kv-list">
-              {categoryItems.map((item, idx) => {
-                const entry = entriesByTitle.get(item.title)
-                const alreadyExists = existingTitleSet.has(item.title)
-                const selectable =
-                  category === 'new' &&
-                  isViewingLatestLive &&
-                  !alreadyExists &&
-                  isEntryImportable(entry)
+            <>
+              <div className="fc-kv-list">
+                {paginateItems(categoryItems, page, 7).pageItems.map((item, idx) => {
+                  const entry = entriesByTitle.get(item.title)
+                  const alreadyExists = existingTitleSet.has(item.title)
+                  const selectable =
+                    category === 'new' &&
+                    isViewingLatestLive &&
+                    !alreadyExists &&
+                    isEntryImportable(entry)
 
-                return (
-                  <div key={`${item.title}-${idx}`} className="fc-kv-row">
-                    <label
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        minWidth: 0,
-                        cursor: selectable ? 'pointer' : 'default',
-                      }}
-                    >
-                      {category === 'new' && (
-                        <input
-                          type="checkbox"
-                          checked={selectedNewTitles.has(item.title)}
-                          disabled={!selectable}
-                          onChange={() => toggleSelectTitle(item.title)}
-                        />
-                      )}
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600 }}>
-                          {item.title}{' '}
-                          {item.conversationType === 'group' && (
-                            <span className="fc-nav-badge">群</span>
+                  return (
+                    <div key={`${item.title}-${idx}`} className="fc-kv-row">
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          minWidth: 0,
+                          cursor: selectable ? 'pointer' : 'default',
+                        }}
+                      >
+                        {category === 'new' && (
+                          <input
+                            type="checkbox"
+                            checked={selectedNewTitles.has(item.title)}
+                            disabled={!selectable}
+                            onChange={() => toggleSelectTitle(item.title)}
+                          />
+                        )}
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600 }}>
+                            {item.title}{' '}
+                            {item.conversationType === 'group' && (
+                              <span className="fc-nav-badge">群</span>
+                            )}
+                          </div>
+                          {category === 'new' && (
+                            <div className="fc-hint">
+                              {alreadyExists
+                                ? '已在当前账号好友列表中'
+                                : !isViewingLatestLive
+                                  ? '历史快照仅供查看，重新扫描后可勾选导入'
+                                  : isEntryImportable(entry)
+                                    ? '可安全导入'
+                                    : '存在同名冲突，暂不可直接批量导入'}
+                            </div>
                           )}
                         </div>
-                        {category === 'new' && (
-                          <div className="fc-hint">
-                            {alreadyExists
-                              ? '已在当前账号好友列表中'
-                              : !isViewingLatestLive
-                                ? '历史快照仅供查看，重新扫描后可勾选导入'
-                                : isEntryImportable(entry)
-                                  ? '可安全导入'
-                                  : '存在同名冲突，暂不可直接批量导入'}
-                          </div>
-                        )}
-                      </div>
-                    </label>
+                      </label>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                      {category === 'changed' ? (
-                        <>
-                          <SparkChip
-                            officialDays={item.previous.days}
-                            kind={item.previous.kind}
-                            label={item.previous.label}
-                          />
-                          <span style={{ color: 'var(--muted)' }}>→</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        {category === 'changed' ? (
+                          <>
+                            <SparkChip
+                              officialDays={item.previous.days}
+                              kind={item.previous.kind}
+                              label={item.previous.label}
+                            />
+                            <span style={{ color: 'var(--muted)' }}>→</span>
+                            <SparkChip
+                              officialDays={item.current.days}
+                              kind={item.current.kind}
+                              label={item.current.label}
+                            />
+                          </>
+                        ) : (
                           <SparkChip
                             officialDays={item.current.days}
                             kind={item.current.kind}
                             label={item.current.label}
                           />
-                        </>
-                      ) : (
-                        <SparkChip
-                          officialDays={item.current.days}
-                          kind={item.current.kind}
-                          label={item.current.label}
-                        />
-                      )}
-                      {alreadyExists && category === 'new' && (
-                        <StatusPill tone="ok">已导入</StatusPill>
-                      )}
+                        )}
+                        {alreadyExists && category === 'new' && (
+                          <StatusPill tone="ok">已导入</StatusPill>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+              {categoryItems.length > 7 && (
+                <PaginationBar
+                  compact
+                  page={paginateItems(categoryItems, page, 7).safePage}
+                  totalPages={paginateItems(categoryItems, page, 7).totalPages}
+                  totalItems={categoryItems.length}
+                  rangeStart={paginateItems(categoryItems, page, 7).rangeStart}
+                  rangeEnd={paginateItems(categoryItems, page, 7).rangeEnd}
+                  onPageChange={setPage}
+                />
+              )}
+            </>
           )}
         </>
       ) : (

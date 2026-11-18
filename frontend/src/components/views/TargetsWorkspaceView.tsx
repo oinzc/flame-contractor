@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
+import { useCardPaginationCapacity } from '../../hooks/useViewportPageSize.ts'
 import { formatDateTime } from '../../lib/format.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import type { AccountAttentionItem, TargetDaySummary } from '../../lib/workspace.ts'
 import type {
   Account,
@@ -12,6 +14,7 @@ import type {
 import { AccountHeader } from '../shell/AccountHeader.tsx'
 import { NeedsYouBanner } from '../shell/NeedsYouBanner.tsx'
 import { PlusIcon } from '../ui/Icons.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { SparkChip } from '../ui/SparkChip.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -44,6 +47,7 @@ export function TargetsWorkspaceView({
 }: TargetsWorkspaceViewProps) {
   const [filter, setFilter] = useState<TargetFilterKey>('all')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
   const [togglingAccount, setTogglingAccount] = useState(false)
   const [busyTargetId, setBusyTargetId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -114,9 +118,29 @@ export function TargetsWorkspaceView({
     })
   }, [activeTargets, dayMap, filter, search])
 
+  useEffect(() => {
+    setPage(1)
+  }, [account?.id, filter, search])
+
+  const { cardRef, pageSize, showPagination } = useCardPaginationCapacity(
+    filteredTargets.length,
+    {
+      headerPx: 38,
+      footerPx: 44,
+      rowPx: 47,
+      minRows: 5,
+      maxRows: 25,
+    },
+  )
+
+  const paged = useMemo(
+    () => paginateItems(filteredTargets, page, pageSize),
+    [filteredTargets, page, pageSize],
+  )
+
   if (!account) {
     return (
-      <div className="fc-scroll" style={{ paddingTop: 48 }}>
+      <div className="fc-stage" style={{ paddingTop: 48 }}>
         <div className="fc-empty">
           <h2 style={{ fontSize: 17, fontWeight: 600 }}>还没有配置抖音账号</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 420 }}>
@@ -219,12 +243,8 @@ export function TargetsWorkspaceView({
         </div>
       </div>
 
-      <div className="fc-scroll">
-        {actionError && (
-          <div className="fc-alert is-error" style={{ marginBottom: 12 }}>
-            {actionError}
-          </div>
-        )}
+      <div className="fc-stage">
+        {actionError && <div className="fc-alert is-error">{actionError}</div>}
 
         {activeTargets.length === 0 ? (
           <div className="fc-empty">
@@ -255,128 +275,143 @@ export function TargetsWorkspaceView({
             <p style={{ color: 'var(--muted)' }}>可以切换上方状态胶囊或清空搜索关键词。</p>
           </div>
         ) : (
-          <div className="fc-table-wrap">
-            <table className="fc-table" aria-label="当前账号续火好友列表">
-              <thead>
-                <tr>
-                  <th>好友 / 会话</th>
-                  <th>官方火花快照（仅展示）</th>
-                  <th>本地累计</th>
-                  <th>绑定模板 · 时刻</th>
-                  <th>今日状态</th>
-                  <th style={{ textAlign: 'right' }}>启用</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTargets.map((target) => {
-                  const summary = dayMap.get(target.id)
-                  const tpl = target.templateId ? templatesById.get(target.templateId) : null
-                  const selected =
-                    drawer.kind === 'target-detail' && drawer.targetId === target.id
-                  const boundIdentity = Boolean(
-                    target.platformUserId || target.platformConversationId,
-                  )
+          <div className="fc-paged-card" ref={cardRef}>
+            <div className="fc-paged-body">
+              <table className="fc-table" aria-label="当前账号续火好友列表">
+                <thead>
+                  <tr>
+                    <th>好友 / 会话</th>
+                    <th>官方火花快照（仅展示）</th>
+                    <th>本地累计</th>
+                    <th>绑定模板 · 时刻</th>
+                    <th>今日状态</th>
+                    <th style={{ textAlign: 'right' }}>启用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paged.pageItems.map((target) => {
+                    const summary = dayMap.get(target.id)
+                    const tpl = target.templateId ? templatesById.get(target.templateId) : null
+                    const selected =
+                      drawer.kind === 'target-detail' && drawer.targetId === target.id
+                    const boundIdentity = Boolean(
+                      target.platformUserId || target.platformConversationId,
+                    )
 
-                  return (
-                    <tr
-                      key={target.id}
-                      className={`fc-row-clickable${selected ? ' is-selected' : ''}`}
-                      tabIndex={0}
-                      onClick={() =>
-                        onOpenDrawer({
-                          kind: 'target-detail',
-                          targetId: target.id,
-                          tab: 'config',
-                        })
-                      }
-                      onKeyDown={(e) => {
-                        if (e.target !== e.currentTarget) return
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
+                    return (
+                      <tr
+                        key={target.id}
+                        className={`fc-row-clickable${selected ? ' is-selected' : ''}`}
+                        tabIndex={0}
+                        onClick={() =>
                           onOpenDrawer({
                             kind: 'target-detail',
                             targetId: target.id,
                             tab: 'config',
                           })
                         }
-                      }}
-                    >
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontWeight: 600, color: 'var(--ink)' }}>
-                            {target.nicknameSnapshot}
-                          </span>
-                          {target.conversationType === 'group' && (
-                            <span className="fc-nav-badge">群聊</span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>
-                          {target.platformHandle
-                            ? `@${target.platformHandle}`
-                            : boundIdentity
-                              ? '已绑定稳定会话身份'
-                              : '未绑定稳定 ID（可补采）'}
-                        </div>
-                      </td>
-
-                      <td>
-                        <SparkChip
-                          officialDays={target.sparkDays}
-                          kind={target.sparkKind}
-                          label={target.sparkLabel}
-                          scannedAt={target.sparkScannedAt}
-                        />
-                        {target.sparkScannedAt && (
-                          <div style={{ fontSize: 11, color: 'var(--muted-soft)', marginTop: 2 }}>
-                            {formatDateTime(target.sparkScannedAt)}
+                        onKeyDown={(e) => {
+                          if (e.target !== e.currentTarget) return
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            onOpenDrawer({
+                              kind: 'target-detail',
+                              targetId: target.id,
+                              tab: 'config',
+                            })
+                          }
+                        }}
+                      >
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, lineHeight: '18px' }}>
+                            <span style={{ fontWeight: 600, color: 'var(--ink)' }}>
+                              {target.nicknameSnapshot}
+                            </span>
+                            {target.conversationType === 'group' && (
+                              <span className="fc-nav-badge">群聊</span>
+                            )}
                           </div>
-                        )}
-                      </td>
+                          <div style={{ fontSize: 11.5, lineHeight: '15px', color: 'var(--muted)', marginTop: 1 }}>
+                            {target.platformHandle
+                              ? `@${target.platformHandle}`
+                              : boundIdentity
+                                ? '已绑定稳定会话身份'
+                                : '未绑定稳定 ID（可补采）'}
+                          </div>
+                        </td>
 
-                      <td>
-                        <span className="fc-mono" style={{ fontWeight: 600 }}>
-                          {target.streakDays} 天
-                        </span>
-                      </td>
+                        <td>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                            <SparkChip
+                              officialDays={target.sparkDays}
+                              kind={target.sparkKind}
+                              label={target.sparkLabel}
+                              scannedAt={target.sparkScannedAt}
+                            />
+                            {target.sparkScannedAt && (
+                              <span className="fc-mono" style={{ fontSize: 11, color: 'var(--muted-soft)' }}>
+                                {formatDateTime(target.sparkScannedAt)}
+                              </span>
+                            )}
+                          </div>
+                        </td>
 
-                      <td>
-                        <div style={{ fontWeight: 500 }}>
-                          {tpl ? (
-                            <>
-                              {tpl.name}
-                              {!tpl.enabled && (
-                                <span style={{ color: 'var(--warn)', fontSize: 12 }}>（模板已停用）</span>
-                              )}
-                            </>
-                          ) : (
-                            <span style={{ color: 'var(--warn)' }}>未绑定模板</span>
-                          )}
-                        </div>
-                        <div className="fc-mono" style={{ fontSize: 12, color: 'var(--muted)' }}>
-                          {target.sendTimeHhmm ? `独立 ${target.sendTimeHhmm}` : '跟随账号'}
-                        </div>
-                      </td>
+                        <td>
+                          <span className="fc-mono" style={{ fontWeight: 600 }}>
+                            {target.streakDays} 天
+                          </span>
+                        </td>
 
-                      <td>
-                        <StatusPill tone={summary?.todayTone ?? 'neutral'}>
-                          {summary?.todayStatusLabel ?? '今日待发'}
-                        </StatusPill>
-                      </td>
+                        <td>
+                          <div style={{ fontWeight: 500, lineHeight: '17px' }}>
+                            {tpl ? (
+                              <>
+                                {tpl.name}
+                                {!tpl.enabled && (
+                                  <span style={{ color: 'var(--warn)', fontSize: 12 }}>（模板已停用）</span>
+                                )}
+                              </>
+                            ) : (
+                              <span style={{ color: 'var(--warn)' }}>未绑定模板</span>
+                            )}
+                          </div>
+                          <div className="fc-mono" style={{ fontSize: 11.5, lineHeight: '15px', color: 'var(--muted)' }}>
+                            {target.sendTimeHhmm ? `独立 ${target.sendTimeHhmm}` : '跟随账号'}
+                          </div>
+                        </td>
 
-                      <td style={{ textAlign: 'right' }}>
-                        <Switch
-                          checked={target.enabled}
-                          disabled={busyTargetId === target.id}
-                          stopPropagation
-                          label={`启用好友 ${target.nicknameSnapshot}`}
-                          onChange={(next) => void handleToggleTarget(target, next)}
-                        />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                        <td>
+                          <StatusPill tone={summary?.todayTone ?? 'neutral'}>
+                            {summary?.todayStatusLabel ?? '今日待发'}
+                          </StatusPill>
+                        </td>
+
+                        <td style={{ textAlign: 'right' }}>
+                          <Switch
+                            checked={target.enabled}
+                            disabled={busyTargetId === target.id}
+                            stopPropagation
+                            label={`启用好友 ${target.nicknameSnapshot}`}
+                            onChange={(next) => void handleToggleTarget(target, next)}
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {showPagination && (
+              <PaginationBar
+                page={paged.safePage}
+                totalPages={paged.totalPages}
+                totalItems={paged.total}
+                rangeStart={paged.rangeStart}
+                rangeEnd={paged.rangeEnd}
+                onPageChange={setPage}
+              />
+            )}
           </div>
         )}
       </div>

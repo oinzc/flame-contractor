@@ -7,11 +7,13 @@ import {
   JOB_STATUS_LIGHT_TONES,
   formatDateTime,
 } from '../../lib/format.ts'
+import { paginateItems } from '../../lib/pagination.ts'
 import { previewTemplateForTarget, renderTemplateVariables } from '../../lib/preview.ts'
 import type { TargetDaySummary } from '../../lib/workspace.ts'
 import type { Account, ContractTarget, MessageTemplate, SendJob } from '../../types.ts'
 import { DrawerShell } from '../ui/DrawerShell.tsx'
 import { TrashIcon } from '../ui/Icons.tsx'
+import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs } from '../ui/PillTabs.tsx'
 import { SlashVariableInput } from '../ui/SlashVariableInput.tsx'
 import { SparkChip } from '../ui/SparkChip.tsx'
@@ -57,6 +59,7 @@ export function TargetDetailDrawer({
   const [customText, setCustomText] = useState('')
   const [sendingNow, setSendingNow] = useState(false)
   const [busyJobId, setBusyJobId] = useState<string | null>(null)
+  const [historyPage, setHistoryPage] = useState(1)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -65,6 +68,7 @@ export function TargetDetailDrawer({
     setTemplateId(target.templateId ?? '')
     setSendTimeHhmm(target.sendTimeHhmm ?? '')
     setSendTemplateId(target.templateId ?? templates.find((t) => t.enabled)?.id ?? '')
+    setHistoryPage(1)
     setNotice(null)
     setError(null)
   }, [target?.id, target?.templateId, target?.sendTimeHhmm, templates])
@@ -372,59 +376,72 @@ export function TargetDetailDrawer({
           <p className="fc-hint">自动排程或手动单发后，状态与回执时间会记录在此处。</p>
         </div>
       ) : (
-        <div className="fc-kv-list">
-          {targetJobs.map((job) => {
-            const tplName = job.templateId
-              ? (templatesById.get(job.templateId)?.name ?? '模板')
-              : '临时直发文字'
-            const isReview = job.status === 'unknown_requires_review'
-            const busy = busyJobId === job.id
-            return (
-              <div
-                key={job.id}
-                className="fc-kv-row"
-                style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className="fc-mono" style={{ fontWeight: 600 }}>
-                    {job.businessDate.slice(0, 10)} · {formatDateTime(job.updatedAt)}
-                  </span>
-                  <StatusPill tone={JOB_STATUS_LIGHT_TONES[job.status]}>
-                    {JOB_STATUS_LABELS[job.status]}
-                  </StatusPill>
-                </div>
-                <div style={{ color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <span>{tplName}</span>
-                  {job.failureClass && (
-                    <span style={{ color: 'var(--warn)' }}>
-                      原因：{FAILURE_CLASS_LABELS[job.failureClass]}
+        <>
+          <div className="fc-kv-list">
+            {paginateItems(targetJobs, historyPage, 6).pageItems.map((job) => {
+              const tplName = job.templateId
+                ? (templatesById.get(job.templateId)?.name ?? '模板')
+                : '临时直发文字'
+              const isReview = job.status === 'unknown_requires_review'
+              const busy = busyJobId === job.id
+              return (
+                <div
+                  key={job.id}
+                  className="fc-kv-row"
+                  style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="fc-mono" style={{ fontWeight: 600 }}>
+                      {job.businessDate.slice(0, 10)} · {formatDateTime(job.updatedAt)}
                     </span>
+                    <StatusPill tone={JOB_STATUS_LIGHT_TONES[job.status]}>
+                      {JOB_STATUS_LABELS[job.status]}
+                    </StatusPill>
+                  </div>
+                  <div style={{ color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span>{tplName}</span>
+                    {job.failureClass && (
+                      <span style={{ color: 'var(--warn)' }}>
+                        原因：{FAILURE_CLASS_LABELS[job.failureClass]}
+                      </span>
+                    )}
+                  </div>
+                  {isReview && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 2 }}>
+                      <button
+                        type="button"
+                        className="fc-btn fc-btn-secondary fc-btn-sm"
+                        disabled={busy}
+                        onClick={() => void handleJobAction(job.id, 'release')}
+                      >
+                        释放重算
+                      </button>
+                      <button
+                        type="button"
+                        className="fc-btn fc-btn-primary fc-btn-sm"
+                        disabled={busy}
+                        onClick={() => void handleJobAction(job.id, 'confirm')}
+                      >
+                        确认已发
+                      </button>
+                    </div>
                   )}
                 </div>
-                {isReview && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 2 }}>
-                    <button
-                      type="button"
-                      className="fc-btn fc-btn-secondary fc-btn-sm"
-                      disabled={busy}
-                      onClick={() => void handleJobAction(job.id, 'release')}
-                    >
-                      释放重算
-                    </button>
-                    <button
-                      type="button"
-                      className="fc-btn fc-btn-primary fc-btn-sm"
-                      disabled={busy}
-                      onClick={() => void handleJobAction(job.id, 'confirm')}
-                    >
-                      确认已发
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+          {targetJobs.length > 6 && (
+            <PaginationBar
+              compact
+              page={paginateItems(targetJobs, historyPage, 6).safePage}
+              totalPages={paginateItems(targetJobs, historyPage, 6).totalPages}
+              totalItems={targetJobs.length}
+              rangeStart={paginateItems(targetJobs, historyPage, 6).rangeStart}
+              rangeEnd={paginateItems(targetJobs, historyPage, 6).rangeEnd}
+              onPageChange={setHistoryPage}
+            />
+          )}
+        </>
       )}
     </DrawerShell>
   )
