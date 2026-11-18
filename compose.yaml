@@ -1,7 +1,7 @@
 name: flame-contractor
 services:
   app:
-    image: flame-contractor:local
+    image: ${FLAME_IMAGE:-ghcr.io/oinzc/flame-contractor:latest}
     build: .
     init: true
     restart: unless-stopped

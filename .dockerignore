@@ -1,6 +1,7 @@
 **
 !Dockerfile
 !backend/
+backend/*
 !backend/requirements.txt
 !backend/constraints-docker.txt
 !backend/alembic.ini
@@ -9,6 +10,7 @@
 !backend/alembic/
 !backend/alembic/**
 !frontend/
+frontend/*
 !frontend/package.json
 !frontend/package-lock.json
 !frontend/index.html
@@ -19,7 +21,13 @@
 !frontend/public/
 !frontend/public/**
 !scripts/
+scripts/*
 !scripts/docker/
+scripts/docker/*
 !scripts/docker/entrypoint.py
 **/__pycache__/
 **/*.pyc
+**/.env
+**/.env.*
+**/node_modules
+**/.venv

@@ -1,0 +1,268 @@
+name: Publish GHCR Image
+
+"on":
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify:
+    name: 发布前单测与构建门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: 后端依赖与单测
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 前端领域单测与构建
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  build-amd64:
+    name: 构建与冒烟 (linux/amd64)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 计算镜像元数据
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/docker/ghcr_tags.py \
+            --repository "${REPO}" \
+            --ref "${REF_NAME}" \
+            --sha "${COMMIT_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+      - name: 构建镜像并执行容器 /health 冒烟测试
+        env:
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -t flame-contractor:smoke .
+
+          ENV_FILE="$(mktemp)"
+          cleanup() {
+            docker rm -f flame-smoke >/dev/null 2>&1 || true
+            rm -f "${ENV_FILE}"
+          }
+          trap cleanup EXIT
+
+          SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf 'FLAME_SECRET_KEY=%s\n' "${SECRET}" > "${ENV_FILE}"
+          chmod 644 "${ENV_FILE}"
+
+          docker run -d --name flame-smoke \
+            --init --shm-size=512m \
+            -p 127.0.0.1:18080:8000 \
+            -v "${ENV_FILE}:/app/backend/.env:ro" \
+            flame-contractor:smoke
+
+          ok=0
+          for _ in $(seq 1 30); do
+            if python3 -c "import json, urllib.request; h = json.load(urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=2)); r = urllib.request.urlopen('http://127.0.0.1:18080/', timeout=2); assert h.get('status') == 'ok' and h.get('database') == 'ready' and r.status == 200" 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error::linux/amd64 容器冒烟检查未通过"
+            docker logs flame-smoke || true
+            exit 1
+          fi
+      - name: 推送 linux/amd64 分架构镜像
+        id: push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${GHCR_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+          export ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-amd64"
+          docker tag flame-contractor:smoke "${ARCH_TAG}"
+          docker push "${ARCH_TAG}"
+          DIGEST="$(python3 -c 'import json, os, subprocess; items = json.loads(subprocess.check_output(["docker", "image", "inspect", os.environ["ARCH_TAG"], "--format", "{{json .RepoDigests}}"], text=True)) or []; img = os.environ["IMAGE"] + "@sha256:"; print(next(x for x in items if x.startswith(img)))')"
+          printf 'digest=%s\n' "${DIGEST}" >> "${GITHUB_OUTPUT}"
+
+  build-arm64:
+    name: 构建与冒烟 (linux/arm64)
+    needs: verify
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 计算镜像元数据
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/docker/ghcr_tags.py \
+            --repository "${REPO}" \
+            --ref "${REF_NAME}" \
+            --sha "${COMMIT_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+      - name: 构建镜像并执行容器 /health 冒烟测试
+        env:
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/arm64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -t flame-contractor:smoke .
+
+          ENV_FILE="$(mktemp)"
+          cleanup() {
+            docker rm -f flame-smoke >/dev/null 2>&1 || true
+            rm -f "${ENV_FILE}"
+          }
+          trap cleanup EXIT
+
+          SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf 'FLAME_SECRET_KEY=%s\n' "${SECRET}" > "${ENV_FILE}"
+          chmod 644 "${ENV_FILE}"
+
+          docker run -d --name flame-smoke \
+            --init --shm-size=512m \
+            -p 127.0.0.1:18080:8000 \
+            -v "${ENV_FILE}:/app/backend/.env:ro" \
+            flame-contractor:smoke
+
+          ok=0
+          for _ in $(seq 1 30); do
+            if python3 -c "import json, urllib.request; h = json.load(urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=2)); r = urllib.request.urlopen('http://127.0.0.1:18080/', timeout=2); assert h.get('status') == 'ok' and h.get('database') == 'ready' and r.status == 200" 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error::linux/arm64 容器冒烟检查未通过"
+            docker logs flame-smoke || true
+            exit 1
+          fi
+      - name: 推送 linux/arm64 分架构镜像
+        id: push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${GHCR_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+          export ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-arm64"
+          docker tag flame-contractor:smoke "${ARCH_TAG}"
+          docker push "${ARCH_TAG}"
+          DIGEST="$(python3 -c 'import json, os, subprocess; items = json.loads(subprocess.check_output(["docker", "image", "inspect", os.environ["ARCH_TAG"], "--format", "{{json .RepoDigests}}"], text=True)) or []; img = os.environ["IMAGE"] + "@sha256:"; print(next(x for x in items if x.startswith(img)))')"
+          printf 'digest=%s\n' "${DIGEST}" >> "${GITHUB_OUTPUT}"
+
+  publish-manifest:
+    name: 合并发布多架构 Manifest
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: 计算目标标签集合
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/docker/ghcr_tags.py \
+            --repository "${REPO}" \
+            --ref "${REF_NAME}" \
+            --sha "${COMMIT_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+      - name: 合并并校验 linux/amd64 + linux/arm64 Manifest
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${GHCR_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+          TAG_ARGS=()
+          for tag in ${TAGS}; do
+            TAG_ARGS+=(-t "${tag}")
+          done
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${REPO}" \
+            --annotation "index:org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            "${TAG_ARGS[@]}" \
+            "${DIGEST_AMD64}" \
+            "${DIGEST_ARM64}"
+
+          INSPECT_OUT="$(docker buildx imagetools inspect "${IMAGE}:sha-${SHORT_SHA}")"
+          echo "${INSPECT_OUT}"
+          echo "${INSPECT_OUT}" | grep -q "linux/amd64"
+          echo "${INSPECT_OUT}" | grep -q "linux/arm64"

@@ -3,6 +3,7 @@
 > 你与它立下契约，每日以一言续之，焰不可熄。
 
 [![CI](https://github.com/oinzc/flame-contractor/actions/workflows/ci.yml/badge.svg)](https://github.com/oinzc/flame-contractor/actions/workflows/ci.yml)
+[![GHCR](https://github.com/oinzc/flame-contractor/actions/workflows/publish-ghcr.yml/badge.svg)](https://github.com/oinzc/flame-contractor/pkgs/container/flame-contractor)
 [![Release](https://img.shields.io/github/v/release/oinzc/flame-contractor)](https://github.com/oinzc/flame-contractor/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
@@ -70,9 +71,59 @@ flowchart LR
 - 不保证在平台改版后立即可用；选择器与页面结构变化时可能需要更新。
 - 不提供云托管；没有多租户、计费或远程访问。
 
-## 快速开始（Docker，约 5 分钟）
+## 快速开始（Docker，约 1 分钟）
 
-需要 Docker Desktop（Windows/macOS）或 Docker Engine + Compose（Linux）。容器内自带 Chromium，宿主机不需要装浏览器。
+需要 Docker Desktop（Windows/macOS）或 Docker Engine + Compose（Linux）。官方预构建镜像 `ghcr.io/oinzc/flame-contractor:latest` 同时支持 `linux/amd64` 与 `linux/arm64`，容器内自带 Chromium，宿主机不需要装浏览器或下载源码。
+
+### 方式 A：直接拉取预构建镜像（推荐，免克隆源码）
+
+新建任意空目录，保存以下两个文件：
+
+1. `.env`（生成至少 32 位随机密钥填入 `FLAME_SECRET_KEY`，可选填 `FLAME_BARK_URL`；Linux 上请执行 `chown 10001:10001 .env && chmod 600 .env` 确保非 root 容器用户可读）：
+   ```ini
+   FLAME_SECRET_KEY=请替换为至少32位随机字符串
+   FLAME_BARK_URL=
+   ```
+2. `compose.yaml`：
+   ```yaml
+   name: flame-contractor
+   services:
+     app:
+       image: ghcr.io/oinzc/flame-contractor:latest
+       init: true
+       restart: unless-stopped
+       stop_grace_period: 60s
+       shm_size: 512mb
+       ports:
+         - "127.0.0.1:${FLAME_HOST_PORT:-8000}:8000"
+       volumes:
+         - data:/app/data
+         - artifacts:/app/artifacts
+         - type: bind
+           source: ./.env
+           target: /app/backend/.env
+           read_only: true
+           bind:
+             create_host_path: false
+       logging:
+         driver: json-file
+         options:
+           max-size: "10m"
+           max-file: "3"
+   volumes:
+     data:
+     artifacts:
+   ```
+
+启动与后续升级：
+
+```bash
+docker compose up -d
+# 后续升级只需：
+docker compose pull && docker compose up -d
+```
+
+### 方式 B：克隆源码本地构建
 
 ```bash
 git clone https://github.com/oinzc/flame-contractor.git
@@ -160,7 +211,7 @@ npm test         # node --test 领域纯函数单测
 npm run build    # tsc --noEmit && vite build
 ```
 
-测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（289 项，无需真实浏览器）。
+测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（291 项，无需真实浏览器）。
 
 ## 目录结构
 

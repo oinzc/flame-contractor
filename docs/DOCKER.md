@@ -11,12 +11,18 @@ Playwright 固定版本并在镜像内安装匹配的 Chromium；`backend/constr
 | Windows x64 | Docker Desktop，Linux containers / WSL2 | 本项目本机验证 |
 | Linux x64 | Docker Engine + Compose v2 | Ubuntu 24.04 服务器验证 |
 | macOS Intel | Docker Desktop，使用相同配置 | 无实机，不宣称已验收 |
-| Linux ARM64 / Apple Silicon | 基础镜像和构建不固定 amd64，可尝试原生 ARM64 构建 | 无实机，浏览器运行仍待验证 |
+| Linux ARM64 / Apple Silicon | GitHub Actions `ubuntu-24.04-arm` 原生构建 `linux/arm64` 镜像并通过容器 `/health` 冒烟校验 | 真实抖音会话仍需按宿主网络验收 |
 | Windows 原生容器 / 32 位系统 | 不提供 | 本方案使用 Linux Chromium |
 
 Docker Desktop 必须保持运行。宿主机休眠、关机或退出 Docker 后，容器无法继续调度；服务器推荐 Linux 常驻。
 
 ## 首次启动
+
+### 方式一：直接拉取 GHCR 预构建镜像（免克隆源码）
+
+每次推送 `main` 或发布 `v*` 标签时，`.github/workflows/publish-ghcr.yml` 会自动在原生双架构节点构建并发布 `ghcr.io/oinzc/flame-contractor:latest`（以及 `vX.Y.Z` / `sha-<short>` 标签）。只需准备 `.env`（含至少 32 位 `FLAME_SECRET_KEY`）与 [README.md](../README.md) 中的 `compose.yaml`，执行 `docker compose up -d` 即可启动；升级执行 `docker compose pull && docker compose up -d`。
+
+### 方式二：在源码仓库根目录本地构建
 
 安装 Docker 和 Compose 后，在仓库根目录执行（Windows 用 PowerShell）：
 
