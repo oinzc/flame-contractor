@@ -1,9 +1,9 @@
-"""为 README 截取演示控制台的界面图。
+"""为 README 截取新版单账号续火工作台的演示界面图（方案 A：5 浅 1 深）。
 
-先启动演示实例（scripts/demo_server.py），再运行本脚本：
+先构建前端并启动只读演示实例（scripts/demo_server.py --reseed），再运行本脚本：
   .venv/Scripts/python.exe scripts/demo_screenshots.py
-输出到 docs/assets/screenshots/。截图固定使用 Asia/Shanghai 时区与 1440×900 视口，
-以保证重复生成时画面一致。
+输出到 docs/assets/screenshots/。截图固定使用 Asia/Shanghai 时区与 1440×900（2x）视口，
+以保证重复生成时画面一致且单屏自适应分页容量稳定。
 """
 
 from __future__ import annotations
@@ -20,11 +20,39 @@ OUT_DIR = REPO_ROOT / "docs" / "assets" / "screenshots"
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+SHOT_PLAN: tuple[dict[str, str], ...] = (
+    {"name": "dashboard", "theme": "light"},
+    {"name": "send-confirm", "theme": "light"},
+    {"name": "targets", "theme": "light"},
+    {"name": "scan-reconciliation", "theme": "light"},
+    {"name": "jobs", "theme": "light"},
+    {"name": "accounts", "theme": "dark"},
+)
 
-async def nav(page: Page, label: str) -> None:
-    await page.get_by_role("button", name=label, exact=True).click()
+
+async def set_theme(page: Page, theme: str) -> None:
+    label = "浅色" if theme == "light" else "深色"
+    await page.locator(f'aside.fc-sidebar [title="切换主题：{label}"]').click()
+    await page.wait_for_function(
+        "(expected) => document.documentElement.dataset.theme === expected",
+        arg=theme,
+    )
+    await page.wait_for_timeout(200)
+
+
+async def open_drawer_and_shot(page: Page, trigger_name: str, shot_name: str) -> None:
+    await page.locator(".fc-page-actions").get_by_role("button", name=trigger_name).click()
+    await page.locator("aside.fc-drawer").wait_for(state="visible")
     await page.wait_for_load_state("networkidle")
-    await page.wait_for_timeout(600)
+    await page.wait_for_timeout(450)
+    await shot(page, shot_name)
+    await close_drawer(page)
+
+
+async def close_drawer(page: Page) -> None:
+    await page.get_by_role("button", name="关闭面板").click()
+    await page.locator("aside.fc-drawer").wait_for(state="hidden")
+    await page.wait_for_timeout(200)
 
 
 async def shot(page: Page, name: str, **kwargs) -> None:
@@ -33,10 +61,7 @@ async def shot(page: Page, name: str, **kwargs) -> None:
     print(f"已保存 {path.relative_to(REPO_ROOT)}")
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://127.0.0.1:8010")
-    args = parser.parse_args()
+async def capture_all(base_url: str) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as pw:
@@ -46,35 +71,54 @@ async def main() -> None:
             device_scale_factor=2,
             timezone_id="Asia/Shanghai",
             locale="zh-CN",
-            color_scheme="dark",
+            color_scheme="light",
             reduced_motion="reduce",
         )
         page = await context.new_page()
-        await page.goto(args.base_url)
-        await page.get_by_placeholder("输入用户名").fill("demo")
-        await page.get_by_placeholder("输入密码").fill("demo-password")
-        await page.keyboard.press("Enter")
+        await page.goto(base_url)
+
+        await page.locator("#auth-username").wait_for(state="visible")
+        await page.locator("#auth-username").fill("demo")
+        await page.locator("#auth-password").fill("demo-password")
+        await page.locator('button[type="submit"]').click()
+
+        await page.locator('table[aria-label="当前账号续火好友列表"]').wait_for(state="visible")
+        await set_theme(page, "light")
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(600)
         await shot(page, "dashboard")
 
-        await nav(page, "账号")
-        await shot(page, "accounts")
-        await page.get_by_role("button", name="立即发送").first.click()
-        await page.wait_for_timeout(800)
-        await shot(page, "send-confirm")
-        await page.get_by_role("button", name="取消").click()
-        await page.wait_for_timeout(300)
+        await open_drawer_and_shot(page, "今日群发预览", "send-confirm")
 
-        await nav(page, "好友")
+        await page.locator("tr.fc-row-clickable").first.click()
+        await page.locator("aside.fc-drawer").wait_for(state="visible")
+        await page.wait_for_timeout(350)
         await shot(page, "targets")
-        await page.locator("#scan-tab").click()
-        await page.wait_for_timeout(800)
-        await shot(page, "scan-reconciliation")
+        await close_drawer(page)
 
-        await nav(page, "任务")
+        await open_drawer_and_shot(page, "扫描对账", "scan-reconciliation")
+
+        await page.locator("aside.fc-sidebar").get_by_role("button", name="记录与统计").click()
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(500)
         await shot(page, "jobs")
+
+        await page.locator("aside.fc-sidebar").get_by_role("button", name="系统与调度").click()
+        await page.wait_for_load_state("networkidle")
+        await set_theme(page, "dark")
+        await page.locator("button.fc-acct-trigger").click()
+        await page.locator('[aria-label="切换抖音账号"]').wait_for(state="visible")
+        await page.wait_for_timeout(350)
+        await shot(page, "accounts")
+
         await browser.close()
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", default="http://127.0.0.1:8010")
+    args = parser.parse_args()
+    await capture_all(args.base_url)
 
 
 if __name__ == "__main__":

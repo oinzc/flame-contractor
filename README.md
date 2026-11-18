@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
-![控制台总览：今日续火进度、24 小时调度标尺、好友火花榜与任务流水](docs/assets/screenshots/dashboard.png)
+![控制台总览：单抖音号续火工作台、今日排程状态、待处理提醒与好友火花直展列表](docs/assets/screenshots/dashboard.png)
 
 <sub>截图均来自内置的[演示实例](#演示实例)，昵称与数据全部虚构。</sub>
 
@@ -26,21 +26,21 @@
 - **自动调度**：后台每分钟对齐整分钟派发；失败重试、连续失败熔断、登录失效自动停。
 - **异常通知**：接入 Bark，按 `critical` / `timeSensitive` / `active` 分级推送到手机。
 - **会话扫描与对账**：只读扫描官方火花状态用于展示，产出状态变化 / 无火花 / 新会话 / 未观察到 / 无变化五类对账，删除与导入都要你手动确认。
-- **可观测**：全局任务坞展示发送与扫描进度，诊断截图按天保留，操作留审计记录。
+- **可观测**：侧边栏后台任务栈实时展示发送与扫描进度，诊断截图按天保留，操作留审计记录。
 
 ## 界面一览
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/send-confirm.png" alt="发送确认弹窗"><br><b>发送前逐人确认</b>：手动发送先列出本次队列和每个人将收到的文案，确认后才执行。</td>
-    <td width="50%"><img src="docs/assets/screenshots/targets.png" alt="好友管理"><br><b>好友与身份</b>：每位好友绑定平台身份、模板和可选的独立时刻，旁边是官方火花状态。</td>
+    <td width="50%"><img src="docs/assets/screenshots/send-confirm.png" alt="今日群发预览抽屉"><br><b>今日群发预览抽屉</b>：发送前在右侧逐位核对今日队列、渲染文案与幂等/复核跳过原因，确认后才执行。</td>
+    <td width="50%"><img src="docs/assets/screenshots/targets.png" alt="好友详情与规则抽屉"><br><b>好友详情与规则抽屉</b>：点击任意好友即可在右侧查看稳定平台身份、官方火花快照，绑定模板或单独设定发送时刻。</td>
   </tr>
   <tr>
-    <td><img src="docs/assets/screenshots/scan-reconciliation.png" alt="扫描对账"><br><b>扫描对账</b>：只读同步官方状态，按状态变化 / 无火花 / 新会话 / 未观察到 / 无变化五类归档。</td>
-    <td><img src="docs/assets/screenshots/jobs.png" alt="任务记录"><br><b>任务记录</b>：每一次续火都有结果和尝试次数，结果无法确认的单独筛出，等你人工复核。</td>
+    <td><img src="docs/assets/screenshots/scan-reconciliation.png" alt="会话扫描与对账抽屉"><br><b>扫描对账抽屉</b>：只读同步官方状态，按新会话 / 状态变化 / 无火花 / 未观察到 / 无变化五类归档并手动确认。</td>
+    <td><img src="docs/assets/screenshots/jobs.png" alt="记录与统计"><br><b>记录与统计</b>：汇总近 30 日成功率与连续成功天数，结果无法确认的任务单独筛出，等你人工复核。</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/assets/screenshots/accounts.png" alt="账号管理"><br><b>多账号</b>：每个账号独立的浏览器 Profile、发送时段和登录状态；失效账号会被醒目标出并停止自动发送。</td>
+    <td colspan="2"><img src="docs/assets/screenshots/accounts.png" alt="多账号切换、系统调度与深色主题"><br><b>多账号切换、系统调度与三态主题</b>：左上角秒切各自独立浏览器 Profile 的抖音账号（失效账号醒目标红并停发），支持浅色 / 深色 / 跟随系统无闪烁切换。</td>
   </tr>
 </table>
 
@@ -88,10 +88,10 @@ docker compose up -d --build
 打开 <http://127.0.0.1:8000/>：
 
 1. 首次进入会要求创建**平台管理员**（没有默认密码，密码至少 8 位）。
-2. 「账号」页新增账号并扫码登录；容器内用「截图扫码」，把二维码图片保存后用手机抖音扫。
-3. 「好友」页扫描会话列表，勾选要续火的好友导入。
-4. 「模板」页写文案；「计划」页给账号或单个好友设固定发送时刻。
-5. 打开「自动调度」，确认下一次触发时间。
+2. 左上角新增抖音账号，点右上角「账号与扫码」完成登录；容器内用「截图扫码」，把二维码图片保存后用手机抖音扫。
+3. 在「续火好友」点右上角「扫描对账」，读取会话列表并勾选要续火的好友导入。
+4. 在左侧「模板库」写文案或配置星期文案池；在「账号与扫码」或好友右侧详情抽屉设固定发送时刻。
+5. 在左侧「系统与调度」确认全局自动调度已开启及下一次排程时刻。
 
 健康检查：`curl http://127.0.0.1:8000/health`，应返回 `{"status":"ok","database":"ready",...}`。
 
@@ -135,7 +135,7 @@ python -m venv .venv
 - 登录态在同一卷的 `profiles/` 下，是完整浏览器 Profile；换机或重建卷时必须一起拷走。
 - 诊断截图在命名卷 `flame-contractor_artifacts`。
 - `docker compose down` 会保留卷；**不要用 `docker compose down -v`**，那会连数据一起删除。
-- 控制台「备份全部数据」导出业务数据 JSON（不含登录态）；整卷备份请在停掉应用后打包卷目录。
+- 控制台「系统与调度」页的「导出 JSON 备份」可导出业务数据（不含登录态）；整卷备份请在停掉应用后打包卷目录。
 
 ## 本地开发
 
@@ -156,10 +156,11 @@ python -m venv .venv
 cd frontend
 npm ci
 npm run dev      # http://localhost:5173，已代理 /api 与 /health
+npm test         # node --test 领域纯函数单测
 npm run build    # tsc --noEmit && vite build
 ```
 
-测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（272 项，无需真实浏览器）。
+测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（279 项，无需真实浏览器）。
 
 ## 目录结构
 
