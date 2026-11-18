@@ -81,9 +81,8 @@ export function NeedsYouBanner({ items, onOpenDrawer, onChanged }: NeedsYouBanne
                 className="fc-btn fc-btn-secondary fc-btn-sm"
                 onClick={() =>
                   onOpenDrawer({
-                    kind: 'target-detail',
-                    targetId: item.job.targetId,
-                    tab: 'history',
+                    kind: 'job-detail',
+                    jobId: item.job.id,
                   })
                 }
               >

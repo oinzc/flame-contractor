@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlmodel import Session, select
 
 from app.core.database import build_engine
-from app.models import Account, ContractTarget, ScanTask, SendJob, User
+from app.models import Account, ContractTarget, JobStatus, ScanTask, SendAttempt, SendJob, User
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "demo_server.py"
 SCREENSHOTS_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "demo_screenshots.py"
@@ -30,7 +30,8 @@ def _load_screenshots_module():
 def test_seed_builds_fictional_demo_dataset(tmp_path):
     demo = _load_demo_module()
     url = f"sqlite:///{(tmp_path / 'demo.db').as_posix()}"
-    demo.seed(url, datetime(2026, 11, 7, 9, 0, 0))
+    artifacts_dir = tmp_path / "artifacts"
+    demo.seed(url, datetime(2026, 11, 7, 9, 0, 0), artifacts_dir=artifacts_dir)
 
     engine = build_engine(url)
     with Session(engine) as session:
@@ -45,6 +46,28 @@ def test_seed_builds_fictional_demo_dataset(tmp_path):
         )
         assert session.exec(select(SendJob)).first() is not None
         assert len(session.exec(select(ScanTask)).all()) == 4
+
+        review_job = session.exec(
+            select(SendJob).where(SendJob.status == JobStatus.UNKNOWN_REQUIRES_REVIEW)
+        ).one()
+        review_attempt = session.exec(
+            select(SendAttempt).where(SendAttempt.job_id == review_job.id)
+        ).one()
+        assert review_attempt.artifact_ref is not None
+        shot_file = artifacts_dir / review_attempt.artifact_ref
+        assert shot_file.is_file()
+        assert shot_file.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+        failed_jobs = session.exec(
+            select(SendJob).where(SendJob.status == JobStatus.FAILED_TERMINAL)
+        ).all()
+        assert len(failed_jobs) >= 1
+        for failed_job in failed_jobs:
+            failed_attempt = session.exec(
+                select(SendAttempt).where(SendAttempt.job_id == failed_job.id)
+            ).one()
+            assert failed_attempt.artifact_ref is not None
+            assert not (artifacts_dir / failed_attempt.artifact_ref).exists()
     engine.dispose()
 
 

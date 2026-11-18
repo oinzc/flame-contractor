@@ -350,7 +350,7 @@
 }
 
 /* Responsive Breakpoints */
-@media (max-width: 1080px) {
+@media (max-width: 1280px) {
   .fc-drawer,
   .fc-drawer.is-wide {
     position: absolute;

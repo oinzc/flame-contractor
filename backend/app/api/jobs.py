@@ -1,9 +1,16 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from ..core.database import SessionDep
 from ..models import JobStatus
-from ..schemas import JobRead, JobsPageRead
-from ..services import confirm_job_sent, list_jobs_page, release_job
+from ..schemas import JobDetailRead, JobRead, JobsPageRead
+from ..services import (
+    confirm_job_sent,
+    get_job_attempt_screenshot_path,
+    get_job_detail,
+    list_jobs_page,
+    release_job,
+)
 from .deps import CurrentUser
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -40,6 +47,42 @@ def list_jobs(
         offset=offset,
         account_id=account_id,
         statuses=statuses,
+    )
+
+
+@router.get("/{job_id}", response_model=JobDetailRead)
+def read_job_detail(
+    job_id: str,
+    request: Request,
+    session: SessionDep,
+    user: CurrentUser,
+) -> JobDetailRead:
+    """返回单条发送任务及升序排列的尝试时间线与截图状态（不暴露宿主机绝对路径）。"""
+    artifacts_dir = request.app.state.settings.artifacts_dir
+    return get_job_detail(session, job_id, user.id, artifacts_dir)
+
+
+@router.get("/{job_id}/attempts/{attempt_no}/screenshot")
+def read_job_attempt_screenshot(
+    job_id: str,
+    attempt_no: int,
+    request: Request,
+    session: SessionDep,
+    user: CurrentUser,
+) -> FileResponse:
+    """读取指定尝试的脱敏现场截图（严格校验属主与 shots/*.png 边界）。"""
+    artifacts_dir = request.app.state.settings.artifacts_dir
+    path = get_job_attempt_screenshot_path(
+        session,
+        job_id,
+        attempt_no,
+        user.id,
+        artifacts_dir,
+    )
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

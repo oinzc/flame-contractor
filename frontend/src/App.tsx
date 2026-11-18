@@ -3,6 +3,7 @@ import { api, ApiError, getToken, setToken } from './api.ts'
 import { AccountManageDrawer } from './components/drawers/AccountManageDrawer.tsx'
 import { CreateEntityDrawer } from './components/drawers/CreateEntityDrawer.tsx'
 import { DryRunDrawer } from './components/drawers/DryRunDrawer.tsx'
+import { JobDetailDrawer } from './components/drawers/JobDetailDrawer.tsx'
 import { ScanReconcileDrawer } from './components/drawers/ScanReconcileDrawer.tsx'
 import { SendAccountDrawer } from './components/drawers/SendAccountDrawer.tsx'
 import { TargetDetailDrawer } from './components/drawers/TargetDetailDrawer.tsx'
@@ -38,6 +39,7 @@ export default function App() {
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null)
   const [accountJobs, setAccountJobs] = useState<SendJob[]>([])
   const [unresolvedReviewJobs, setUnresolvedReviewJobs] = useState<SendJob[]>([])
+  const [refreshRevision, setRefreshRevision] = useState(0)
   const [globalError, setGlobalError] = useState<string | null>(null)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -113,6 +115,7 @@ export default function App() {
         setAccountJobs([])
         setUnresolvedReviewJobs([])
       }
+      setRefreshRevision((n) => n + 1)
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setToken(null)
@@ -323,6 +326,9 @@ export default function App() {
               selectedAccount={selectedAccount}
               targets={targets}
               templates={templates}
+              selectedJobId={drawer.kind === 'job-detail' ? drawer.jobId : null}
+              refreshRevision={refreshRevision}
+              onInspectJob={(jobId) => setDrawer({ kind: 'job-detail', jobId })}
               onChanged={refresh}
             />
           )}
@@ -365,10 +371,27 @@ export default function App() {
             onTabChange={(tab) =>
               setDrawer({ kind: 'target-detail', targetId: drawer.targetId, tab })
             }
+            onInspectJob={(jobId) => setDrawer({ kind: 'job-detail', jobId })}
             onClose={closeDrawer}
             onChanged={refresh}
           />
         )}
+
+        <JobDetailDrawer
+          open={drawer.kind === 'job-detail'}
+          jobId={drawer.kind === 'job-detail' ? drawer.jobId : null}
+          externalJobSnapshot={
+            drawer.kind === 'job-detail'
+              ? ([...unresolvedReviewJobs, ...accountJobs].find((j) => j.id === drawer.jobId) ??
+                null)
+              : null
+          }
+          accounts={accounts}
+          targets={targets}
+          templates={templates}
+          onClose={closeDrawer}
+          onChanged={refresh}
+        />
 
         <SendAccountDrawer
           open={drawer.kind === 'send-account'}

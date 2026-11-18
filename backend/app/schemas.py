@@ -5,8 +5,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .core.artifacts import ScreenshotState
 from .core.config import AUTO_SCAN_INTERVAL_MAX_HOURS, AUTO_SCAN_INTERVAL_MIN_HOURS
-from .models import AccountStatus, FailureClass, JobStatus, ScheduleStatus, TemplateType
+from .models import (
+    AccountStatus,
+    AttemptStatus,
+    FailureClass,
+    JobStatus,
+    ScheduleStatus,
+    TemplateType,
+)
 from .scheduler import (
     FIXED_TIME_GRACE_MINUTES_MAX,
     FIXED_TIME_GRACE_MINUTES_MIN,
@@ -556,6 +564,23 @@ class JobRead(APIBase):
     confirmed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class AttemptRead(APIBase):
+    id: str
+    attempt_no: int
+    stage: str
+    status: AttemptStatus
+    failure_class: FailureClass | None
+    screenshot_state: ScreenshotState
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class JobDetailRead(JobRead):
+    attempts: list[AttemptRead]
+    latest_screenshot_attempt_no: int | None = None
+    latest_screenshot_state: ScreenshotState = "none"
 
 
 class JobsPageRead(APIBase):

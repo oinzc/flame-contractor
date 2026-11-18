@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
+from .core.artifacts import prune_old_artifacts
 from .core.config import (
     AUTO_SCAN_INTERVAL_MAX_HOURS,
     AUTO_SCAN_INTERVAL_MIN_HOURS,
@@ -54,6 +55,8 @@ DEFAULT_LEASE_SECONDS = 5.0
 DEFAULT_RUN_TIMEOUT = 600.0
 # 会话状态同步默认每 24 小时一次；官方火花展示为天级状态，没必要高频访问会话列表。
 DEFAULT_AUTO_SCAN_INTERVAL_HOURS = 24
+# 诊断产物过期清理周期：每 24 小时巡检一次，解决容器长跑不重启导致过期截图堆积。
+ARTIFACT_PRUNE_INTERVAL = timedelta(hours=24)
 # 服务启动后给手动登录/发送留出缓冲，再启动首次自动扫描。
 DEFAULT_AUTO_SCAN_INITIAL_DELAY = 60.0
 # 自动扫描避开发送窗口开始前的缓冲区，避免两个后台浏览器流程抢同一账号。
@@ -207,6 +210,7 @@ class Scheduler:
         self._auto_scan_timeout = max(60.0, float(auto_scan_timeout))
         self._auto_scan_next_attempt_at: dict[str, datetime] = {}
         self._auto_scan_not_before: datetime | None = None
+        self._last_artifact_prune_at: datetime | None = None
         self._stopping = False
         # M6-2 重试/延迟状态（进程内）：重启即清零，重新计数；
         # 发送幂等由 SendJob 唯一键兜底，重复派发不会导致重复发送。
@@ -471,9 +475,30 @@ class Scheduler:
 
     # ---------------------------------------------------------------- 派发
 
+    def _maybe_prune_artifacts(self, now: datetime) -> None:
+        retention_days = getattr(self._settings, "artifact_retention_days", 0)
+        if retention_days <= 0:
+            return
+        if (
+            self._last_artifact_prune_at is not None
+            and now < self._last_artifact_prune_at + ARTIFACT_PRUNE_INTERVAL
+        ):
+            return
+        self._last_artifact_prune_at = now
+        try:
+            aware_now = now.replace(tzinfo=ZoneInfo("UTC")) if now.tzinfo is None else now
+            prune_old_artifacts(
+                self._settings.artifacts_dir,
+                retention_days,
+                now=aware_now,
+            )
+        except Exception as exc:  # noqa: BLE001 - 清理异常绝不能阻断调度循环
+            logger.warning("定期清理过期诊断产物失败：%s", describe_exception(exc))
+
     async def tick(self, now: datetime | None = None) -> dict:
         """一轮调度：恢复游离计划 → 生成当日 → 好友级准点先发 → 账号批量 → 自动扫描。"""
         now = self._utc_naive(now or self._clock())
+        self._maybe_prune_artifacts(now)
         if self._paused:
             return {"dispatched": 0}
         recovered = self._recover_expired(now)

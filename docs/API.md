@@ -546,7 +546,9 @@ password, cookie, token, storageState, profilePath
 - `DELETE /api/accounts/{id}`：被好友/任务引用 409、运行中 409；无引用物理删除并清理
   浏览器 Profile；SendSchedule 为派生数据随账号级联清除（不拦截）。
 
-### unknown 任务人工处理（/api/jobs）
+### 任务详情、现场截图与 unknown 人工处理（/api/jobs）
+- `GET /api/jobs/{id}`：返回单条任务及按 `attemptNo` 升序排列的 `attempts` 时间线（仅限当前登录用户的账号，越权或不存在均返回 `404`）；每条尝试携带 `screenshotState: "none" | "available" | "expired"`，不暴露宿主机绝对路径。
+- `GET /api/jobs/{id}/attempts/{attempt_no}/screenshot`：返回该次尝试的脱敏现场 PNG 截图（`200 image/png`，`Cache-Control: private, no-store`）；文件已超过保留期清理返回 `410`，无截图、越权或非法路径引用返回 `404`。
 - `POST /api/jobs/{id}/confirm-sent`：仅 `unknown_requires_review` 可用（否则 409）；
   对齐自动成功路径（SUCCEEDED + confirmedAt + 火花 +1 + lastSuccessAt）。
 - `POST /api/jobs/{id}/release`：回到 SCHEDULED，由「立即发送」重新执行。

@@ -327,6 +327,21 @@ export interface StatsSummary {
   successRate: number | null
 }
 
+export type AttemptStatus = 'running' | 'succeeded' | 'failed'
+
+export type ScreenshotState = 'none' | 'available' | 'expired'
+
+export interface SendAttemptItem {
+  id: string
+  attemptNo: number
+  stage: string
+  status: AttemptStatus
+  failureClass: FailureClass | null
+  screenshotState: ScreenshotState
+  startedAt: string
+  finishedAt: string | null
+}
+
 export interface SendJob {
   id: string
   accountId: string
@@ -341,6 +356,12 @@ export interface SendJob {
   confirmedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface SendJobDetail extends SendJob {
+  attempts: SendAttemptItem[]
+  latestScreenshotAttemptNo: number | null
+  latestScreenshotState: ScreenshotState
 }
 
 export interface JobsPageData {
@@ -537,6 +558,7 @@ export type WorkspaceView = 'targets' | 'jobs' | 'templates' | 'settings'
 export type DrawerState =
   | { kind: 'closed' }
   | { kind: 'target-detail'; targetId: string; tab: 'config' | 'history' }
+  | { kind: 'job-detail'; jobId: string }
   | { kind: 'send-account' }
   | { kind: 'scan-reconcile' }
   | { kind: 'account-manage' }

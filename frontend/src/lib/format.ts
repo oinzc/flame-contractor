@@ -94,6 +94,20 @@ export const FAILURE_CLASS_LABELS: Record<FailureClass, string> = {
   other: '其他原因',
 }
 
+export const ATTEMPT_STAGE_LABELS: Record<string, string> = {
+  scheduled: '等待派发',
+  leased: '获取租约',
+  opening_chat: '定位会话',
+  sending: '发送消息',
+  confirming: '确认回执',
+  manual_confirm_sent: '人工确认已发',
+  manual_release: '人工释放重算',
+}
+
+export function formatAttemptStage(stage: string): string {
+  return ATTEMPT_STAGE_LABELS[stage] ?? stage
+}
+
 /** 后端 SQLite 存 naive UTC（无时区后缀）；按 UTC 解析成本地 Date。 */
 export function parseBackendTime(value: string): Date {
   if (/[Zz]|[+-]\d{2}:?\d{2}$/.test(value)) return new Date(value)

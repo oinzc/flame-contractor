@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { resolveDrawerOnViewChange } from '../lib/workspace.ts'
 import type { Account, DrawerState, WorkspaceView } from '../types.ts'
 
 const ACTIVE_ACCOUNT_KEY = 'flame_active_account_id'
@@ -64,13 +65,13 @@ export function useWorkspaceUrlState(accounts: Account[], syncUrlEnabled = true)
     setSelectedAccountIdState(nextId)
   }, [])
 
+  const viewRef = useRef(view)
+  viewRef.current = view
+
   const setView = useCallback((nextView: WorkspaceView) => {
+    const prevView = viewRef.current
     setViewState(nextView)
-    setDrawer((current) => {
-      if (nextView === 'templates' && current.kind === 'template-editor') return current
-      if (nextView === 'targets' && current.kind !== 'template-editor') return current
-      return { kind: 'closed' }
-    })
+    setDrawer((current) => resolveDrawerOnViewChange(prevView, nextView, current))
   }, [])
 
   const closeDrawer = useCallback(() => {

@@ -1,10 +1,13 @@
 import type {
   Account,
   ContractTarget,
+  DrawerState,
   JobStatus,
   ScanProgress,
+  SendAttemptItem,
   SendJob,
   SendPreviewRead,
+  WorkspaceView,
 } from '../types.ts'
 import {
   ATTENTION_ACCOUNT_HINTS,
@@ -297,4 +300,47 @@ export function parseSchedulerSettingsForm(
       scheduledAlwaysSend,
     },
   }
+}
+
+export function pickDefaultScreenshotAttempt(attempts: SendAttemptItem[]): number | null {
+  for (let i = attempts.length - 1; i >= 0; i -= 1) {
+    if (attempts[i].screenshotState === 'available') {
+      return attempts[i].attemptNo
+    }
+  }
+  for (let i = attempts.length - 1; i >= 0; i -= 1) {
+    if (attempts[i].screenshotState === 'expired') {
+      return attempts[i].attemptNo
+    }
+  }
+  return null
+}
+
+export function resolveDrawerOnViewChange(
+  prevView: WorkspaceView,
+  nextView: WorkspaceView,
+  current: DrawerState,
+): DrawerState {
+  if (prevView === nextView) return current
+  if (nextView === 'templates' && current.kind === 'template-editor') return current
+  if (
+    nextView === 'targets' &&
+    current.kind !== 'template-editor' &&
+    current.kind !== 'job-detail'
+  ) {
+    return current
+  }
+  return { kind: 'closed' }
+}
+
+export function shouldReloadOpenJobDetail(
+  loaded: Pick<SendJob, 'id' | 'status' | 'updatedAt'> | null,
+  externalSnapshot: Pick<SendJob, 'id' | 'status' | 'updatedAt'> | null,
+): boolean {
+  if (!loaded || !externalSnapshot) return false
+  if (loaded.id !== externalSnapshot.id) return false
+  return (
+    loaded.status !== externalSnapshot.status ||
+    loaded.updatedAt !== externalSnapshot.updatedAt
+  )
 }

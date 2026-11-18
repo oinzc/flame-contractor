@@ -25,7 +25,9 @@ import json
 import os
 import random
 import shutil
+import struct
 import sys
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -82,7 +84,59 @@ POOL_LINES = [
 ]
 
 
-def seed(database_url: str, now_utc: datetime) -> None:
+def _build_demo_shot_png(width: int = 640, height: int = 360) -> bytes:
+    """用纯标准库合成一张虚构的聊天窗口线框示意 PNG，供演示实例预览复核现场。"""
+    rows: list[bytes] = []
+    for y in range(height):
+        row = bytearray([0])  # filter type 0 (None)
+        for x in range(width):
+            # 浅灰外框 + 左侧会话栏 + 右侧聊天舞台 + 暖色待确认提示条 + 模拟消息气泡
+            if x < 176:
+                rgb = (244, 245, 246)
+                if 24 <= y < 56 and 16 <= x < 160:
+                    rgb = (229, 231, 235)
+                elif 72 <= y < 112 and 12 <= x < 164:
+                    rgb = (255, 255, 255)
+            elif x == 176:
+                rgb = (229, 231, 235)
+            else:
+                rgb = (255, 255, 255)
+                if y < 44:
+                    rgb = (248, 249, 250)
+                elif y == 44 or y == 296:
+                    rgb = (229, 231, 235)
+                elif 58 <= y < 88 and 196 <= x < width - 20:
+                    rgb = (255, 251, 235)
+                elif 116 <= y < 152 and 196 <= x < 380:
+                    rgb = (241, 243, 245)
+                elif 172 <= y < 210 and width - 230 <= x < width - 28:
+                    rgb = (38, 38, 38)
+                elif 186 <= y < 196 and width - 248 <= x < width - 238:
+                    # 模拟发送旋转指示尚未消失的现场特征点
+                    rgb = (245, 158, 11)
+            row.extend(rgb)
+        rows.append(bytes(row))
+
+    def _chunk(tag: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(tag + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", crc)
+
+    raw = b"".join(rows)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(raw, level=6))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def seed(
+    database_url: str,
+    now_utc: datetime,
+    *,
+    artifacts_dir: Path | None = None,
+) -> None:
     from sqlmodel import Session
 
     from app.core.database import build_engine
@@ -219,10 +273,17 @@ def seed(database_url: str, now_utc: datetime) -> None:
                         continue
                     status = JobStatus.SUCCEEDED
                     failure = None
+                    artifact_ref: str | None = None
                     if offset == 6 and idx == 3:
                         status, failure = JobStatus.UNKNOWN_REQUIRES_REVIEW, FailureClass.UNKNOWN_OUTCOME
+                        artifact_ref = f"{account.id}/shots/demo-unknown-outcome.png"
+                        if artifacts_dir is not None:
+                            shot_path = artifacts_dir / account.id / "shots" / "demo-unknown-outcome.png"
+                            shot_path.parent.mkdir(parents=True, exist_ok=True)
+                            shot_path.write_bytes(_build_demo_shot_png())
                     elif offset == 11 and idx == 1:
                         status, failure = JobStatus.FAILED_TERMINAL, FailureClass.NETWORK
+                        artifact_ref = f"{account.id}/shots/demo-expired-shot.png"
                     job = SendJob(
                         account_id=account.id, target_id=target.id,
                         template_id=target.template_id, business_date=day,
@@ -238,7 +299,9 @@ def seed(database_url: str, now_utc: datetime) -> None:
                         job_id=job.id, attempt_no=1,
                         stage=JobStatus.CONFIRMING if status != JobStatus.FAILED_TERMINAL else JobStatus.OPENING_CHAT,
                         status=AttemptStatus.SUCCEEDED if status == JobStatus.SUCCEEDED else AttemptStatus.FAILED,
-                        failure_class=failure, started_at=sent_at,
+                        failure_class=failure,
+                        artifact_ref=artifact_ref,
+                        started_at=sent_at,
                         finished_at=sent_at + timedelta(seconds=6),
                     ))
                     if status == JobStatus.SUCCEEDED:
@@ -347,7 +410,11 @@ def main() -> None:
         sys.exit("未找到前端构建产物，请先在 frontend/ 执行 npm run build")
 
     if not db_path.exists():
-        seed(database_url, datetime.now(timezone.utc).replace(tzinfo=None))
+        seed(
+            database_url,
+            datetime.now(timezone.utc).replace(tzinfo=None),
+            artifacts_dir=settings.artifacts_dir,
+        )
         print(f"已生成演示数据：{db_path}")
 
     import uvicorn

@@ -272,6 +272,17 @@ export const api = {
     request<import('./types').SendJob>(`/api/jobs/${id}/confirm-sent`, { method: 'POST' }),
   releaseJob: (id: string) =>
     request<import('./types').SendJob>(`/api/jobs/${id}/release`, { method: 'POST' }),
+  jobDetail: (id: string) =>
+    request<import('./types').SendJobDetail>(`/api/jobs/${id}`),
+  jobAttemptScreenshot: async (jobId: string, attemptNo: number): Promise<Blob> => {
+    const response = await fetch(`/api/jobs/${jobId}/attempts/${attemptNo}/screenshot`, {
+      headers: authHeaders(),
+    })
+    if (!response.ok) {
+      throw new ApiError(response.status, await readDetail(response))
+    }
+    return response.blob()
+  },
   listJobs: (params: { limit?: number; offset?: number; accountId?: string; status?: string }) => {
     const query = new URLSearchParams()
     if (params.limit != null) query.set('limit', String(params.limit))

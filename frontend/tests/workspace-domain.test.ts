@@ -7,8 +7,12 @@ import {
   deriveTargetDayMap,
   mergeAccountSendPreview,
   parseSchedulerSettingsForm,
+  pickDefaultScreenshotAttempt,
+  resolveDrawerOnViewChange,
   shouldFinalizeRecoveredScan,
+  shouldReloadOpenJobDetail,
 } from '../src/lib/workspace.ts'
+import { formatAttemptStage } from '../src/lib/format.ts'
 import { normalizeStatsSummary } from '../src/api.ts'
 import {
   computePageSizeFromHeight,
@@ -313,4 +317,81 @@ test('resolveCardPageCapacity avoids footer oscillation on boundary item counts'
     pageSize: 12,
     showPagination: true,
   })
+})
+
+test('formatAttemptStage maps known pipeline and manual audit stages and falls back safely', () => {
+  assert.equal(formatAttemptStage('opening_chat'), '定位会话')
+  assert.equal(formatAttemptStage('sending'), '发送消息')
+  assert.equal(formatAttemptStage('confirming'), '确认回执')
+  assert.equal(formatAttemptStage('manual_confirm_sent'), '人工确认已发')
+  assert.equal(formatAttemptStage('manual_release'), '人工释放重算')
+  assert.equal(formatAttemptStage('custom_stage'), 'custom_stage')
+})
+
+test('pickDefaultScreenshotAttempt prefers latest available shot then latest expired shot and returns null when none', () => {
+  const base = {
+    stage: 'confirming',
+    status: 'failed' as const,
+    failureClass: 'unknown_outcome' as const,
+    startedAt: '2026-11-18T10:00:00Z',
+    finishedAt: '2026-11-18T10:00:05Z',
+  }
+
+  assert.equal(
+    pickDefaultScreenshotAttempt([
+      { ...base, id: 'a1', attemptNo: 1, screenshotState: 'available' },
+      { ...base, id: 'a2', attemptNo: 2, screenshotState: 'expired' },
+    ]),
+    1,
+  )
+
+  assert.equal(
+    pickDefaultScreenshotAttempt([
+      { ...base, id: 'a1', attemptNo: 1, screenshotState: 'available' },
+      { ...base, id: 'a2', attemptNo: 2, screenshotState: 'available' },
+      { ...base, id: 'a3', attemptNo: 3, stage: 'manual_confirm_sent', status: 'succeeded', failureClass: null, screenshotState: 'none' },
+    ]),
+    2,
+  )
+
+  assert.equal(
+    pickDefaultScreenshotAttempt([
+      { ...base, id: 'a1', attemptNo: 1, screenshotState: 'expired' },
+      { ...base, id: 'a2', attemptNo: 2, screenshotState: 'none' },
+    ]),
+    1,
+  )
+
+  assert.equal(
+    pickDefaultScreenshotAttempt([
+      { ...base, id: 'a1', attemptNo: 1, screenshotState: 'none' },
+    ]),
+    null,
+  )
+})
+
+test('resolveDrawerOnViewChange closes job-detail across view switches while preserving same-view clicks', () => {
+  const jobDrawer = { kind: 'job-detail' as const, jobId: 'j1' }
+  assert.deepEqual(resolveDrawerOnViewChange('jobs', 'jobs', jobDrawer), jobDrawer)
+  assert.deepEqual(resolveDrawerOnViewChange('targets', 'targets', jobDrawer), jobDrawer)
+  assert.deepEqual(resolveDrawerOnViewChange('jobs', 'targets', jobDrawer), { kind: 'closed' })
+  assert.deepEqual(resolveDrawerOnViewChange('targets', 'jobs', jobDrawer), { kind: 'closed' })
+})
+
+test('shouldReloadOpenJobDetail detects external status or timestamp updates for the active job', () => {
+  assert.equal(
+    shouldReloadOpenJobDetail(
+      { id: 'j1', status: 'unknown_requires_review', updatedAt: '2026-11-18T08:00:00Z' },
+      { id: 'j1', status: 'succeeded', updatedAt: '2026-11-18T08:01:00Z' },
+    ),
+    true,
+  )
+  assert.equal(
+    shouldReloadOpenJobDetail(
+      { id: 'j1', status: 'unknown_requires_review', updatedAt: '2026-11-18T08:00:00Z' },
+      { id: 'j1', status: 'unknown_requires_review', updatedAt: '2026-11-18T08:00:00Z' },
+    ),
+    false,
+  )
+  assert.equal(shouldReloadOpenJobDetail(null, null), false)
 })

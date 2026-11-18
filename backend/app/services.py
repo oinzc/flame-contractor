@@ -1,11 +1,13 @@
 import re
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, delete, func, select
 
+from .core.artifacts import ScreenshotState, resolve_shot_artifact
 from .core.config import Settings
 from .execution.message_renderer import render_message
 from .execution.pool import pick_pool_item
@@ -28,8 +30,10 @@ from .schemas import (
     AccountCreate,
     AccountPatch,
     AccountRead,
+    AttemptRead,
     BatchTargetItem,
     DashboardSummary,
+    JobDetailRead,
     JobRead,
     JobsPageRead,
     PoolItemIn,
@@ -1135,3 +1139,81 @@ def list_jobs_page(
         status_counts=status_counts,
         items=[JobRead.model_validate(job) for job in items],
     )
+
+
+def _require_user_job(session: Session, job_id: str, user_id: str) -> SendJob:
+    job = session.get(SendJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    account = session.get(Account, job.account_id)
+    if account is None or account.user_id != user_id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job
+
+
+def get_job_detail(
+    session: Session,
+    job_id: str,
+    user_id: str,
+    artifacts_dir: Path,
+) -> JobDetailRead:
+    job = _require_user_job(session, job_id, user_id)
+    rows = session.exec(
+        select(SendAttempt)
+        .where(SendAttempt.job_id == job.id)
+        .order_by(SendAttempt.attempt_no.asc())
+    ).all()
+
+    attempt_reads: list[AttemptRead] = []
+    latest_shot_no: int | None = None
+    latest_shot_state: ScreenshotState = "none"
+    for row in rows:
+        state, _ = resolve_shot_artifact(artifacts_dir, job.account_id, row.artifact_ref)
+        attempt_reads.append(
+            AttemptRead(
+                id=row.id,
+                attempt_no=row.attempt_no,
+                stage=row.stage,
+                status=row.status,
+                failure_class=row.failure_class,
+                screenshot_state=state,
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+            )
+        )
+        if state != "none":
+            latest_shot_no = row.attempt_no
+            latest_shot_state = state
+
+    base = JobRead.model_validate(job).model_dump()
+    return JobDetailRead(
+        **base,
+        attempts=attempt_reads,
+        latest_screenshot_attempt_no=latest_shot_no,
+        latest_screenshot_state=latest_shot_state,
+    )
+
+
+def get_job_attempt_screenshot_path(
+    session: Session,
+    job_id: str,
+    attempt_no: int,
+    user_id: str,
+    artifacts_dir: Path,
+) -> Path:
+    job = _require_user_job(session, job_id, user_id)
+    attempt = session.exec(
+        select(SendAttempt).where(
+            SendAttempt.job_id == job.id,
+            SendAttempt.attempt_no == attempt_no,
+        )
+    ).first()
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="尝试记录不存在")
+
+    state, path = resolve_shot_artifact(artifacts_dir, job.account_id, attempt.artifact_ref)
+    if state == "available" and path is not None:
+        return path
+    if state == "expired":
+        raise HTTPException(status_code=410, detail="诊断截图已超过保留期并被清理")
+    raise HTTPException(status_code=404, detail="该次尝试无诊断截图")

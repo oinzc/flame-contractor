@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from ..core.artifacts import to_artifact_ref
 from ..core.config import Settings
 from ..core.errors import describe_exception, discard_task_result
 from ..models import (
@@ -2750,10 +2751,12 @@ class BrowserManager:
             raise
         if not opened.opened:
             screenshot = await self._capture_shot(chat, account.id, "target_not_found")
+            attempt_no = self._record_attempt(job.id, stage="opening_chat")
             self._finalize_send(
                 job.id, target.id, account.id,
                 status=JobStatus.FAILED_TERMINAL, failure=FailureClass.TARGET_UNCERTAIN,
-                confirmed=False,
+                confirmed=False, attempt_no=attempt_no, artifact_ref=screenshot,
+                stage="opening_chat",
             )
             return {"target": nickname, "status": "not_found",
                     "failure_class": FailureClass.TARGET_UNCERTAIN.value,
@@ -2761,10 +2764,12 @@ class BrowserManager:
                     "screenshot": screenshot, "page_url": self._page_url(chat)}
         if not opened.exact:
             screenshot = await self._capture_shot(chat, account.id, "target_ambiguous")
+            attempt_no = self._record_attempt(job.id, stage="opening_chat")
             self._finalize_send(
                 job.id, target.id, account.id,
                 status=JobStatus.FAILED_TERMINAL, failure=FailureClass.TARGET_UNCERTAIN,
-                confirmed=False,
+                confirmed=False, attempt_no=attempt_no, artifact_ref=screenshot,
+                stage="opening_chat",
             )
             detail = (
                 "已打开会话，但稳定抖音身份无法核对，已阻止发送"
@@ -2801,6 +2806,7 @@ class BrowserManager:
                     failure=FailureClass.UNKNOWN_OUTCOME,
                     confirmed=False,
                     attempt_no=attempt_no,
+                    artifact_ref=screenshot,
                 )
                 return {"target": nickname, "status": "unknown_requires_review",
                         "failure_class": FailureClass.UNKNOWN_OUTCOME.value,
@@ -2812,7 +2818,7 @@ class BrowserManager:
                 self._finalize_send(
                     job.id, target.id, account.id,
                     status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.DOM_CHANGED,
-                    confirmed=False, attempt_no=attempt_no,
+                    confirmed=False, attempt_no=attempt_no, artifact_ref=screenshot,
                 )
                 return {"target": nickname, "status": "failed_retryable",
                         "failure_class": FailureClass.DOM_CHANGED.value,
@@ -2823,7 +2829,7 @@ class BrowserManager:
                 self._finalize_send(
                     job.id, target.id, account.id,
                     status=JobStatus.FAILED_RETRYABLE, failure=FailureClass.OTHER,
-                    confirmed=False, attempt_no=attempt_no,
+                    confirmed=False, attempt_no=attempt_no, artifact_ref=screenshot,
                 )
                 return {"target": nickname, "status": "failed_retryable",
                         "failure_class": FailureClass.OTHER.value,
@@ -2842,11 +2848,6 @@ class BrowserManager:
             )
             raise
 
-        screenshot: str | None = None
-        if outcome != "succeeded":
-            label = "unknown_outcome" if outcome == "unknown_requires_review" else "confirm_failed"
-            screenshot = await self._capture_shot(chat, account.id, label)
-
         outcome_map = {
             "succeeded": (JobStatus.SUCCEEDED, None, True),
             "failed_retryable": (JobStatus.FAILED_RETRYABLE, FailureClass.OTHER, False),
@@ -2861,7 +2862,7 @@ class BrowserManager:
         upgrade_detail: str | None = None
         if outcome == "unknown_requires_review" and bubble_confirmed:
             # 权威证据：消息已进入消息列表气泡，且整个观察窗内无失败标记。
-            # 仅状态指示未消失，按成功核销，防止重复发送。
+            # 仅状态指示未消失，按成功核销，防止重复发送，且不保存异常截图。
             job_status = JobStatus.SUCCEEDED
             failure = None
             confirmed = True
@@ -2873,9 +2874,17 @@ class BrowserManager:
                 if outcome == "unknown_requires_review"
                 else None
             )
+
+        screenshot: str | None = None
+        if not confirmed:
+            label = "unknown_outcome" if outcome == "unknown_requires_review" else "confirm_failed"
+            screenshot = await self._capture_shot(chat, account.id, label)
+
         self._finalize_send(
             job.id, target.id, account.id,
             status=job_status, failure=failure, confirmed=confirmed, attempt_no=attempt_no,
+            artifact_ref=screenshot if not confirmed else None,
+            stage="confirming",
         )
         return {"target": nickname, "status": outcome,
                 "failure_class": failure.value if failure else None,
@@ -2951,19 +2960,19 @@ class BrowserManager:
             session.refresh(job)
             return job, True
 
-    def _record_attempt(self, job_id: str) -> int:
+    def _record_attempt(self, job_id: str, *, stage: str = "sending") -> int:
         with Session(self._engine) as session:
             job = session.get(SendJob, job_id)
             if job is None:
                 raise RuntimeError("任务不存在")
             job.attempt_count += 1
             attempt_no = job.attempt_count
-            job.status = JobStatus.SENDING
+            job.status = JobStatus.OPENING_CHAT if stage == "opening_chat" else JobStatus.SENDING
             job.updated_at = _utcnow()
             attempt = SendAttempt(
                 job_id=job_id,
                 attempt_no=attempt_no,
-                stage="sending",
+                stage=stage,
                 status=AttemptStatus.RUNNING,
                 started_at=_utcnow(),
             )
@@ -2991,7 +3000,14 @@ class BrowserManager:
         failure: FailureClass | None,
         confirmed: bool,
         attempt_no: int | None = None,
+        artifact_ref: str | None = None,
+        stage: str | None = None,
     ) -> None:
+        normalized_ref = (
+            to_artifact_ref(self._settings.artifacts_dir, artifact_ref)
+            if artifact_ref and not confirmed
+            else None
+        )
         with Session(self._engine) as session:
             now = _utcnow()
             job = session.get(SendJob, job_id)
@@ -3014,6 +3030,10 @@ class BrowserManager:
                         AttemptStatus.SUCCEEDED if confirmed else AttemptStatus.FAILED
                     )
                     attempt.failure_class = failure
+                    if stage is not None:
+                        attempt.stage = stage
+                    if normalized_ref is not None:
+                        attempt.artifact_ref = normalized_ref
                     attempt.finished_at = now
                     session.add(attempt)
             if confirmed:

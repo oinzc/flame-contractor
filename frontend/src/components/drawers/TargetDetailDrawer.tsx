@@ -30,6 +30,7 @@ export interface TargetDetailDrawerProps {
   activeTab: 'config' | 'history'
   tasks: BackgroundTasksController
   onTabChange: (tab: 'config' | 'history') => void
+  onInspectJob: (jobId: string) => void
   onClose: () => void
   onChanged: () => Promise<void> | void
 }
@@ -47,6 +48,7 @@ export function TargetDetailDrawer({
   activeTab,
   tasks,
   onTabChange,
+  onInspectJob,
   onClose,
   onChanged,
 }: TargetDetailDrawerProps) {
@@ -406,26 +408,35 @@ export function TargetDetailDrawer({
                       </span>
                     )}
                   </div>
-                  {isReview && (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 2 }}>
-                      <button
-                        type="button"
-                        className="fc-btn fc-btn-secondary fc-btn-sm"
-                        disabled={busy}
-                        onClick={() => void handleJobAction(job.id, 'release')}
-                      >
-                        释放重算
-                      </button>
-                      <button
-                        type="button"
-                        className="fc-btn fc-btn-primary fc-btn-sm"
-                        disabled={busy}
-                        onClick={() => void handleJobAction(job.id, 'confirm')}
-                      >
-                        确认已发
-                      </button>
-                    </div>
-                  )}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 2 }}>
+                    <button
+                      type="button"
+                      className="fc-btn fc-btn-ghost fc-btn-sm"
+                      onClick={() => onInspectJob(job.id)}
+                    >
+                      查看诊断
+                    </button>
+                    {isReview && (
+                      <>
+                        <button
+                          type="button"
+                          className="fc-btn fc-btn-secondary fc-btn-sm"
+                          disabled={busy}
+                          onClick={() => void handleJobAction(job.id, 'release')}
+                        >
+                          释放重算
+                        </button>
+                        <button
+                          type="button"
+                          className="fc-btn fc-btn-primary fc-btn-sm"
+                          disabled={busy}
+                          onClick={() => void handleJobAction(job.id, 'confirm')}
+                        >
+                          确认已发
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               )
             })}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../../api.ts'
 import { useCardPaginationCapacity } from '../../hooks/useViewportPageSize.ts'
 import {
@@ -25,6 +25,9 @@ export interface JobsStatsViewProps {
   selectedAccount: Account | null
   targets: ContractTarget[]
   templates: MessageTemplate[]
+  selectedJobId: string | null
+  refreshRevision?: number
+  onInspectJob: (jobId: string) => void
   onChanged: () => Promise<void> | void
 }
 
@@ -36,17 +39,17 @@ export function JobsStatsView({
   selectedAccount,
   targets,
   templates,
-  onChanged,
+  selectedJobId,
+  refreshRevision = 0,
+  onInspectJob,
 }: JobsStatsViewProps) {
   const [scope, setScope] = useState<ScopeKey>(selectedAccount ? 'current' : 'all')
   const [statusFilter, setStatusFilter] = useState<StatusFilterKey>('')
   const [page, setPage] = useState(1)
-  const [reloadTick, setReloadTick] = useState(0)
 
   const [jobsData, setJobsData] = useState<JobsPageData | null>(null)
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busyJobId, setBusyJobId] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -75,7 +78,7 @@ export function JobsStatsView({
       .catch(() => {
         /* non-fatal */
       })
-  }, [reloadTick])
+  }, [refreshRevision])
 
   const totalItems = jobsData?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
@@ -115,11 +118,7 @@ export function JobsStatsView({
     return () => {
       cancelled = true
     }
-  }, [effectiveAccountId, measured, offset, pageSize, reloadTick, statusFilter])
-
-  const reloadLocal = useCallback(() => {
-    setReloadTick((n) => n + 1)
-  }, [])
+  }, [effectiveAccountId, measured, offset, pageSize, refreshRevision, statusFilter])
 
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
   const targetsById = useMemo(() => new Map(targets.map((t) => [t.id, t])), [targets])
@@ -140,21 +139,6 @@ export function JobsStatsView({
       count: statusCounts.unknown_requires_review ?? 0,
     },
   ]
-
-  async function handleJobReview(jobId: string, action: 'confirm' | 'release') {
-    setBusyJobId(jobId)
-    setError(null)
-    try {
-      if (action === 'confirm') await api.confirmJobSent(jobId)
-      else await api.releaseJob(jobId)
-      reloadLocal()
-      await onChanged()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : '处理待复核任务失败')
-    } finally {
-      setBusyJobId(null)
-    }
-  }
 
   async function handleExportCsv() {
     setExporting(true)
@@ -326,10 +310,22 @@ export function JobsStatsView({
                         ? (templatesById.get(job.templateId)?.name ?? '模板')
                         : '临时直发文字'
                       const isReview = job.status === 'unknown_requires_review'
-                      const busy = busyJobId === job.id
+                      const isSelected = selectedJobId === job.id
 
                       return (
-                        <tr key={job.id}>
+                        <tr
+                          key={job.id}
+                          className={`fc-row-clickable${isSelected ? ' is-selected' : ''}`}
+                          tabIndex={0}
+                          onClick={() => onInspectJob(job.id)}
+                          onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget) return
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              onInspectJob(job.id)
+                            }
+                          }}
+                        >
                           <td className="fc-mono">
                             <div style={{ fontWeight: 600, lineHeight: '17px' }}>
                               {job.businessDate.slice(0, 10)}
@@ -361,28 +357,26 @@ export function JobsStatsView({
                               )}
                             </div>
                           </td>
-                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          <td
+                            style={{ textAlign: 'right', whiteSpace: 'nowrap' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             {isReview ? (
-                              <div style={{ display: 'inline-flex', gap: 6 }}>
-                                <button
-                                  type="button"
-                                  className="fc-btn fc-btn-secondary fc-btn-sm"
-                                  disabled={busy}
-                                  onClick={() => void handleJobReview(job.id, 'release')}
-                                >
-                                  释放重算
-                                </button>
-                                <button
-                                  type="button"
-                                  className="fc-btn fc-btn-primary fc-btn-sm"
-                                  disabled={busy}
-                                  onClick={() => void handleJobReview(job.id, 'confirm')}
-                                >
-                                  确认已发
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                className="fc-btn fc-btn-secondary fc-btn-sm"
+                                onClick={() => onInspectJob(job.id)}
+                              >
+                                查看现场
+                              </button>
                             ) : (
-                              <span className="fc-hint">—</span>
+                              <button
+                                type="button"
+                                className="fc-btn fc-btn-ghost fc-btn-sm"
+                                onClick={() => onInspectJob(job.id)}
+                              >
+                                详情
+                              </button>
                             )}
                           </td>
                         </tr>
