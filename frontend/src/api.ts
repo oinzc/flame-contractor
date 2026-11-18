@@ -58,6 +58,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+export function normalizeStatsSummary(raw: Record<string, unknown>): import('./types').StatsSummary {
+  const windowDays =
+    typeof raw.windowDays === 'number'
+      ? raw.windowDays
+      : typeof raw.window_days === 'number'
+        ? raw.window_days
+        : 30
+  return {
+    windowDays,
+    daily: Array.isArray(raw.daily) ? (raw.daily as import('./types').StatsDailyRow[]) : [],
+    currentSuccessStreak: typeof raw.currentSuccessStreak === 'number' ? raw.currentSuccessStreak : 0,
+    bestSuccessStreak: typeof raw.bestSuccessStreak === 'number' ? raw.bestSuccessStreak : 0,
+    totalJobs: typeof raw.totalJobs === 'number' ? raw.totalJobs : 0,
+    succeededJobs: typeof raw.succeededJobs === 'number' ? raw.succeededJobs : 0,
+    successRate: typeof raw.successRate === 'number' ? raw.successRate : null,
+  }
+}
+
 export const api = {
   health: () => request<import('./types').Health>('/health'),
   authSetupStatus: () => request<import('./types').AuthSetupRead>('/api/auth/setup'),
@@ -131,7 +149,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  patchTarget: (id: string, patch: { enabled?: boolean; templateId?: string | null; sendTimeHhmm?: string | null }) =>
+  patchTarget: (
+    id: string,
+    patch: { enabled?: boolean; templateId?: string | null; sendTimeHhmm?: string | null },
+  ) =>
     request<import('./types').ContractTarget>(`/api/targets/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
@@ -238,7 +259,7 @@ export const api = {
       stickerName?: string
       stickerCategory?: string
       enabled?: boolean
-      poolItems?: { content: string; weekdayMask: number }[]
+      poolItems?: { content: string; weekdayMask: number; enabled?: boolean }[]
     },
   ) =>
     request<import('./types').MessageTemplate>(`/api/templates/${id}`, {
@@ -289,7 +310,19 @@ export const api = {
     request<import('./types').SchedulerStatus>('/api/scheduler/resume', {
       method: 'POST',
     }),
-  statsSummary: () => request<import('./types').StatsSummary>('/api/stats/summary'),
+  statsSummary: () =>
+    request<Record<string, unknown>>('/api/stats/summary').then(normalizeStatsSummary),
+  downloadStatsCsv: async () => {
+    const response = await fetch('/api/stats/export.csv', { headers: authHeaders() })
+    if (!response.ok) throw new ApiError(response.status, '统计 CSV 导出失败')
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `flame-jobs-${new Date().toISOString().slice(0, 10)}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
   startQrLogin: (id: string) =>
     request<import('./types').LoginStatus>(`/api/accounts/${id}/login/qr`, {
       method: 'POST',

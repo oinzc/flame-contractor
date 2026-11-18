@@ -1,0 +1,114 @@
+:root {
+  /* Light Mode Surfaces (Cal.com + Twenty) */
+  --canvas: #ffffff;
+  --surface-soft: #f8f9fa;
+  --surface-card: #f4f5f6;
+  --surface-hover: #f1f3f5;
+  --surface-selected: #f3f5f8;
+  --surface-dark: #111111;
+
+  /* Borders */
+  --hairline: #e5e7eb;
+  --hairline-strong: #d1d5db;
+  --hairline-soft: #f1f3f5;
+
+  /* Typography & Monochrome Action Layer */
+  --ink: #111111;
+  --primary-active: #262626;
+  --body: #374151;
+  --muted: #6b7280;
+  --muted-soft: #9ca3af;
+  --on-primary: #ffffff;
+
+  /* Controls & Overlays */
+  --switch-off: #d1d5db;
+  --switch-thumb: #ffffff;
+  --backdrop-dim: rgba(17, 17, 17, 0.22);
+
+  /* Single Signature Warmth: Official Spark Count Pill Only */
+  --ember: #ea580c;
+  --ember-bg: #fff7ed;
+  --ember-border: #fed7aa;
+
+  /* Semantic Feedback */
+  --ok: #059669;
+  --ok-bg: #ecfdf5;
+  --ok-border: #a7f3d0;
+
+  --warn: #b45309;
+  --warn-ink: #92400e;
+  --warn-bg: #fffbeb;
+  --warn-border: #fde68a;
+
+  --err: #dc2626;
+  --err-bg: #fef2f2;
+  --err-border: #fecaca;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 9999px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(17, 17, 17, 0.04);
+  --shadow-sm: 0 4px 12px rgba(17, 17, 17, 0.07);
+  --shadow-drawer: -8px 0 28px rgba(17, 17, 17, 0.08);
+
+  /* Motion (< 300ms ease-out only) */
+  --ease-out-quart: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+  --dur-base: 190ms;
+
+  /* Fonts */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Crisp Neutral Slate Dark Mode (Linear / Cal.com Dark — zero industrial mud) */
+:root[data-theme='dark'] {
+  --canvas: #0f1012;
+  --surface-soft: #16181c;
+  --surface-card: #1e2126;
+  --surface-hover: #252930;
+  --surface-selected: #1f252e;
+  --surface-dark: #090a0b;
+
+  --hairline: #2a2e36;
+  --hairline-strong: #3b404b;
+  --hairline-soft: #1c1f25;
+
+  --ink: #f4f4f5;
+  --primary-active: #e4e4e7;
+  --body: #d4d4d8;
+  --muted: #9ca3af;
+  --muted-soft: #71717a;
+  --on-primary: #111111;
+
+  --switch-off: #3f3f46;
+  --switch-thumb: #0f1012;
+  --backdrop-dim: rgba(0, 0, 0, 0.58);
+
+  --ember: #fb923c;
+  --ember-bg: rgba(234, 88, 12, 0.14);
+  --ember-border: rgba(251, 146, 60, 0.32);
+
+  --ok: #34d399;
+  --ok-bg: rgba(16, 185, 129, 0.14);
+  --ok-border: rgba(52, 211, 153, 0.3);
+
+  --warn: #fbbf24;
+  --warn-ink: #fde68a;
+  --warn-bg: rgba(245, 158, 11, 0.13);
+  --warn-border: rgba(251, 191, 36, 0.28);
+
+  --err: #f87171;
+  --err-bg: rgba(239, 68, 68, 0.14);
+  --err-border: rgba(248, 113, 113, 0.3);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.38);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.48);
+  --shadow-drawer: -8px 0 28px rgba(0, 0, 0, 0.55);
+}

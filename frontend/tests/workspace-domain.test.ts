@@ -1,0 +1,270 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { dateInAccountTimezone, weekdayToPoolBit } from '../src/lib/date.ts'
+import { previewTemplateForTarget, renderTemplateVariables } from '../src/lib/preview.ts'
+import {
+  collectAccountReviewItems,
+  deriveTargetDayMap,
+  mergeAccountSendPreview,
+  parseSchedulerSettingsForm,
+  shouldFinalizeRecoveredScan,
+} from '../src/lib/workspace.ts'
+import { normalizeStatsSummary } from '../src/api.ts'
+import { normalizeThemePreference, resolveEffectiveTheme } from '../src/lib/theme.ts'
+
+test('dateInAccountTimezone resolves Asia/Shanghai across UTC midnight', () => {
+  const instant = new Date('2026-11-17T17:30:00Z') // 2026-11-18 01:30 CST
+  assert.equal(dateInAccountTimezone(instant, 'Asia/Shanghai'), '2026-11-18')
+  assert.equal(dateInAccountTimezone(instant, 'Invalid/Zone'), '2026-11-17')
+})
+
+test('weekdayToPoolBit maps Mon..Sun to bits 0..6 and Sunday 0 -> bit 6', () => {
+  assert.equal(weekdayToPoolBit(1), 0)
+  assert.equal(weekdayToPoolBit(6), 5)
+  assert.equal(weekdayToPoolBit(0), 6)
+})
+
+test('previewTemplateForTarget handles weekdayMask=0 as everyday and filters Sunday bit 6', () => {
+  const sunday = new Date('2026-11-15T12:00:00+08:00') // Sunday
+  const tpl = {
+    id: 'tpl-pool',
+    name: '池',
+    type: 'pool' as const,
+    content: '',
+    imagePath: null,
+    stickerName: null,
+    stickerLabel: null,
+    stickerCategory: null,
+    stickerFallbackIndex: null,
+    version: 1,
+    enabled: true,
+    createdAt: '',
+    updatedAt: '',
+    poolItems: [
+      { id: 'p1', content: '仅周一 {{target_name}}', weekdayMask: 1 << 0, enabled: true, lastUsedAt: null },
+      { id: 'p2', content: '周日好 {{target_name}} 第{{streak_days}}天', weekdayMask: 1 << 6, enabled: true, lastUsedAt: null },
+      { id: 'p3', content: '通用每天可用', weekdayMask: 0, enabled: true, lastUsedAt: null },
+      { id: 'p4', content: '已停用候选', weekdayMask: 0, enabled: false, lastUsedAt: null },
+    ],
+  }
+  const target = {
+    id: 't1',
+    accountId: 'a1',
+    platformUserId: 'u1',
+    platformHandle: null,
+    platformConversationId: null,
+    conversationType: 'user' as const,
+    nicknameSnapshot: '林知夏',
+    templateId: 'tpl-pool',
+    enabled: true,
+    sendTimeHhmm: null,
+    sparkDays: 42,
+    sparkKind: null,
+    sparkLabel: '42天',
+    sparkScannedAt: null,
+    streakDays: 42,
+    lastSentAt: null,
+    lastConfirmedAt: null,
+    deletedAt: null,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const res = previewTemplateForTarget(tpl, target, sunday)
+  assert.deepEqual(res.candidates, ['周日好 林知夏 第42天', '通用每天可用'])
+  assert.equal(
+    renderTemplateVariables('{{weekday}}', { targetName: '林知夏', streakDays: 42, now: sunday }),
+    '星期日',
+  )
+})
+
+test('deriveTargetDayMap & collectAccountReviewItems surface historical unresolved review jobs and block single send', () => {
+  const target = {
+    id: 't1',
+    accountId: 'a1',
+    platformUserId: 'u1',
+    platformHandle: null,
+    platformConversationId: null,
+    conversationType: 'user' as const,
+    nicknameSnapshot: '陈默',
+    templateId: 'tpl1',
+    enabled: true,
+    sendTimeHhmm: null,
+    sparkDays: 19,
+    sparkKind: null,
+    sparkLabel: null,
+    sparkScannedAt: null,
+    streakDays: 19,
+    lastSentAt: null,
+    lastConfirmedAt: null,
+    deletedAt: null,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const oldReviewJob = {
+    id: 'j-old',
+    accountId: 'a1',
+    targetId: 't1',
+    templateId: 'tpl1',
+    businessDate: '2026-11-15',
+    messageSlotId: '2026-11-15:v1',
+    status: 'unknown_requires_review' as const,
+    scheduledAt: null,
+    attemptCount: 1,
+    failureClass: 'unknown_outcome' as const,
+    confirmedAt: null,
+    createdAt: '2026-11-15T10:00:00Z',
+    updatedAt: '2026-11-15T10:01:00Z',
+  }
+  const dayMap = deriveTargetDayMap([target], [], [oldReviewJob], '2026-11-18')
+  const summary = dayMap.get('t1')!
+  assert.equal(summary.hasUnresolvedReview, true)
+  assert.equal(summary.singleSendGuard, 'blocked_review')
+
+  const account = {
+    id: 'a1',
+    displayName: '主号',
+    status: 'healthy' as const,
+    enabled: true,
+    timezone: 'Asia/Shanghai',
+    sendWindowStart: '08:00',
+    sendWindowEnd: '22:00',
+    sendTimeHhmm: null,
+    lastVerifiedAt: null,
+    lastSuccessAt: null,
+    douyinNickname: null,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const items = collectAccountReviewItems(account, [target], [oldReviewJob], '2026-11-18')
+  assert.equal(items.length, 1)
+  assert.equal(items[0].kind, 'job_review')
+  if (items[0].kind === 'job_review') {
+    assert.equal(items[0].isHistorical, true)
+  }
+})
+
+test('mergeAccountSendPreview synthesizes disabled, succeeded, and review-protected skip reasons', () => {
+  const mkTarget = (id: string, name: string, enabled: boolean) => ({
+    id,
+    accountId: 'a1',
+    platformUserId: id,
+    platformHandle: null,
+    platformConversationId: null,
+    conversationType: 'user' as const,
+    nicknameSnapshot: name,
+    templateId: 'tpl1',
+    enabled,
+    sendTimeHhmm: null,
+    sparkDays: null,
+    sparkKind: null,
+    sparkLabel: null,
+    sparkScannedAt: null,
+    streakDays: 5,
+    lastSentAt: null,
+    lastConfirmedAt: null,
+    deletedAt: null,
+    createdAt: '',
+    updatedAt: '',
+  })
+  const targets = [
+    mkTarget('t1', '待发好友', true),
+    mkTarget('t2', '已发好友', true),
+    mkTarget('t3', '停用好友', false),
+  ]
+  const succeededJob = {
+    id: 'j2',
+    accountId: 'a1',
+    targetId: 't2',
+    templateId: 'tpl1',
+    businessDate: '2026-11-18',
+    messageSlotId: 's',
+    status: 'succeeded' as const,
+    scheduledAt: null,
+    attemptCount: 1,
+    failureClass: null,
+    confirmedAt: null,
+    createdAt: '2026-11-18T01:00:00Z',
+    updatedAt: '2026-11-18T01:00:00Z',
+  }
+  const dayMap = deriveTargetDayMap(targets, [succeededJob], [], '2026-11-18')
+  const preview = {
+    accountId: 'a1',
+    businessDate: '2026-11-18',
+    items: [
+      { targetId: 't1', targetName: '待发好友', templateId: 'tpl1', message: '早安', reason: null },
+      { targetId: 't2', targetName: '已发好友', templateId: 'tpl1', message: '早安', reason: null },
+    ],
+  }
+  const normalRows = mergeAccountSendPreview(targets, dayMap, preview, false)
+  assert.equal(normalRows.find((r) => r.target.id === 't1')?.willSend, true)
+  assert.equal(normalRows.find((r) => r.target.id === 't2')?.willSend, false)
+  assert.match(normalRows.find((r) => r.target.id === 't2')?.skipReason ?? '', /今日已发/)
+  assert.match(normalRows.find((r) => r.target.id === 't3')?.skipReason ?? '', /未启用/)
+
+  const forcedRows = mergeAccountSendPreview(targets, dayMap, preview, true)
+  assert.equal(forcedRows.find((r) => r.target.id === 't2')?.willSend, true)
+})
+
+test('shouldFinalizeRecoveredScan skips historical completed scans already recorded in syncedIds', () => {
+  const completedScan = {
+    taskId: 'scan-1',
+    accountId: 'a1',
+    source: 'manual' as const,
+    status: 'completed' as const,
+    total: 10,
+    completed: 10,
+    stage: 'done',
+    currentItem: null,
+    round: 1,
+    maxRounds: 1,
+    overall: 'ok' as const,
+    detail: null,
+    entries: [],
+    reconciliation: {
+      schemaVersion: 1,
+      counts: { changed: 0, noSpark: 0, new: 0, notObserved: 0, unchanged: 0 },
+      entries: [],
+    },
+    startedAt: null,
+    finishedAt: null,
+  }
+  assert.equal(shouldFinalizeRecoveredScan(completedScan, new Set(['scan-1'])), false)
+  assert.equal(shouldFinalizeRecoveredScan(completedScan, new Set()), true)
+})
+
+test('normalizeStatsSummary maps snake_case window_days and null successRate safely', () => {
+  const stats = normalizeStatsSummary({
+    window_days: 30,
+    daily: [],
+    currentSuccessStreak: 0,
+    bestSuccessStreak: 0,
+    totalJobs: 0,
+    succeededJobs: 0,
+    successRate: null,
+  })
+  assert.equal(stats.windowDays, 30)
+  assert.equal(stats.successRate, null)
+})
+
+test('parseSchedulerSettingsForm enforces 1..168 scan hours and preserves 0 grace minutes', () => {
+  assert.deepEqual(parseSchedulerSettingsForm('24', '0', false), {
+    ok: true,
+    patch: { autoScanIntervalHours: 24, fixedTimeGraceMinutes: 0, scheduledAlwaysSend: false },
+  })
+  const zeroScan = parseSchedulerSettingsForm('0', '30', true)
+  assert.equal(zeroScan.ok, false)
+  const overScan = parseSchedulerSettingsForm('200', '30', false)
+  assert.equal(overScan.ok, false)
+})
+
+test('theme helpers normalize preference and resolve system dark/light preference', () => {
+  assert.equal(normalizeThemePreference(null), 'system')
+  assert.equal(normalizeThemePreference('invalid'), 'system')
+  assert.equal(normalizeThemePreference('dark'), 'dark')
+  assert.equal(normalizeThemePreference('light'), 'light')
+
+  assert.equal(resolveEffectiveTheme('light', true), 'light')
+  assert.equal(resolveEffectiveTheme('dark', false), 'dark')
+  assert.equal(resolveEffectiveTheme('system', true), 'dark')
+  assert.equal(resolveEffectiveTheme('system', false), 'light')
+})

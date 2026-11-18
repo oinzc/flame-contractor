@@ -331,7 +331,7 @@ export interface SendJob {
   id: string
   accountId: string
   targetId: string
-  templateId: string
+  templateId: string | null
   businessDate: string
   messageSlotId: string
   status: JobStatus
@@ -531,3 +531,16 @@ export interface SendProgress {
   startedAt: string | null
   finishedAt: string | null
 }
+
+export type WorkspaceView = 'targets' | 'jobs' | 'templates' | 'settings'
+
+export type DrawerState =
+  | { kind: 'closed' }
+  | { kind: 'target-detail'; targetId: string; tab: 'config' | 'history' }
+  | { kind: 'send-account' }
+  | { kind: 'scan-reconcile' }
+  | { kind: 'account-manage' }
+  | { kind: 'dry-run' }
+  | { kind: 'create-account' }
+  | { kind: 'create-target' }
+  | { kind: 'template-editor'; templateId: string | null }

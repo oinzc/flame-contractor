@@ -1,6 +1,6 @@
-import type { AccountStatus, JobStatus, ScheduleStatus } from '../types'
+import type { AccountStatus, FailureClass, JobStatus, ScheduleStatus } from '../types.ts'
 
-export type Tone = 'default' | 'ember' | 'gold' | 'cyan' | 'crimson'
+export type StatusTone = 'neutral' | 'ok' | 'warn' | 'err' | 'spark'
 
 export const ACCOUNT_STATUS_LABELS: Record<AccountStatus, string> = {
   pending_login: '待登录',
@@ -13,15 +13,15 @@ export const ACCOUNT_STATUS_LABELS: Record<AccountStatus, string> = {
   cooldown: '冷却中',
 }
 
-export const ACCOUNT_STATUS_TONES: Record<AccountStatus, Tone> = {
-  pending_login: 'gold',
-  healthy: 'ember',
-  running: 'cyan',
-  paused: 'default',
-  auth_expired: 'crimson',
-  verification_required: 'crimson',
-  dom_broken: 'crimson',
-  cooldown: 'gold',
+export const ACCOUNT_STATUS_LIGHT_TONES: Record<AccountStatus, StatusTone> = {
+  pending_login: 'warn',
+  healthy: 'ok',
+  running: 'ok',
+  paused: 'neutral',
+  auth_expired: 'err',
+  verification_required: 'err',
+  dom_broken: 'err',
+  cooldown: 'warn',
 }
 
 export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
@@ -37,17 +37,17 @@ export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   cancelled: '已取消',
 }
 
-export const JOB_STATUS_TONES: Record<JobStatus, Tone> = {
-  scheduled: 'gold',
-  leased: 'cyan',
-  opening_chat: 'cyan',
-  sending: 'cyan',
-  confirming: 'cyan',
-  succeeded: 'ember',
-  failed_retryable: 'gold',
-  failed_terminal: 'crimson',
-  unknown_requires_review: 'crimson',
-  cancelled: 'default',
+export const JOB_STATUS_LIGHT_TONES: Record<JobStatus, StatusTone> = {
+  scheduled: 'neutral',
+  leased: 'neutral',
+  opening_chat: 'neutral',
+  sending: 'neutral',
+  confirming: 'neutral',
+  succeeded: 'ok',
+  failed_retryable: 'warn',
+  failed_terminal: 'err',
+  unknown_requires_review: 'warn',
+  cancelled: 'neutral',
 }
 
 export const ATTENTION_ACCOUNT_STATUSES: AccountStatus[] = [
@@ -73,15 +73,25 @@ export const SCHEDULE_STATUS_LABELS: Record<ScheduleStatus, string> = {
   cancelled: '已取消',
 }
 
-export const SCHEDULE_STATUS_TONES: Record<ScheduleStatus, Tone> = {
-  pending: 'gold',
-  leased: 'cyan',
-  sending: 'cyan',
-  succeeded: 'ember',
-  failed: 'crimson',
-  unknown_requires_review: 'crimson',
-  skipped: 'default',
-  cancelled: 'default',
+export const SCHEDULE_STATUS_LIGHT_TONES: Record<ScheduleStatus, StatusTone> = {
+  pending: 'neutral',
+  leased: 'neutral',
+  sending: 'neutral',
+  succeeded: 'ok',
+  failed: 'err',
+  unknown_requires_review: 'warn',
+  skipped: 'neutral',
+  cancelled: 'neutral',
+}
+
+export const FAILURE_CLASS_LABELS: Record<FailureClass, string> = {
+  network: '网络不可用',
+  auth: '登录失效',
+  verification: '需要验证',
+  target_uncertain: '好友未确认',
+  dom_changed: '页面结构变化',
+  unknown_outcome: '结果未确认',
+  other: '其他原因',
 }
 
 /** 后端 SQLite 存 naive UTC（无时区后缀）；按 UTC 解析成本地 Date。 */
