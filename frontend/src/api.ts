@@ -321,6 +321,10 @@ export const api = {
     request<import('./types').SchedulerStatus>('/api/scheduler/resume', {
       method: 'POST',
     }),
+  schedulerTestNotification: () =>
+    request<import('./types').NotificationTestResult>('/api/scheduler/test-notification', {
+      method: 'POST',
+    }),
   statsSummary: () =>
     request<Record<string, unknown>>('/api/stats/summary').then(normalizeStatsSummary),
   downloadStatsCsv: async () => {

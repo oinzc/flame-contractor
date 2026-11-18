@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -74,7 +74,14 @@ class BarkNotifier:
         base = (self.base_url or "").strip()
         if not base:
             return None
-        return f"{base}?level={level}"
+        parts = urlsplit(base)
+        query_items = [
+            (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "level"
+        ]
+        query_items.append(("level", level))
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(query_items), parts.fragment)
+        )
 
     async def send(self, title: str, content: str, level: str | None = None) -> bool:
         """推送一条通知；未配置或失败时静默 no-op。返回是否成功。"""
@@ -88,8 +95,13 @@ class BarkNotifier:
             await self.sender(title, content)
             return True
 
+        device_key = self._device_key(self.base_url or "")
+        if not device_key:
+            logger.warning("Bark 通知发送跳过：FLAME_BARK_URL 缺少 device_key 路径段")
+            return False
+
         payload = {
-            "device_key": self._device_key(self.base_url or ""),
+            "device_key": device_key,
             "title": title,
             "body": content,
         }
@@ -103,6 +115,72 @@ class BarkNotifier:
         except Exception as exc:  # noqa: BLE001 - 通知失败不影响主流程
             logger.warning("Bark 通知发送失败：%s", type(exc).__name__)
             return False
+
+    async def probe(
+        self, title: str, content: str, level: str | None = None
+    ) -> tuple[bool, str]:
+        """主动探测发送并返回脱敏结果文案（严禁包含 URL 或 device_key）。"""
+        url = self._resolve_url(level)
+        if not url:
+            return False, "尚未配置 FLAME_BARK_URL（请在 .env 中设置后重启服务）"
+        effective_level = (
+            (level or self.level)
+            if (level or self.level) in VALID_LEVELS
+            else self.level
+        )
+        self.last_sent = {"title": title, "content": content, "level": effective_level}
+
+        try:
+            if self.sender is not None:
+                await self.sender(title, content)
+                return True, "测试推送已送达 Bark 服务，请检查手机通知"
+
+            device_key = self._device_key(self.base_url or "")
+            if not device_key:
+                return (
+                    False,
+                    "FLAME_BARK_URL 缺少设备 Key 路径段，请按 https://api.day.app/<device_key> 格式配置",
+                )
+
+            payload = {
+                "device_key": device_key,
+                "title": title,
+                "body": content,
+            }
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.warning("Bark 测试推送返回非 JSON 响应")
+                return (
+                    False,
+                    "推送地址未返回合法的 Bark JSON 响应，请检查 FLAME_BARK_URL 是否指向 Bark API 服务",
+                )
+            if not isinstance(data, dict):
+                logger.warning("Bark 测试推送返回非对象 JSON")
+                return (
+                    False,
+                    "推送地址未返回合法的 Bark JSON 响应，请检查 FLAME_BARK_URL 是否指向 Bark API 服务",
+                )
+            raw_code = data.get("code")
+            if raw_code is not None and raw_code != 200:
+                safe_code = raw_code if isinstance(raw_code, int) and not isinstance(raw_code, bool) else "异常"
+                logger.warning("Bark 测试推送返回业务错误码：%s", safe_code)
+                return (
+                    False,
+                    f"Bark 服务返回业务错误（code {safe_code}），请检查推送地址与设备 Key",
+                )
+            return True, "测试推送已送达 Bark 服务，请检查手机通知"
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            logger.warning("Bark 测试推送返回 HTTP %s", code)
+            return False, f"Bark 服务返回 HTTP {code}，请检查推送地址是否正确"
+        except Exception as exc:  # noqa: BLE001
+            err_name = type(exc).__name__
+            logger.warning("Bark 测试推送失败：%s", err_name)
+            return False, f"连接 Bark 服务失败（{err_name}）"
 
 
 class Notifier(Protocol):
@@ -123,3 +201,8 @@ class NullNotifier:
 
     async def send(self, title: str, content: str, level: str | None = None) -> bool:
         return False
+
+    async def probe(
+        self, title: str, content: str, level: str | None = None  # noqa: ARG002
+    ) -> tuple[bool, str]:
+        return False, "尚未配置 FLAME_BARK_URL（请在 .env 中设置后重启服务）"

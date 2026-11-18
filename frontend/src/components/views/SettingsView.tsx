@@ -7,9 +7,12 @@ import {
 } from '../../lib/format.ts'
 import { paginateItems } from '../../lib/pagination.ts'
 import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
-import { parseSchedulerSettingsForm } from '../../lib/workspace.ts'
+import {
+  describeBarkCardState,
+  parseSchedulerSettingsForm,
+} from '../../lib/workspace.ts'
 import type { Account, AuthSessionRead, SchedulerStatus, User } from '../../types.ts'
-import { DownloadIcon } from '../ui/Icons.tsx'
+import { DownloadIcon, SendIcon } from '../ui/Icons.tsx'
 import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -47,6 +50,7 @@ export function SettingsView({
   const [alwaysSend, setAlwaysSend] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
+  const [testingBark, setTestingBark] = useState(false)
   const [schedulePage, setSchedulePage] = useState(1)
 
   // Profile & password
@@ -137,6 +141,27 @@ export function SettingsView({
       setSavingScheduler(false)
     }
   }
+
+  async function handleTestBark() {
+    if (testingBark) return
+    setTestingBark(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await api.schedulerTestNotification()
+      if (res.ok) {
+        setNotice(res.detail)
+      } else {
+        setError(res.detail)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '发送测试推送失败')
+    } finally {
+      setTestingBark(false)
+    }
+  }
+
+  const barkState = describeBarkCardState(schedulerStatus)
 
   async function handleSaveProfile(e: FormEvent) {
     e.preventDefault()
@@ -364,7 +389,7 @@ export function SettingsView({
               )}
             </section>
 
-            {/* Right: Appearance + Backup */}
+            {/* Right: Appearance + Bark Notification + Backup */}
             <div className="fc-settings-col">
               <section className="fc-card">
                 <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
@@ -375,6 +400,30 @@ export function SettingsView({
                     </p>
                   </div>
                   <ThemeSwitcher value={themePreference} onChange={onChangeTheme} />
+                </div>
+              </section>
+
+              <section className="fc-card">
+                <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>Bark 手机通知（iOS）</h2>
+                      <StatusPill tone={barkState.configured ? 'ok' : 'neutral'} dot>
+                        {barkState.badgeLabel}
+                      </StatusPill>
+                    </div>
+                    <p className="fc-hint" style={{ marginTop: 3 }}>
+                      {barkState.hint}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="fc-btn fc-btn-secondary"
+                    disabled={!barkState.canSendTest || testingBark}
+                    onClick={() => void handleTestBark()}
+                  >
+                    <SendIcon /> {testingBark ? '推送中…' : '发送测试推送'}
+                  </button>
                 </div>
               </section>
 

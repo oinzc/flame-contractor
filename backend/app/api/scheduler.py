@@ -6,7 +6,12 @@ from sqlmodel import select
 
 from ..core.database import SessionDep
 from ..models import Account, SendSchedule
-from ..schemas import SchedulerSettingsPatch, SchedulerStatusRead, SendScheduleRead
+from ..schemas import (
+    NotificationTestRead,
+    SchedulerSettingsPatch,
+    SchedulerStatusRead,
+    SendScheduleRead,
+)
 from .deps import CurrentUser
 
 router = APIRouter(prefix="/scheduler", tags=["scheduler"])
@@ -47,6 +52,7 @@ def _scheduler_read(
         auto_scan_interval_hours=getattr(scheduler, "auto_scan_interval_hours", 24),
         scheduled_always_send=getattr(scheduler, "scheduled_always_send", False),
         fixed_time_grace_minutes=getattr(scheduler, "fixed_time_grace_minutes", 30),
+        bark_configured=bool(getattr(scheduler, "notifier_enabled", False)),
         auto_scans=auto_scan_status() if callable(auto_scan_status) else [],
     )
 
@@ -93,3 +99,13 @@ def resume_scheduler(
     scheduler = request.app.state.scheduler
     scheduler.resume()
     return _scheduler_read(request, session, user.id)
+
+
+@router.post("/test-notification", response_model=NotificationTestRead)
+async def test_scheduler_notification(
+    request: Request, user: CurrentUser  # noqa: ARG001
+) -> NotificationTestRead:
+    """发送一条 Bark 连通性测试推送，返回脱敏诊断结果（不暴露 device_key）。"""
+    scheduler = request.app.state.scheduler
+    ok, detail = await scheduler.send_test_notification()
+    return NotificationTestRead(ok=ok, detail=detail)

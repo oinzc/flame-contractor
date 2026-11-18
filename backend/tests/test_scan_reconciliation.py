@@ -249,3 +249,192 @@ def test_scan_history_is_lightweight_sorted_limited_and_user_isolated(settings):
             headers={"Authorization": f"Bearer {login['token']}"},
         )
         assert response.status_code == 404
+
+
+def test_collect_spark_deteriorations_filters_true_regressions_only():
+    from app.scan_reconciliation import collect_spark_deteriorations
+
+    reconciliation = {
+        "entries": [
+            # 1) 正常数字火花 -> 消失倒计时（告警）
+            {
+                "targetId": "t-warn",
+                "title": "小满",
+                "category": "changed",
+                "previous": {"days": 100, "kind": "normal", "label": None},
+                "current": {"days": None, "kind": "normal", "label": "2 天后消失"},
+            },
+            # 2) 消失倒计时进一步缩短（告警）
+            {
+                "targetId": "t-shorter",
+                "title": "阿哲",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "2 天后消失"},
+                "current": {"days": None, "kind": "normal", "label": "1 天后消失"},
+            },
+            # 3) 消失倒计时跌入重燃（告警）
+            {
+                "targetId": "t-rekindle",
+                "title": "林间",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "1 天后消失"},
+                "current": {"days": None, "kind": "normal", "label": "重燃中 1/3"},
+            },
+            # 4) 原有火花 -> 观察到无火花（告警）
+            {
+                "targetId": "t-lost",
+                "title": "豆豆",
+                "category": "no_spark",
+                "previous": {"days": 63, "kind": "normal", "label": None},
+                "current": {"days": None, "kind": None, "label": "无火花"},
+            },
+            # 5) 首次观测即处于濒危文字（告警）
+            {
+                "targetId": "t-first-danger",
+                "title": "橘子",
+                "category": "changed",
+                "previous": {"days": None, "kind": None, "label": None},
+                "current": {"days": None, "kind": "normal", "label": "1 天后消失"},
+            },
+            # --- 以下全部不应告警 ---
+            # 正常 +1
+            {
+                "targetId": "t-up",
+                "title": "正常增长",
+                "category": "changed",
+                "previous": {"days": 267, "kind": "normal", "label": None},
+                "current": {"days": 268, "kind": "normal", "label": None},
+            },
+            # 重燃正向恢复 1/3 -> 2/3
+            {
+                "targetId": "t-recovering",
+                "title": "正向重燃",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "重燃中 1/3"},
+                "current": {"days": None, "kind": "normal", "label": "重燃中 2/3"},
+            },
+            # 从消失倒计时救回数字火花
+            {
+                "targetId": "t-saved",
+                "title": "已救回",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "1 天后消失"},
+                "current": {"days": 97, "kind": "normal", "label": None},
+            },
+            # 原先就没火花 -> 依然无火花
+            {
+                "targetId": "t-never",
+                "title": "本无火花",
+                "category": "no_spark",
+                "previous": {"days": None, "kind": None, "label": None},
+                "current": {"days": None, "kind": None, "label": "无火花"},
+            },
+            # 上次已报过 1 天后消失，本次未变化 unchanged（防重复刷屏）
+            {
+                "targetId": "t-same",
+                "title": "同态不刷屏",
+                "category": "unchanged",
+                "previous": {"days": None, "kind": "normal", "label": "1 天后消失"},
+                "current": {"days": None, "kind": "normal", "label": "1 天后消失"},
+            },
+            # 未滚动观察到 not_observed
+            {
+                "targetId": "t-unseen",
+                "title": "未滚到",
+                "category": "not_observed",
+                "previous": {"days": 50, "kind": "normal", "label": None},
+                "current": {"days": None, "kind": None, "label": None},
+            },
+            # 已停用好友（不在 enabled_target_ids 中）
+            {
+                "targetId": "t-disabled",
+                "title": "已停用好友",
+                "category": "no_spark",
+                "previous": {"days": 88, "kind": "normal", "label": None},
+                "current": {"days": None, "kind": None, "label": "无火花"},
+            },
+        ]
+    }
+    enabled = {
+        "t-warn",
+        "t-shorter",
+        "t-rekindle",
+        "t-lost",
+        "t-first-danger",
+        "t-up",
+        "t-recovering",
+        "t-saved",
+        "t-never",
+        "t-same",
+        "t-unseen",
+    }
+    alerts = collect_spark_deteriorations(reconciliation, enabled_target_ids=enabled)
+    assert [item["targetId"] for item in alerts] == [
+        "t-warn",
+        "t-shorter",
+        "t-rekindle",
+        "t-lost",
+        "t-first-danger",
+    ]
+    assert "100天" in alerts[0]["summary"] and "2 天后消失" in alerts[0]["summary"]
+    assert "63天" in alerts[3]["summary"] and "无火花" in alerts[3]["summary"]
+
+
+def test_collect_spark_deteriorations_avoids_false_positives_on_chat_previews_and_rekindle_from_zero():
+    """回归：原无火花进入重燃、普通聊天预览含“火花”字样或消失倒计时长文案均不得误判。"""
+    from app.scan_reconciliation import collect_spark_deteriorations
+
+    reconciliation = {
+        "entries": [
+            # 1) 消失倒计时同义长文案缩短：2 天后火花将消失 -> 1 天后火花将消失（应告警）
+            {
+                "targetId": "t-long-shorter",
+                "title": "长文案缩短",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "2 天后火花将消失"},
+                "current": {"days": None, "kind": "normal", "label": "1 天后火花将消失"},
+            },
+            # 2) 消失倒计时同义长文案延长/恢复：1 天后火花将消失 -> 2 天后火花将消失（不应告警）
+            {
+                "targetId": "t-long-longer",
+                "title": "长文案恢复",
+                "category": "changed",
+                "previous": {"days": None, "kind": "normal", "label": "1 天后火花将消失"},
+                "current": {"days": None, "kind": "normal", "label": "2 天后火花将消失"},
+            },
+            # 3) 原先已落库为「无火花」的好友开始互动进入「重燃中 1/3」（正向新建/恢复，不应告警）
+            {
+                "targetId": "t-zero-to-rekindle",
+                "title": "从零重燃",
+                "category": "changed",
+                "previous": {"days": None, "kind": None, "label": "无火花"},
+                "current": {"days": None, "kind": "normal", "label": "重燃中 1/3"},
+            },
+            # 4) 原无火花好友发了一条含“火花”字样的普通聊天消息（不应告警）
+            {
+                "targetId": "t-chat-preview-in",
+                "title": "普通聊天提火花",
+                "category": "changed",
+                "previous": {"days": None, "kind": None, "label": "无火花"},
+                "current": {"days": None, "kind": None, "label": "今天一起养火花吧"},
+            },
+            # 5) 首次扫描无徽标但最新消息预览含“火花”（不应告警）
+            {
+                "targetId": "t-first-chat-preview",
+                "title": "首次普通消息含火花",
+                "category": "changed",
+                "previous": {"days": None, "kind": None, "label": None},
+                "current": {"days": None, "kind": None, "label": "聊聊火花"},
+            },
+            # 6) 上一轮仅是含“火花”的普通聊天预览（kind=None），本轮发了 [比心] 回落为 no_spark（不应误报断火）
+            {
+                "targetId": "t-chat-preview-out",
+                "title": "普通消息切回比心",
+                "category": "no_spark",
+                "previous": {"days": None, "kind": None, "label": "聊聊火花"},
+                "current": {"days": None, "kind": None, "label": "无火花"},
+            },
+        ]
+    }
+    alerts = collect_spark_deteriorations(reconciliation)
+    assert [item["targetId"] for item in alerts] == ["t-long-shorter"]

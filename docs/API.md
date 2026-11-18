@@ -142,6 +142,7 @@ sequenceDiagram
 | 名称 | 字段属性 | 类型 | 含义 |
 |---|---|---|---|
 | 自动同步间隔 | autoScanIntervalHours | integer | 自动会话扫描周期，单位小时，默认 24 |
+| Bark 配置状态 | barkConfigured | boolean | `.env` 是否已配置 `FLAME_BARK_URL`（不回显地址或 key） |
 | 账号自动同步状态 | autoScans | AutoScanStatus[] | 每个账号的最近一次与下一次同步状态 |
 | 当前自动任务 | autoScans[].taskId | string/null | `running` 时对应的扫描任务 ID；其他状态通常为 `null` |
 
@@ -167,6 +168,13 @@ sequenceDiagram
 - **请求体**：`{"autoScanIntervalHours": 1}`
 - **有效范围**：`1–168` 小时（含边界）；控制台提供常用周期选项，允许每小时一次但不建议作为默认值。
 - **持久化**：写入已有 `AppSetting` 键 `scheduler.auto_scan_interval_hours`，重启后恢复；更新成功后从下一次调度判断开始按新间隔计算。
+
+### 3.5 发送 Bark 连通性测试通知
+
+- **接口说明**：向已配置的 Bark 设备主动推送一条 `active` 级别的连通性测试消息；同时自动会话同步检测到启用好友官方火花恶化（跌入消失倒计时/重燃或原有火花断火）时会只读推送 `timeSensitive` 提醒。
+- **请求 URL**：`/scheduler/test-notification`
+- **请求方式**：POST
+- **响应体**：`{"ok": true | false, "detail": "脱敏诊断说明（不含 device_key）"}`
 
 ## 4. 账号接口
 

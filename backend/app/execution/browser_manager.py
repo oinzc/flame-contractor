@@ -2103,6 +2103,7 @@ class BrowserManager:
             "overall": "ok",
             "detail": None,
             "entries": progress.get("entries") or [],
+            "reconciliation": progress.get("reconciliation"),
             "sync": sync,
         }
 

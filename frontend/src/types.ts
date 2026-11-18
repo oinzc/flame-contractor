@@ -79,7 +79,14 @@ export interface SchedulerStatus {
   scheduledAlwaysSend: boolean
   /** 固定发送时刻的宽限期（分钟）：超过才算错过、当天不再补发 */
   fixedTimeGraceMinutes: number
+  /** .env 是否已配置 FLAME_BARK_URL（不暴露地址或 device_key） */
+  barkConfigured?: boolean
   autoScans: AutoScanStatus[]
+}
+
+export interface NotificationTestResult {
+  ok: boolean
+  detail: string
 }
 
 /** 调度设置增量更新：只传需要改的字段，未传的保持现值。 */

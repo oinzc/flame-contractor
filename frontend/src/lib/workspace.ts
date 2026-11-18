@@ -344,3 +344,30 @@ export function shouldReloadOpenJobDetail(
     loaded.updatedAt !== externalSnapshot.updatedAt
   )
 }
+
+export interface BarkCardState {
+  configured: boolean
+  badgeLabel: '已启用' | '未配置'
+  hint: string
+  canSendTest: boolean
+}
+
+export function describeBarkCardState(
+  status: { barkConfigured?: boolean } | null | undefined,
+): BarkCardState {
+  const configured = Boolean(status?.barkConfigured)
+  if (configured) {
+    return {
+      configured: true,
+      badgeLabel: '已启用',
+      hint: '登录失效、待复核与好友火花告急将推送至手机（私密 Key 仅存本机 .env）',
+      canSendTest: true,
+    }
+  }
+  return {
+    configured: false,
+    badgeLabel: '未配置',
+    hint: '在 .env 设置 FLAME_BARK_URL 并重启服务后，可接收登录异常与火花告急提醒',
+    canSendTest: false,
+  }
+}

@@ -1642,3 +1642,78 @@ def test_exact_time_target_stops_retrying_after_grace_period(engine):
     asyncio.run(sched.tick())
     asyncio.run(sched.wait_idle())
     assert len(calls) == 1
+
+
+def test_auto_scan_notifies_on_enabled_target_spark_deterioration_without_resending(engine):
+    """自动会话同步发现启用好友火花恶化时，只发一条 timeSensitive 提醒，绝不触发发送或计入停用好友。"""
+    account = make_account(engine)
+    with Session(engine) as session:
+        t_active = ContractTarget(account_id=account.id, nickname_snapshot="阿哲", enabled=True)
+        t_disabled = ContractTarget(account_id=account.id, nickname_snapshot="停用老友", enabled=False)
+        session.add_all([t_active, t_disabled])
+        session.commit()
+        active_id = t_active.id
+        disabled_id = t_disabled.id
+
+    send_calls: list[str] = []
+
+    async def send_account(account_id: str) -> dict:
+        send_calls.append(account_id)
+        return {"overall": "ok", "results": []}
+
+    async def scan_account(_account_id: str) -> dict:
+        return {
+            "overall": "ok",
+            "detail": None,
+            "entries": [],
+            "reconciliation": {
+                "entries": [
+                    {
+                        "targetId": active_id,
+                        "title": "阿哲",
+                        "category": "changed",
+                        "previous": {"days": 268, "kind": "normal", "label": None},
+                        "current": {"days": None, "kind": "normal", "label": "1 天后消失"},
+                    },
+                    {
+                        "targetId": disabled_id,
+                        "title": "停用老友",
+                        "category": "no_spark",
+                        "previous": {"days": 30, "kind": "normal", "label": None},
+                        "current": {"days": None, "kind": None, "label": "无火花"},
+                    },
+                ]
+            },
+        }
+
+    clock = make_clock(datetime(2026, 8, 27, 2, 0, 0, tzinfo=timezone.utc))
+    notifier = RecordingNotifier()
+    sched = Scheduler(
+        engine,
+        settings=None,
+        send_account=send_account,
+        scan_account=scan_account,
+        notifier=notifier,
+        auto_scan_initial_delay=0.0,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+    )
+
+    async def scenario() -> None:
+        await sched.tick()
+        await sched.wait_idle()
+
+    asyncio.run(scenario())
+
+    assert send_calls == []
+    with Session(engine) as session:
+        assert session.exec(select(SendJob)).all() == []
+
+    spark_alerts = [item for item in notifier.sent if "火花" in item[0]]
+    assert len(spark_alerts) == 1
+    title, body, level = spark_alerts[0]
+    assert title == "好友火花告急"
+    assert level == "timeSensitive"
+    assert "阿哲" in body and "1 天后消失" in body
+    assert "停用老友" not in body

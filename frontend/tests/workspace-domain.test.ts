@@ -5,6 +5,7 @@ import { previewTemplateForTarget, renderTemplateVariables } from '../src/lib/pr
 import {
   collectAccountReviewItems,
   deriveTargetDayMap,
+  describeBarkCardState,
   mergeAccountSendPreview,
   parseSchedulerSettingsForm,
   pickDefaultScreenshotAttempt,
@@ -394,4 +395,16 @@ test('shouldReloadOpenJobDetail detects external status or timestamp updates for
     false,
   )
   assert.equal(shouldReloadOpenJobDetail(null, null), false)
+})
+
+test('describeBarkCardState reflects configured status and disables test button until configured', () => {
+  const unconf = describeBarkCardState(null)
+  assert.equal(unconf.configured, false)
+  assert.equal(unconf.badgeLabel, '未配置')
+  assert.equal(unconf.canSendTest, false)
+
+  const conf = describeBarkCardState({ barkConfigured: true })
+  assert.equal(conf.configured, true)
+  assert.equal(conf.badgeLabel, '已启用')
+  assert.equal(conf.canSendTest, true)
 })

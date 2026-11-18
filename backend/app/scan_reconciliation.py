@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any, Iterable
+
+_DISAPPEAR_DAYS_RE = re.compile(r"(\d+)\s*天后(?:火花(?:将)?)?消失")
+_REKINDLE_PROGRESS_RE = re.compile(r"重燃中\s*(\d+)\s*/\s*(\d+)")
 
 
 RECONCILIATION_CATEGORIES = (
@@ -302,3 +306,106 @@ def parse_reconciliation(value: str | None) -> dict[str, Any]:
         normalized["counts"][category] = count if isinstance(count, int) and count >= 0 else 0
     normalized["entries"] = [item for item in entries if isinstance(item, dict)]
     return normalized
+
+
+def _format_spark_state(days: int | None, label: str | None) -> str | None:
+    if days is not None:
+        return f"{days}天"
+    if label:
+        return label
+    return None
+
+
+def _is_danger_label(label: str | None) -> bool:
+    if not label:
+        return False
+    return bool(
+        _DISAPPEAR_DAYS_RE.search(label) or _REKINDLE_PROGRESS_RE.search(label)
+    )
+
+
+def _is_label_regression(prev_label: str, curr_label: str) -> bool:
+    if prev_label == curr_label:
+        return False
+    prev_dis = _DISAPPEAR_DAYS_RE.search(prev_label)
+    curr_dis = _DISAPPEAR_DAYS_RE.search(curr_label)
+    if prev_dis and curr_dis:
+        return int(curr_dis.group(1)) < int(prev_dis.group(1))
+
+    prev_rek = _REKINDLE_PROGRESS_RE.search(prev_label)
+    curr_rek = _REKINDLE_PROGRESS_RE.search(curr_label)
+    if prev_rek and curr_rek:
+        return int(curr_rek.group(1)) < int(prev_rek.group(1))
+
+    # 从「N 天后消失」跌入「重燃中」代表正式断火进入重燃，属恶化
+    if prev_dis and curr_rek:
+        return True
+    # 其余（如从「无火花」进入重燃、未知预览文案切换等）一律保守不视为恶化
+    return False
+
+
+def collect_spark_deteriorations(
+    reconciliation: dict[str, Any] | None,
+    enabled_target_ids: set[str] | None = None,
+) -> list[dict[str, str]]:
+    """从单次完整扫描对账结果中提取启用好友的「官方火花恶化跃迁」列表（纯函数）。"""
+    if not isinstance(reconciliation, dict):
+        return []
+    entries = reconciliation.get("entries")
+    if not isinstance(entries, list):
+        return []
+
+    alerts: list[dict[str, str]] = []
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        target_id = _clean_text(row.get("targetId"))
+        if not target_id:
+            continue
+        if enabled_target_ids is not None and target_id not in enabled_target_ids:
+            continue
+
+        category = row.get("category")
+        if category not in ("changed", "no_spark"):
+            continue
+
+        prev = row.get("previous") if isinstance(row.get("previous"), dict) else {}
+        curr = row.get("current") if isinstance(row.get("current"), dict) else {}
+        prev_days = _clean_days(prev.get("days"))
+        prev_kind = _clean_text(prev.get("kind"))
+        prev_label = _clean_text(prev.get("label"))
+        curr_days = _clean_days(curr.get("days"))
+        curr_label = _clean_text(curr.get("label"))
+
+        deteriorated = False
+        if category == "no_spark":
+            had_spark = (
+                (prev_days is not None and prev_days > 0)
+                or _is_danger_label(prev_label)
+                or (prev_kind is not None and prev_label != "无火花")
+            )
+            deteriorated = had_spark
+        elif category == "changed":
+            if curr_days is None and _is_danger_label(curr_label):
+                if prev_days is not None and prev_days > 0:
+                    deteriorated = True
+                elif prev_days is None and prev_label is None:
+                    deteriorated = True
+                elif prev_label is not None and prev_label != "无火花":
+                    deteriorated = _is_label_regression(prev_label, curr_label)
+
+        if not deteriorated:
+            continue
+
+        title = _clean_text(row.get("title")) or "未命名好友"
+        prev_desc = _format_spark_state(prev_days, prev_label)
+        curr_desc = _format_spark_state(curr_days, curr_label) or "无火花"
+        summary = f"{prev_desc} → {curr_desc}" if prev_desc else curr_desc
+        alerts.append(
+            {
+                "targetId": target_id,
+                "title": title,
+                "summary": summary,
+            }
+        )
+    return alerts

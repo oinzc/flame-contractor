@@ -45,6 +45,7 @@ from .models import (
     utc_now,
 )
 from .notifications import Notifier, NullNotifier
+from .scan_reconciliation import collect_spark_deteriorations
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +250,26 @@ class Scheduler:
     @property
     def fixed_time_grace_minutes(self) -> int:
         return self._fixed_time_grace_minutes
+
+    @property
+    def notifier_enabled(self) -> bool:
+        return bool(getattr(self._notifier, "enabled", False))
+
+    async def send_test_notification(self) -> tuple[bool, str]:
+        """触发一条连通性测试推送，返回 (ok, 脱敏说明)。"""
+        title = "Flame Contractor 连通性测试"
+        content = "Bark 推送通道正常，登录异常、待复核与好友火花告急将推送至此设备。"
+        probe = getattr(self._notifier, "probe", None)
+        if callable(probe):
+            return await probe(title, content, "active")
+        if not self.notifier_enabled:
+            return False, "尚未配置 FLAME_BARK_URL（请在 .env 中设置后重启服务）"
+        ok = await self._notifier.send(title, content, "active")
+        return (
+            (True, "测试推送已送达 Bark 服务，请检查手机通知")
+            if ok
+            else (False, "测试推送未成功，请检查服务端日志与网络连通性")
+        )
 
     def load_persisted_state(self) -> None:
         """从数据库恢复全局调度开关、会话同步周期与「到点重发」开关。"""
@@ -1231,6 +1252,37 @@ class Scheduler:
                 is not None
             )
 
+    def _enabled_target_ids(self, account_id: str) -> set[str]:
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(ContractTarget.id).where(
+                    ContractTarget.account_id == account_id,
+                    ContractTarget.enabled,
+                    ContractTarget.deleted_at.is_(None),
+                )
+            ).all()
+            return set(rows)
+
+    async def _notify_spark_deteriorations(
+        self, account_id: str, reconciliation: dict | None
+    ) -> None:
+        enabled_ids = self._enabled_target_ids(account_id)
+        if not enabled_ids:
+            return
+        alerts = collect_spark_deteriorations(
+            reconciliation, enabled_target_ids=enabled_ids
+        )
+        if not alerts:
+            return
+        shown = [f"{item['title']}（{item['summary']}）" for item in alerts[:_NOTIFY_NAME_LIMIT]]
+        suffix = f" 等 {len(alerts)} 位好友" if len(alerts) > _NOTIFY_NAME_LIMIT else ""
+        body = (
+            f"账号「{self._account_name(account_id)}」自动同步发现火花状态告急："
+            f"{'、'.join(shown)}{suffix}。"
+            "可能对方尚未回复消息，请留意提醒（系统仅只读预警，不会自动重发）。"
+        )
+        await self._notify("好友火花告急", body, "timeSensitive")
+
     def _auto_scan_blocked_by_send_window(self, account: Account, now: datetime) -> bool:
         """自动扫描避开发送窗口及其前置缓冲，避免占用同账号浏览器。"""
         tz = ZoneInfo(account.timezone)
@@ -1357,6 +1409,10 @@ class Scheduler:
                     logger.warning(
                         "账号 %s 自动同步登录判定未通过但未确认失效，不推送", account_id
                     )
+            elif overall == "ok":
+                await self._notify_spark_deteriorations(
+                    account_id, result.get("reconciliation")
+                )
         except asyncio.CancelledError:
             # 扫描子任务由 BrowserManager.aclose 收束为 interrupted，避免误记成用户取消。
             raise

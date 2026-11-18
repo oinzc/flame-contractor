@@ -674,7 +674,13 @@ class SchedulerStatusRead(APIBase):
     auto_scan_interval_hours: int
     scheduled_always_send: bool
     fixed_time_grace_minutes: int
+    bark_configured: bool = False
     auto_scans: list[AutoScanStatusRead]
+
+
+class NotificationTestRead(APIBase):
+    ok: bool
+    detail: str
 
 
 # ---------------------------------------------------------------- dashboard
