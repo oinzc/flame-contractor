@@ -72,13 +72,15 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          docker build \
+          docker buildx create --name ghcr-builder --driver docker-container --use
+          docker buildx build \
             --platform linux/amd64 \
             --provenance=false \
             --sbom=false \
             --label "org.opencontainers.image.source=https://github.com/${REPO}" \
             --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
+            --load \
             -t flame-contractor:smoke .
 
           ENV_FILE="$(mktemp)"
@@ -117,16 +119,26 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
           IMAGE: ${{ steps.meta.outputs.image }}
           SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
         run: |
           set -euo pipefail
           printf '%s\n' "${GHCR_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
-          export ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-amd64"
-          docker tag flame-contractor:smoke "${ARCH_TAG}"
-          docker push "${ARCH_TAG}"
-          DIGEST="$(python3 -c 'import json, os, subprocess; items = json.loads(subprocess.check_output(["docker", "image", "inspect", os.environ["ARCH_TAG"], "--format", "{{json .RepoDigests}}"], text=True)) or []; img = os.environ["IMAGE"] + "@sha256:"; print(next(x for x in items if x.startswith(img)))')"
-          printf 'digest=%s\n' "${DIGEST}" >> "${GITHUB_OUTPUT}"
+          ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-amd64"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --output "type=image,name=${ARCH_TAG},push=true,oci-mediatypes=true" \
+            --metadata-file /tmp/build-meta-amd64.json \
+            .
+          RAW_DIGEST="$(python3 -c 'import json; print(json.load(open("/tmp/build-meta-amd64.json"))["containerimage.digest"])')"
+          printf 'digest=%s@%s\n' "${IMAGE}" "${RAW_DIGEST}" >> "${GITHUB_OUTPUT}"
 
   build-arm64:
     name: 构建与冒烟 (linux/arm64)
@@ -158,13 +170,15 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          docker build \
+          docker buildx create --name ghcr-builder --driver docker-container --use
+          docker buildx build \
             --platform linux/arm64 \
             --provenance=false \
             --sbom=false \
             --label "org.opencontainers.image.source=https://github.com/${REPO}" \
             --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
+            --load \
             -t flame-contractor:smoke .
 
           ENV_FILE="$(mktemp)"
@@ -203,16 +217,26 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
           IMAGE: ${{ steps.meta.outputs.image }}
           SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
         run: |
           set -euo pipefail
           printf '%s\n' "${GHCR_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
-          export ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-arm64"
-          docker tag flame-contractor:smoke "${ARCH_TAG}"
-          docker push "${ARCH_TAG}"
-          DIGEST="$(python3 -c 'import json, os, subprocess; items = json.loads(subprocess.check_output(["docker", "image", "inspect", os.environ["ARCH_TAG"], "--format", "{{json .RepoDigests}}"], text=True)) or []; img = os.environ["IMAGE"] + "@sha256:"; print(next(x for x in items if x.startswith(img)))')"
-          printf 'digest=%s\n' "${DIGEST}" >> "${GITHUB_OUTPUT}"
+          ARCH_TAG="${IMAGE}:sha-${SHORT_SHA}-arm64"
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --output "type=image,name=${ARCH_TAG},push=true,oci-mediatypes=true" \
+            --metadata-file /tmp/build-meta-arm64.json \
+            .
+          RAW_DIGEST="$(python3 -c 'import json; print(json.load(open("/tmp/build-meta-arm64.json"))["containerimage.digest"])')"
+          printf 'digest=%s@%s\n' "${IMAGE}" "${RAW_DIGEST}" >> "${GITHUB_OUTPUT}"
 
   publish-manifest:
     name: 合并发布多架构 Manifest

@@ -148,6 +148,7 @@ def test_workflows_compose_and_dockerignore_enforce_ghcr_and_loopback_contracts(
     assert "/health" in publish_raw
     assert "--provenance=false" in publish_raw
     assert "--sbom=false" in publish_raw
+    assert "oci-mediatypes=true" in publish_raw
     assert "org.opencontainers.image.source" in publish_raw
     assert 'index:org.opencontainers.image.source=' in publish_raw
     assert "docker buildx imagetools create" in publish_raw
