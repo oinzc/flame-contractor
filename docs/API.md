@@ -1,6 +1,6 @@
 # Flame Contractor 本地控制平面 API 文档
 
-> 版本：0.1.0 | 接口状态：本机控制台当前实现
+> 版本：0.2.0 | 接口状态：本机控制台当前实现
 
 ## 1. 通用规范
 
@@ -103,7 +103,7 @@ sequenceDiagram
 {
   "status": "ok",
   "app": "Flame Contractor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "database": "ready"
 }
 ```

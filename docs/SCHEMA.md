@@ -1,6 +1,6 @@
 # Flame Contractor SQLite Schema 规格
 
-> 本文描述当前 0.1.0 运行 schema（含 Alembic 迁移扩展）。实际建表与升级由 Alembic 完成。
+> 本文描述当前 0.2.0 运行 schema（含 Alembic 迁移扩展）。实际建表与升级由 Alembic 完成。
 
 ## 1. 关系图
 

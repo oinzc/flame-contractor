@@ -13,7 +13,7 @@ AUTO_SCAN_INTERVAL_MAX_HOURS = 168
 
 class Settings(BaseSettings):
     app_name: str = "Flame Contractor"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     api_prefix: str = "/api"
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     profiles_dir: Path = PROJECT_ROOT / "data" / "profiles"
