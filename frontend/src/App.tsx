@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, ApiError, getToken, setToken } from './api.ts'
+import { api, ApiError, getToken, setApiRuntime, setToken } from './api.ts'
+import { loadDesktopBootstrap, type DesktopBootstrap } from './lib/desktop.ts'
 import { AccountManageDrawer } from './components/drawers/AccountManageDrawer.tsx'
 import { CreateEntityDrawer } from './components/drawers/CreateEntityDrawer.tsx'
 import { DryRunDrawer } from './components/drawers/DryRunDrawer.tsx'
@@ -32,6 +33,8 @@ import type {
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [authInitializing, setAuthInitializing] = useState(true)
+  const [desktopBootstrap, setDesktopBootstrap] = useState<DesktopBootstrap | null>(null)
+  const [bootError, setBootError] = useState<string | null>(null)
 
   const [accounts, setAccounts] = useState<Account[]>([])
   const [targets, setTargets] = useState<ContractTarget[]>([])
@@ -60,20 +63,54 @@ export default function App() {
   } = useWorkspaceUrlState(accounts, Boolean(currentUser))
 
   const checkAuth = useCallback(async () => {
-    const token = getToken()
-    if (!token) {
-      setCurrentUser(null)
-      setAuthInitializing(false)
-      return
-    }
+    setAuthInitializing(true)
+    setBootError(null)
     try {
-      const user = await api.authMe()
-      setCurrentUser(user)
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setToken(null)
+      const desktop = await loadDesktopBootstrap()
+      if (desktop?.desktopMode && desktop.desktopToken) {
+        setDesktopBootstrap(desktop)
+        setApiRuntime({
+          apiBaseUrl: desktop.apiBaseUrl,
+          desktopToken: desktop.desktopToken,
+        })
+        // 桌面版冷启动时 Sidecar 可能仍在执行迁移；最多温和重试 25 次（约 10 秒）。
+        let lastErr: unknown = null
+        for (let attempt = 0; attempt < 25; attempt += 1) {
+          try {
+            const user = await api.authMe()
+            setCurrentUser(user)
+            return
+          } catch (err) {
+            lastErr = err
+            await new Promise((resolve) => window.setTimeout(resolve, 400))
+          }
+        }
+        setCurrentUser(null)
+        setBootError(
+          lastErr instanceof ApiError
+            ? `连接本机引擎失败：${lastErr.message}`
+            : '本机续火引擎尚未就绪，请重试或查看数据目录日志。',
+        )
+        return
       }
+
+      const token = getToken()
+      if (!token) {
+        setCurrentUser(null)
+        return
+      }
+      try {
+        const user = await api.authMe()
+        setCurrentUser(user)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          setToken(null)
+        }
+        setCurrentUser(null)
+      }
+    } catch (err) {
       setCurrentUser(null)
+      setBootError(err instanceof Error ? err.message : '初始化本机控制面失败')
     } finally {
       setAuthInitializing(false)
     }
@@ -239,7 +276,29 @@ export default function App() {
   if (authInitializing) {
     return (
       <main className="fc-auth-shell">
-        <div className="fc-hint">正在连接本机控制面…</div>
+        <div className="fc-hint">
+          {desktopBootstrap ? '正在启动本机续火引擎…' : '正在连接本机控制面…'}
+        </div>
+      </main>
+    )
+  }
+
+  if (bootError) {
+    return (
+      <main className="fc-auth-shell">
+        <div className="fc-card" style={{ maxWidth: 420, width: '100%' }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600 }}>无法连接本机引擎</h2>
+          <p className="fc-hint">{bootError}</p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+            <button
+              type="button"
+              className="fc-btn fc-btn-primary fc-btn-sm"
+              onClick={() => void checkAuth()}
+            >
+              重新连接
+            </button>
+          </div>
+        </div>
       </main>
     )
   }
@@ -314,6 +373,7 @@ export default function App() {
               dayMap={dayMap}
               attentionItems={attentionItems}
               todaySchedule={todaySchedule}
+              browserRuntime={schedulerStatus?.browserRuntime ?? null}
               drawer={drawer}
               onOpenDrawer={setDrawer}
               onChanged={refresh}
@@ -347,6 +407,7 @@ export default function App() {
               user={currentUser}
               accounts={accounts}
               schedulerStatus={schedulerStatus}
+              desktopBootstrap={desktopBootstrap}
               themePreference={themePreference}
               resolvedTheme={resolvedTheme}
               onChangeTheme={setThemePreference}

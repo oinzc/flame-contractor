@@ -1,10 +1,29 @@
 const TOKEN_STORAGE_KEY = 'flame_auth_token'
 
+let runtimeApiBaseUrl = ''
+let runtimeDesktopToken: string | null = null
+
+export function setApiRuntime(config: { apiBaseUrl?: string; desktopToken?: string | null }): void {
+  if (typeof config.apiBaseUrl === 'string') {
+    runtimeApiBaseUrl = config.apiBaseUrl.replace(/\/+$/, '')
+  }
+  if ('desktopToken' in config) {
+    runtimeDesktopToken = config.desktopToken ?? null
+  }
+}
+
+export function apiUrl(path: string): string {
+  if (!runtimeApiBaseUrl) return path
+  return `${runtimeApiBaseUrl}${path.startsWith('/') ? path : `/${path}`}`
+}
+
 export function getToken(): string | null {
+  if (runtimeDesktopToken) return runtimeDesktopToken
   return localStorage.getItem(TOKEN_STORAGE_KEY)
 }
 
 export function setToken(token: string | null): void {
+  if (runtimeDesktopToken) return
   if (token) {
     localStorage.setItem(TOKEN_STORAGE_KEY, token)
   } else {
@@ -44,7 +63,7 @@ function authHeaders(): Record<string, string> {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() }
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     headers,
     ...init,
   })
@@ -275,7 +294,7 @@ export const api = {
   jobDetail: (id: string) =>
     request<import('./types').SendJobDetail>(`/api/jobs/${id}`),
   jobAttemptScreenshot: async (jobId: string, attemptNo: number): Promise<Blob> => {
-    const response = await fetch(`/api/jobs/${jobId}/attempts/${attemptNo}/screenshot`, {
+    const response = await fetch(apiUrl(`/api/jobs/${jobId}/attempts/${attemptNo}/screenshot`), {
       headers: authHeaders(),
     })
     if (!response.ok) {
@@ -343,7 +362,7 @@ export const api = {
   statsSummary: () =>
     request<Record<string, unknown>>('/api/stats/summary').then(normalizeStatsSummary),
   downloadStatsCsv: async () => {
-    const response = await fetch('/api/stats/export.csv', { headers: authHeaders() })
+    const response = await fetch(apiUrl('/api/stats/export.csv'), { headers: authHeaders() })
     if (!response.ok) throw new ApiError(response.status, '统计 CSV 导出失败')
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
@@ -375,12 +394,14 @@ export const api = {
     ),
   /** 二维码截图端点需要 Authorization 头，`<img src>` 无法携带，必须走 fetch + blob */
   qrImage: async (id: string): Promise<Blob> => {
-    const response = await fetch(`/api/accounts/${id}/login/qr/image`, { headers: authHeaders() })
+    const response = await fetch(apiUrl(`/api/accounts/${id}/login/qr/image`), {
+      headers: authHeaders(),
+    })
     if (!response.ok) throw new ApiError(response.status, '二维码截图获取失败')
     return response.blob()
   },
   downloadBackup: async () => {
-    const response = await fetch('/api/backup', { headers: authHeaders() })
+    const response = await fetch(apiUrl('/api/backup'), { headers: authHeaders() })
     if (!response.ok) throw new ApiError(response.status, '备份导出失败')
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)

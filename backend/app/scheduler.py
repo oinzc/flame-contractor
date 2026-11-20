@@ -44,7 +44,7 @@ from .models import (
     JobStatus,
     utc_now,
 )
-from .notifications import Notifier, NullNotifier
+from .notifications import Notifier, NullNotifier, mask_bark_url, validate_bark_url
 from .scan_reconciliation import collect_spark_deteriorations
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,7 @@ SCHEDULER_PAUSED_SETTING_KEY = "scheduler.paused"
 SCHEDULER_AUTO_SCAN_INTERVAL_SETTING_KEY = "scheduler.auto_scan_interval_hours"
 SCHEDULER_ALWAYS_SEND_SETTING_KEY = "scheduler.scheduled_always_send"
 SCHEDULER_FIXED_GRACE_SETTING_KEY = "scheduler.fixed_time_grace_minutes"
+NOTIFICATIONS_BARK_URL_SETTING_KEY = "notifications.bark_url"
 
 # 可继续调度/重排的状态
 _RECOVERABLE = {ScheduleStatus.PENDING, ScheduleStatus.FAILED}
@@ -188,6 +189,15 @@ class Scheduler:
         self._auto_scan_auth_retry_minutes = max(1, int(auto_scan_auth_retry_minutes))
         self._max_concurrent_auto_scans = max(1, int(max_concurrent_auto_scans))
         self._notifier = notifier or NullNotifier()
+        raw_env_bark = (
+            getattr(settings, "bark_url", None)
+            or getattr(self._notifier, "base_url", None)
+        )
+        self._env_bark_url: str | None = (
+            raw_env_bark.strip() if isinstance(raw_env_bark, str) and raw_env_bark.strip() else None
+        )
+        self._bark_source: str = "env" if self._env_bark_url else "none"
+        self._effective_bark_url: str | None = self._env_bark_url
         self._loop_interval = loop_interval
         self._lease_seconds = lease_seconds
         self._run_timeout = run_timeout
@@ -263,6 +273,53 @@ class Scheduler:
     def notifier_enabled(self) -> bool:
         return bool(getattr(self._notifier, "enabled", False))
 
+    @property
+    def bark_masked_url(self) -> str | None:
+        return mask_bark_url(self._effective_bark_url)
+
+    @property
+    def bark_source(self) -> str:
+        return self._bark_source
+
+    def _apply_bark_url(self, effective_url: str | None, source: str) -> None:
+        self._effective_bark_url = effective_url
+        self._bark_source = source
+        setter = getattr(self._notifier, "set_base_url", None)
+        if callable(setter):
+            setter(effective_url)
+        elif hasattr(self._notifier, "base_url"):
+            setattr(self._notifier, "base_url", effective_url)
+
+    def update_bark_url(self, raw_url: str | None) -> None:
+        """持久化或清除页面配置的 Bark 推送地址，并立即热更新进程内共享通知器。"""
+        cleaned_raw = (raw_url or "").strip()
+        if not cleaned_raw:
+            with Session(self._engine) as session:
+                setting = session.get(AppSetting, NOTIFICATIONS_BARK_URL_SETTING_KEY)
+                if setting is not None:
+                    session.delete(setting)
+                    session.commit()
+            if self._env_bark_url:
+                self._apply_bark_url(self._env_bark_url, "env")
+            else:
+                self._apply_bark_url(None, "none")
+            return
+
+        validated = validate_bark_url(cleaned_raw)
+        with Session(self._engine) as session:
+            setting = session.get(AppSetting, NOTIFICATIONS_BARK_URL_SETTING_KEY)
+            if setting is None:
+                setting = AppSetting(
+                    key=NOTIFICATIONS_BARK_URL_SETTING_KEY,
+                    value=validated,
+                )
+            else:
+                setting.value = validated
+                setting.updated_at = utc_now()
+            session.add(setting)
+            session.commit()
+        self._apply_bark_url(validated, "settings")
+
     async def send_test_notification(self) -> tuple[bool, str]:
         """触发一条连通性测试推送，返回 (ok, 脱敏说明)。"""
         title = "Flame Contractor 连通性测试"
@@ -321,6 +378,25 @@ class Scheduler:
                     <= FIXED_TIME_GRACE_MINUTES_MAX
                 ):
                     self._fixed_time_grace_minutes = persisted_grace
+            bark_setting = session.get(
+                AppSetting,
+                NOTIFICATIONS_BARK_URL_SETTING_KEY,
+            )
+            if bark_setting is not None and bark_setting.value.strip():
+                try:
+                    persisted_bark = validate_bark_url(bark_setting.value)
+                except ValueError:
+                    persisted_bark = None
+                if persisted_bark is not None:
+                    self._apply_bark_url(persisted_bark, "settings")
+                elif self._env_bark_url:
+                    self._apply_bark_url(self._env_bark_url, "env")
+                else:
+                    self._apply_bark_url(None, "none")
+            elif self._env_bark_url:
+                self._apply_bark_url(self._env_bark_url, "env")
+            else:
+                self._apply_bark_url(None, "none")
 
     def _persist_paused(self, paused: bool) -> None:
         with Session(self._engine) as session:

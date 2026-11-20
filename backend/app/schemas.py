@@ -84,6 +84,7 @@ class UserLogin(APIBase):
 
 class AuthSetupRead(APIBase):
     needs_setup: bool
+    desktop_mode: bool = False
 
 
 class UserCreateAdmin(UserRegister):
@@ -646,10 +647,16 @@ class AutoScanStatusRead(APIBase):
     detail: str | None
 
 
-class SchedulerSettingsPatch(APIBase):
-    """更新调度设置：会话同步周期、定时到点是否重发、固定时刻宽限期。
+class BrowserRuntimeRead(APIBase):
+    ready: bool
+    kind: Literal["custom", "msedge", "chrome", "playwright-chromium", "missing"]
+    label: str
 
-    三个字段都可选；只传需要改的那个，未传的保持现值。
+
+class SchedulerSettingsPatch(APIBase):
+    """更新调度与通知设置：会话同步周期、定时到点是否重发、固定时刻宽限期与 Bark 推送地址。
+
+    字段均可选；只传需要改的项，未传项保持现值。
     """
 
     auto_scan_interval_hours: int | None = Field(
@@ -664,6 +671,8 @@ class SchedulerSettingsPatch(APIBase):
         ge=FIXED_TIME_GRACE_MINUTES_MIN,
         le=FIXED_TIME_GRACE_MINUTES_MAX,
     )
+    # 传入非空 URL 写入/更新页面配置；传入空字符串清空页面配置（有环境变量则回退 env）。
+    bark_url: str | None = Field(default=None, max_length=255)
 
 
 class SchedulerStatusRead(APIBase):
@@ -675,6 +684,9 @@ class SchedulerStatusRead(APIBase):
     scheduled_always_send: bool
     fixed_time_grace_minutes: int
     bark_configured: bool = False
+    bark_masked_url: str | None = None
+    bark_source: Literal["settings", "env", "none"] = "none"
+    browser_runtime: BrowserRuntimeRead | None = None
     auto_scans: list[AutoScanStatusRead]
 
 

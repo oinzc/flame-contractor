@@ -1,6 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../../api.ts'
 import {
+  getDesktopAutostart,
+  openDesktopDataDir,
+  setDesktopAutostart,
+  type DesktopBootstrap,
+} from '../../lib/desktop.ts'
+import {
   SCHEDULE_STATUS_LABELS,
   SCHEDULE_STATUS_LIGHT_TONES,
   formatDateTime,
@@ -10,6 +16,7 @@ import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
 import {
   describeBarkCardState,
   parseSchedulerSettingsForm,
+  validateBarkUrlInput,
 } from '../../lib/workspace.ts'
 import type { Account, AuthSessionRead, SchedulerStatus, User } from '../../types.ts'
 import { DownloadIcon, SendIcon } from '../ui/Icons.tsx'
@@ -25,6 +32,7 @@ export interface SettingsViewProps {
   user: User
   accounts: Account[]
   schedulerStatus: SchedulerStatus | null
+  desktopBootstrap?: DesktopBootstrap | null
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   onChangeTheme: (next: ThemePreference) => void
@@ -36,12 +44,14 @@ export function SettingsView({
   user,
   accounts,
   schedulerStatus,
+  desktopBootstrap = null,
   themePreference,
   resolvedTheme,
   onChangeTheme,
   onChanged,
   onLogout,
 }: SettingsViewProps) {
+  const isDesktop = Boolean(desktopBootstrap?.desktopMode)
   const [tab, setTab] = useState<SettingsTabKey>('scheduler')
 
   // Scheduler form
@@ -50,7 +60,11 @@ export function SettingsView({
   const [alwaysSend, setAlwaysSend] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
+  const [barkUrlInput, setBarkUrlInput] = useState('')
+  const [savingBark, setSavingBark] = useState(false)
   const [testingBark, setTestingBark] = useState(false)
+  const [autostartEnabled, setAutostartEnabled] = useState(false)
+  const [togglingAutostart, setTogglingAutostart] = useState(false)
   const [schedulePage, setSchedulePage] = useState(1)
 
   // Profile & password
@@ -99,9 +113,17 @@ export function SettingsView({
   }
 
   useEffect(() => {
-    loadSessions()
-    loadAdminUsers()
-  }, [user.isSuperuser])
+    if (!isDesktop) {
+      loadSessions()
+      loadAdminUsers()
+      return
+    }
+    getDesktopAutostart()
+      .then(setAutostartEnabled)
+      .catch(() => {
+        /* ignore */
+      })
+  }, [isDesktop, user.isSuperuser])
 
   const accountNames = new Map(accounts.map((a) => [a.id, a.displayName]))
 
@@ -139,6 +161,65 @@ export function SettingsView({
       setError(err instanceof ApiError ? err.message : '保存调度设置失败')
     } finally {
       setSavingScheduler(false)
+    }
+  }
+
+  async function handleSaveBark(e: FormEvent) {
+    e.preventDefault()
+    if (savingBark) return
+    const parsed = validateBarkUrlInput(barkUrlInput)
+    if (!parsed.ok) {
+      setError(parsed.error)
+      return
+    }
+    setSavingBark(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await api.schedulerUpdateSettings({ barkUrl: parsed.value })
+      setBarkUrlInput('')
+      setNotice('Bark 推送地址已保存并立即生效')
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '保存 Bark 推送地址失败')
+    } finally {
+      setSavingBark(false)
+    }
+  }
+
+  async function handleClearBark() {
+    if (savingBark) return
+    setSavingBark(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const updated = await api.schedulerUpdateSettings({ barkUrl: '' })
+      setBarkUrlInput('')
+      setNotice(
+        updated.barkSource === 'env'
+          ? '已清除页面配置，当前回退使用环境变量 FLAME_BARK_URL'
+          : '已清空 Bark 推送配置',
+      )
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '清空 Bark 推送地址失败')
+    } finally {
+      setSavingBark(false)
+    }
+  }
+
+  async function handleToggleAutostart(next: boolean) {
+    if (togglingAutostart) return
+    setTogglingAutostart(true)
+    setError(null)
+    try {
+      const result = await setDesktopAutostart(next)
+      setAutostartEnabled(result)
+      setNotice(result ? '已开启开机自动启动' : '已关闭开机自动启动')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '更新开机自启设置失败')
+    } finally {
+      setTogglingAutostart(false)
     }
   }
 
@@ -226,13 +307,15 @@ export function SettingsView({
     }
   }
 
-  const settingsTabs: PillTabItem<SettingsTabKey>[] = [
-    { key: 'scheduler', label: '调度与外观' },
-    { key: 'security', label: '账户与会话', count: sessions.length || undefined },
-    ...(user.isSuperuser
-      ? [{ key: 'admin' as const, label: '用户管理', count: adminUsers.length || undefined }]
-      : []),
-  ]
+  const settingsTabs: PillTabItem<SettingsTabKey>[] = isDesktop
+    ? [{ key: 'scheduler', label: '调度与桌面设置' }]
+    : [
+        { key: 'scheduler', label: '调度与外观' },
+        { key: 'security', label: '账户与会话', count: sessions.length || undefined },
+        ...(user.isSuperuser
+          ? [{ key: 'admin' as const, label: '用户管理', count: adminUsers.length || undefined }]
+          : []),
+      ]
 
   const pagedSchedules = paginateItems(
     schedulerStatus?.todaySchedules ?? [],
@@ -252,11 +335,13 @@ export function SettingsView({
           </p>
         </div>
 
-        <div className="fc-page-actions">
-          <button type="button" className="fc-btn fc-btn-secondary" onClick={onLogout}>
-            退出控制台
-          </button>
-        </div>
+        {!isDesktop && (
+          <div className="fc-page-actions">
+            <button type="button" className="fc-btn fc-btn-secondary" onClick={onLogout}>
+              退出控制台
+            </button>
+          </div>
+        )}
       </header>
 
       <div className="fc-toolbar">
@@ -404,28 +489,120 @@ export function SettingsView({
               </section>
 
               <section className="fc-card">
-                <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
+                <div className="fc-settings-row" style={{ flexWrap: 'wrap', borderBottom: 'none', paddingBottom: 0 }}>
                   <div style={{ minWidth: 0, flex: '1 1 220px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>Bark 手机通知（iOS）</h2>
                       <StatusPill tone={barkState.configured ? 'ok' : 'neutral'} dot>
                         {barkState.badgeLabel}
                       </StatusPill>
+                      {barkState.sourceLabel && (
+                        <span className="fc-hint">{barkState.sourceLabel}</span>
+                      )}
                     </div>
                     <p className="fc-hint" style={{ marginTop: 3 }}>
                       {barkState.hint}
                     </p>
+                    {barkState.maskedUrl && (
+                      <div className="fc-mono fc-bark-masked">{barkState.maskedUrl}</div>
+                    )}
                   </div>
                   <button
                     type="button"
-                    className="fc-btn fc-btn-secondary"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
                     disabled={!barkState.canSendTest || testingBark}
                     onClick={() => void handleTestBark()}
                   >
                     <SendIcon /> {testingBark ? '推送中…' : '发送测试推送'}
                   </button>
                 </div>
+
+                {user.isSuperuser && (
+                  <form
+                    onSubmit={(e) => void handleSaveBark(e)}
+                    className="fc-bark-form"
+                  >
+                    <div className="fc-field" style={{ flex: 1 }}>
+                      <label className="fc-label" htmlFor="st-bark-url">
+                        Bark 推送地址（保存后即热生效，仅脱敏回显）
+                      </label>
+                      <input
+                        id="st-bark-url"
+                        type="password"
+                        autoComplete="off"
+                        className="fc-input fc-mono"
+                        placeholder="https://api.day.app/<你的设备Key>"
+                        value={barkUrlInput}
+                        onChange={(e) => setBarkUrlInput(e.target.value)}
+                      />
+                    </div>
+                    <div className="fc-bark-actions">
+                      <button
+                        type="submit"
+                        className="fc-btn fc-btn-primary fc-btn-sm"
+                        disabled={savingBark || !barkUrlInput.trim()}
+                      >
+                        {savingBark ? '保存中…' : '保存地址'}
+                      </button>
+                      {barkState.canClearOverride && (
+                        <button
+                          type="button"
+                          className="fc-btn fc-btn-secondary fc-btn-sm"
+                          disabled={savingBark}
+                          onClick={() => void handleClearBark()}
+                        >
+                          清空页面配置
+                        </button>
+                      )}
+                    </div>
+                  </form>
+                )}
               </section>
+
+              {isDesktop && desktopBootstrap && (
+                <section className="fc-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>桌面应用与运行环境</h2>
+                      <p className="fc-hint">关闭窗口将缩进右下角系统托盘，继续准点续火</p>
+                    </div>
+                    {schedulerStatus?.browserRuntime && (
+                      <StatusPill tone={schedulerStatus.browserRuntime.ready ? 'ok' : 'warn'} dot>
+                        {schedulerStatus.browserRuntime.label}
+                      </StatusPill>
+                    )}
+                  </div>
+
+                  <div className="fc-settings-row" style={{ marginTop: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 500 }}>开机自动启动</div>
+                      <div className="fc-hint">登录 Windows 后自动在托盘就绪，避免遗忘开启续火</div>
+                    </div>
+                    <Switch
+                      checked={autostartEnabled}
+                      disabled={togglingAutostart}
+                      label="开机自动启动"
+                      onChange={(next) => void handleToggleAutostart(next)}
+                    />
+                  </div>
+
+                  <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0, flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0, flex: '1 1 200px' }}>
+                      <div style={{ fontWeight: 500 }}>本机数据目录</div>
+                      <div className="fc-hint fc-mono" style={{ wordBreak: 'break-all' }}>
+                        {desktopBootstrap.dataDir}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="fc-btn fc-btn-secondary fc-btn-sm"
+                      onClick={() => void openDesktopDataDir()}
+                    >
+                      打开目录
+                    </button>
+                  </div>
+                </section>
+              )}
 
               <section className="fc-card">
                 <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>

@@ -14,6 +14,7 @@ import {
   resolveDrawerOnViewChange,
   shouldFinalizeRecoveredScan,
   shouldReloadOpenJobDetail,
+  validateBarkUrlInput,
 } from '../src/lib/workspace.ts'
 import { formatAttemptStage } from '../src/lib/format.ts'
 import { normalizeStatsSummary } from '../src/api.ts'
@@ -399,16 +400,40 @@ test('shouldReloadOpenJobDetail detects external status or timestamp updates for
   assert.equal(shouldReloadOpenJobDetail(null, null), false)
 })
 
-test('describeBarkCardState reflects configured status and disables test button until configured', () => {
+test('describeBarkCardState reflects configured status, source, masked preview and validates Bark URL input', () => {
   const unconf = describeBarkCardState(null)
   assert.equal(unconf.configured, false)
   assert.equal(unconf.badgeLabel, '未配置')
   assert.equal(unconf.canSendTest, false)
+  assert.equal(unconf.canClearOverride, false)
 
-  const conf = describeBarkCardState({ barkConfigured: true })
-  assert.equal(conf.configured, true)
-  assert.equal(conf.badgeLabel, '已启用')
-  assert.equal(conf.canSendTest, true)
+  const envConf = describeBarkCardState({
+    barkConfigured: true,
+    barkSource: 'env',
+    barkMaskedUrl: 'https://api.day.app/****1234',
+  })
+  assert.equal(envConf.configured, true)
+  assert.equal(envConf.badgeLabel, '已启用')
+  assert.equal(envConf.canSendTest, true)
+  assert.equal(envConf.canClearOverride, false)
+  assert.equal(envConf.maskedUrl, 'https://api.day.app/****1234')
+
+  const uiConf = describeBarkCardState({
+    barkConfigured: true,
+    barkSource: 'settings',
+    barkMaskedUrl: 'https://api.day.app/****9876',
+  })
+  assert.equal(uiConf.canClearOverride, true)
+  assert.equal(uiConf.sourceLabel, '页面配置')
+
+  assert.deepEqual(validateBarkUrlInput('  https://api.day.app/MyDeviceKey123  '), {
+    ok: true,
+    value: 'https://api.day.app/MyDeviceKey123',
+  })
+  assert.equal(validateBarkUrlInput('').ok, false)
+  assert.equal(validateBarkUrlInput('ftp://api.day.app/abc').ok, false)
+  assert.equal(validateBarkUrlInput('https://api.day.app/').ok, false)
+  assert.equal(validateBarkUrlInput('https://api.day.app/push').ok, false)
 })
 
 test('parseSelectorOverridesDraft extracts changed keys and rejects invalid types or CHAT_URL', () => {

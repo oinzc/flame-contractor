@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import secrets
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +62,35 @@ def claim_legacy_data(settings: Settings, engine) -> None:
             session.commit()
 
 
+def ensure_desktop_user(engine) -> User:
+    """桌面单机模式：确保存在一个本机管理员账号（若迁移自旧库则复用已有管理员）。"""
+    with Session(engine) as session:
+        existing_super = session.exec(
+            select(User).where(User.is_superuser == True).order_by(User.created_at.asc())  # noqa: E712
+        ).first()
+        if existing_super is not None:
+            return existing_super
+        existing_any = session.exec(
+            select(User).order_by(User.created_at.asc())
+        ).first()
+        if existing_any is not None:
+            existing_any.is_superuser = True
+            session.add(existing_any)
+            session.commit()
+            session.refresh(existing_any)
+            return existing_any
+        local_user = User(
+            username="local",
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            display_name="本机维护者",
+            is_superuser=True,
+        )
+        session.add(local_user)
+        session.commit()
+        session.refresh(local_user)
+        return local_user
+
+
 def create_app(
     settings: Settings | None = None,
     browser_manager=None,
@@ -92,6 +122,8 @@ def create_app(
         app.state.settings = settings
         run_migrations(settings.database_url)
         claim_legacy_data(app.state.settings, engine)
+        if settings.desktop_mode and settings.desktop_token:
+            ensure_desktop_user(engine)
         # 扫描进度写入 SQLite；进程重启后只收束遗留任务，不自动重开浏览器或重复扫描。
         recover_scan_tasks = getattr(browser_manager, "recover_persisted_scan_tasks", None)
         if callable(recover_scan_tasks):

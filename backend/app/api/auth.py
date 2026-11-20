@@ -87,8 +87,15 @@ def register(payload: UserRegister, request: Request, session: SessionDep) -> Au
 
 
 @router.get("/setup", response_model=AuthSetupRead)
-def setup_status(session: SessionDep) -> AuthSetupRead:
-    return AuthSetupRead(needs_setup=session.exec(select(User.id)).first() is None)
+def setup_status(request: Request, session: SessionDep) -> AuthSetupRead:
+    settings = request.app.state.settings
+    is_desktop = bool(settings.desktop_mode and settings.desktop_token)
+    if is_desktop:
+        return AuthSetupRead(needs_setup=False, desktop_mode=True)
+    return AuthSetupRead(
+        needs_setup=session.exec(select(User.id)).first() is None,
+        desktop_mode=False,
+    )
 
 
 @router.post("/login", response_model=AuthRead)

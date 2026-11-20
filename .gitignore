@@ -40,5 +40,12 @@ output/
 *.log
 nohup.out
 
+# Desktop packaging artifacts
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/resources/backend/
+desktop/node_modules/
+desktop/.build-pyinstaller/
+
 # ZCode 客户端生成的排除副本（内容同步自 .gitignore，仅本机使用）
 .zcodeignore

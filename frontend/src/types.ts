@@ -69,6 +69,12 @@ export interface AutoScanStatus {
   detail: string | null
 }
 
+export interface BrowserRuntimeInfo {
+  ready: boolean
+  kind: 'custom' | 'msedge' | 'chrome' | 'playwright-chromium' | 'missing'
+  label: string
+}
+
 export interface SchedulerStatus {
   enabled: boolean
   paused: boolean
@@ -79,8 +85,14 @@ export interface SchedulerStatus {
   scheduledAlwaysSend: boolean
   /** 固定发送时刻的宽限期（分钟）：超过才算错过、当天不再补发 */
   fixedTimeGraceMinutes: number
-  /** .env 是否已配置 FLAME_BARK_URL（不暴露地址或 device_key） */
+  /** 是否已配置 Bark 推送（页面配置或环境变量，绝不暴露完整 device_key） */
   barkConfigured?: boolean
+  /** 脱敏后的 Bark 推送地址预览，如 https://api.day.app/****9876 */
+  barkMaskedUrl?: string | null
+  /** 当前生效配置来源 */
+  barkSource?: 'settings' | 'env' | 'none'
+  /** 本机浏览器自动化内核探测结果 */
+  browserRuntime?: BrowserRuntimeInfo | null
   autoScans: AutoScanStatus[]
 }
 
@@ -94,6 +106,7 @@ export interface SchedulerSettingsPatch {
   autoScanIntervalHours?: number
   scheduledAlwaysSend?: boolean
   fixedTimeGraceMinutes?: number
+  barkUrl?: string
 }
 
 export interface Account {
@@ -412,6 +425,7 @@ export interface AuthRead {
 
 export interface AuthSetupRead {
   needsSetup: boolean
+  desktopMode?: boolean
 }
 
 export interface AuthSessionRead {

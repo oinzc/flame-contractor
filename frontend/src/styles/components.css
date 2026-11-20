@@ -1071,7 +1071,7 @@
   border: 1px solid var(--hairline);
 }
 
-/* Empty State */
+/* Empty State & First-Run Onboarding */
 .fc-empty {
   border: 1px dashed var(--hairline-strong);
   border-radius: var(--radius-lg);
@@ -1082,6 +1082,113 @@
   flex-direction: column;
   align-items: center;
   gap: 8px;
+}
+
+.fc-onboarding-card {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px;
+  gap: 18px;
+}
+
+.fc-onboarding-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fc-onboarding-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fc-onboarding-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fc-onboarding-step {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  flex-wrap: wrap;
+}
+
+.fc-onboarding-step.is-current {
+  background: var(--canvas);
+  border-color: var(--hairline-strong);
+}
+
+.fc-step-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.fc-onboarding-step.is-current .fc-step-num {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-ink);
+}
+
+.fc-step-body {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.fc-step-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.fc-bark-masked {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--body);
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  display: inline-block;
+  max-width: 100%;
+  word-break: break-all;
+}
+
+.fc-bark-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.fc-bark-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 960px) {

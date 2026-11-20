@@ -1,0 +1,14 @@
+{
+  "name": "flame-contractor-desktop",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Flame Contractor Tauri v2 desktop wrapper",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}

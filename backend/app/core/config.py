@@ -1,26 +1,71 @@
 from functools import lru_cache
+import os
 from pathlib import Path
+import secrets
+import sys
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"))
+
+
+def bundle_root() -> Path:
+    if is_frozen():
+        return Path(getattr(sys, "_MEIPASS")).resolve()
+    return Path(__file__).resolve().parents[3]
+
+
+PROJECT_ROOT = bundle_root()
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "flame-contractor.db"
+DEFAULT_SECRET_KEY = "flame-contractor-dev-secret-change-me"
+DESKTOP_CORS_ORIGINS = (
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+)
 AUTO_SCAN_INTERVAL_MIN_HOURS = 1
 AUTO_SCAN_INTERVAL_MAX_HOURS = 168
+
+
+def _load_or_create_secret_key(data_dir: Path) -> str:
+    """桌面/数据目录模式下自动持久化本机签名密钥，避免用户手工编写 .env。"""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    secret_file = data_dir / ".secret_key"
+    if secret_file.is_file():
+        existing = secret_file.read_text(encoding="utf-8").strip()
+        if len(existing) >= 32:
+            return existing
+    generated = secrets.token_urlsafe(48)
+    tmp_path = data_dir / ".secret_key.tmp"
+    tmp_path.write_text(generated + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp_path, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp_path, secret_file)
+    return generated
 
 
 class Settings(BaseSettings):
     app_name: str = "Flame Contractor"
     version: str = "0.2.0"
     api_prefix: str = "/api"
+    # 桌面应用可指定统一可写数据目录（如 %LOCALAPPDATA%\FlameContractor），自动派生 DB/Profile/Artifacts/密钥路径。
+    data_dir: Path | None = None
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     profiles_dir: Path = PROJECT_ROOT / "data" / "profiles"
     artifacts_dir: Path = PROJECT_ROOT / "artifacts"
     # 常驻模式可由同一个 FastAPI 进程托管前端构建产物；开发模式继续使用 Vite。
     serve_frontend: bool = False
     frontend_dist_dir: Path = PROJECT_ROOT / "frontend" / "dist"
+    # 可选显式指定浏览器路径；留空时自动按平台探测（Windows 优先复用本机 Edge/Chrome）。
+    browser_executable: str | None = None
+    # 桌面单机免登模式：仅当 Tauri 壳同时启用 desktop_mode 与当次随机 desktop_token 时生效。
+    desktop_mode: bool = False
+    desktop_token: str | None = None
     # Bark 通知推送地址（可选）：形如 https://api.day.app/<device_key>，空则不推送
     bark_url: str | None = None
     # artifacts 诊断产物保留天数（失败截图/工件 JSON），0 表示永不过期
@@ -72,7 +117,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     )
     # 认证：签名 token 的密钥（上线务必用 FLAME_SECRET_KEY 覆盖默认值）
-    secret_key: str = "flame-contractor-dev-secret-change-me"
+    secret_key: str = DEFAULT_SECRET_KEY
     # 仅供旧库升级时认领无属主数据；全新安装由页面初始化首位管理员
     bootstrap_username: str = "admin"
     bootstrap_password: str = "admin"
@@ -83,6 +128,29 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _apply_runtime_defaults(self) -> "Settings":
+        provided = self.model_fields_set
+        if self.data_dir is not None:
+            resolved_data = Path(self.data_dir).expanduser().resolve()
+            self.data_dir = resolved_data
+            if "database_url" not in provided:
+                self.database_url = f"sqlite:///{(resolved_data / 'flame-contractor.db').as_posix()}"
+            if "profiles_dir" not in provided:
+                self.profiles_dir = resolved_data / "profiles"
+            if "artifacts_dir" not in provided:
+                self.artifacts_dir = resolved_data / "artifacts"
+            if "secret_key" not in provided and self.secret_key == DEFAULT_SECRET_KEY:
+                self.secret_key = _load_or_create_secret_key(resolved_data)
+
+        if self.desktop_mode:
+            merged_origins = list(self.cors_origins)
+            for origin in DESKTOP_CORS_ORIGINS:
+                if origin not in merged_origins:
+                    merged_origins.append(origin)
+            self.cors_origins = tuple(merged_origins)
+        return self
 
 
 @lru_cache

@@ -1,9 +1,17 @@
 from pathlib import Path
+import sys
 
 from alembic import command
 from alembic.config import Config
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+def _backend_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(getattr(sys, "_MEIPASS")).resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+BACKEND_ROOT = _backend_root()
 
 
 def run_migrations(database_url: str) -> None:
@@ -13,7 +21,8 @@ def run_migrations(database_url: str) -> None:
         if database and database != ":memory:":
             Path(database).parent.mkdir(parents=True, exist_ok=True)
 
-    config = Config(str(BACKEND_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    root = _backend_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")

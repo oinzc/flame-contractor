@@ -45,6 +45,7 @@ from ..scan_reconciliation import (
     target_snapshot,
 )
 from ..services import create_targets_batch
+from .browser_runtime import detect_browser_runtime
 from .douyin_chat import (
     SCAN_MAX_ROUNDS,
     DomChangedError,
@@ -1287,10 +1288,18 @@ class BrowserManager:
             from playwright.async_api import async_playwright
 
             self._playwright = await async_playwright().start()
+        runtime = detect_browser_runtime(
+            explicit_executable=self._settings.browser_executable
+        )
+        launch_kwargs: dict[str, object] = {
+            "user_data_dir": str(profile_path),
+            "headless": headless,
+            "args": CHROMIUM_LAUNCH_ARGS,
+        }
+        if runtime.executable_path:
+            launch_kwargs["executable_path"] = runtime.executable_path
         context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path),
-            headless=headless,
-            args=CHROMIUM_LAUNCH_ARGS,
+            **launch_kwargs,
         )
         page = context.pages[0] if context.pages else await context.new_page()
         return context, page

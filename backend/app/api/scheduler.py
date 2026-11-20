@@ -1,12 +1,14 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlmodel import select
 
 from ..core.database import SessionDep
+from ..execution.browser_runtime import detect_browser_runtime
 from ..models import Account, SendSchedule
 from ..schemas import (
+    BrowserRuntimeRead,
     NotificationTestRead,
     SchedulerSettingsPatch,
     SchedulerStatusRead,
@@ -43,7 +45,9 @@ def _scheduler_read(
     request: Request, session: SessionDep, user_id: str
 ) -> SchedulerStatusRead:
     scheduler = request.app.state.scheduler
+    settings = request.app.state.settings
     auto_scan_status = getattr(scheduler, "auto_scan_status", None)
+    runtime = detect_browser_runtime(explicit_executable=settings.browser_executable)
     return SchedulerStatusRead(
         enabled=scheduler.enabled,
         paused=scheduler.paused,
@@ -53,6 +57,13 @@ def _scheduler_read(
         scheduled_always_send=getattr(scheduler, "scheduled_always_send", False),
         fixed_time_grace_minutes=getattr(scheduler, "fixed_time_grace_minutes", 30),
         bark_configured=bool(getattr(scheduler, "notifier_enabled", False)),
+        bark_masked_url=getattr(scheduler, "bark_masked_url", None),
+        bark_source=getattr(scheduler, "bark_source", "none"),
+        browser_runtime=BrowserRuntimeRead(
+            ready=runtime.ready,
+            kind=runtime.kind,
+            label=runtime.label,
+        ),
         auto_scans=auto_scan_status() if callable(auto_scan_status) else [],
     )
 
@@ -71,9 +82,19 @@ def update_scheduler_settings(
     payload: SchedulerSettingsPatch,
     user: CurrentUser,
 ) -> SchedulerStatusRead:
-    """按需更新调度设置：只应用请求里显式给出的字段。"""
+    """按需更新调度与通知设置：只应用请求里显式给出的字段。"""
     scheduler = request.app.state.scheduler
     provided = payload.model_fields_set
+    if "bark_url" in provided:
+        if not user.is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="仅平台管理员可修改全局 Bark 推送地址",
+            )
+        try:
+            scheduler.update_bark_url(payload.bark_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if "auto_scan_interval_hours" in provided:
         scheduler.update_auto_scan_interval(payload.auto_scan_interval_hours)
     if "scheduled_always_send" in provided:

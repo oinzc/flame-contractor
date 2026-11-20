@@ -6,6 +6,7 @@ import { paginateItems } from '../../lib/pagination.ts'
 import type { AccountAttentionItem, TargetDaySummary } from '../../lib/workspace.ts'
 import type {
   Account,
+  BrowserRuntimeInfo,
   ContractTarget,
   DrawerState,
   MessageTemplate,
@@ -29,6 +30,7 @@ export interface TargetsWorkspaceViewProps {
   dayMap: Map<string, TargetDaySummary>
   attentionItems: AccountAttentionItem[]
   todaySchedule: SendSchedule | null
+  browserRuntime?: BrowserRuntimeInfo | null
   drawer: DrawerState
   onOpenDrawer: (drawer: DrawerState) => void
   onChanged: () => Promise<void> | void
@@ -41,6 +43,7 @@ export function TargetsWorkspaceView({
   dayMap,
   attentionItems,
   todaySchedule,
+  browserRuntime = null,
   drawer,
   onOpenDrawer,
   onChanged,
@@ -140,21 +143,63 @@ export function TargetsWorkspaceView({
 
   if (!account) {
     return (
-      <div className="fc-stage" style={{ paddingTop: 48 }}>
-        <div className="fc-empty">
-          <h2 style={{ fontSize: 17, fontWeight: 600 }}>还没有配置抖音账号</h2>
-          <p style={{ color: 'var(--muted)', maxWidth: 420 }}>
-            先创建一个抖音账号配置并在右侧完成二维码授权，随后即可扫描会话列表并批量导入续火好友。
-          </p>
-          <button
-            type="button"
-            className="fc-btn fc-btn-primary"
-            style={{ marginTop: 8 }}
-            onClick={() => onOpenDrawer({ kind: 'create-account' })}
-          >
-            <PlusIcon /> 新增首个抖音账号
-          </button>
-        </div>
+      <div className="fc-stage" style={{ paddingTop: 36 }}>
+        <section className="fc-card fc-onboarding-card" aria-label="快速上手引导">
+          <div className="fc-onboarding-head">
+            <div>
+              <h2 className="fc-onboarding-title">开始使用 Flame Contractor</h2>
+              <p className="fc-hint" style={{ marginTop: 4 }}>
+                所有登录态与续火记录均保存在本机，按下面 3 步即可完成首次配置。
+              </p>
+            </div>
+            {browserRuntime && (
+              <StatusPill tone={browserRuntime.ready ? 'ok' : 'warn'} dot>
+                {browserRuntime.label}
+              </StatusPill>
+            )}
+          </div>
+
+          <ol className="fc-onboarding-steps">
+            <li className="fc-onboarding-step is-current">
+              <span className="fc-step-num" aria-hidden="true">1</span>
+              <div className="fc-step-body">
+                <div className="fc-step-title">添加首个抖音账号并完成扫码登录</div>
+                <p className="fc-hint">
+                  每个抖音账号拥有独立浏览器 Profile；创建后在右侧抽屉扫码即可持久化登录态。
+                </p>
+              </div>
+              <button
+                type="button"
+                className="fc-btn fc-btn-primary fc-btn-sm"
+                onClick={() => onOpenDrawer({ kind: 'create-account' })}
+              >
+                <PlusIcon /> 新增首个抖音账号
+              </button>
+            </li>
+
+            <li className="fc-onboarding-step">
+              <span className="fc-step-num" aria-hidden="true">2</span>
+              <div className="fc-step-body">
+                <div className="fc-step-title">只读扫描会话列表，勾选导入续火好友</div>
+                <p className="fc-hint">
+                  自动提取私聊 platform_user_id 与群聊会话 ID，发送前严格二次核对、绝不盲发。
+                </p>
+              </div>
+              <StatusPill tone="neutral">待完成第 1 步</StatusPill>
+            </li>
+
+            <li className="fc-onboarding-step">
+              <span className="fc-step-num" aria-hidden="true">3</span>
+              <div className="fc-step-body">
+                <div className="fc-step-title">绑定文字 / 比心表情模板并开启每日自动续火</div>
+                <p className="fc-hint">
+                  在「模板库」准备消息，再于「系统与调度」设定每日时刻与 Bark 手机告警。
+                </p>
+              </div>
+              <StatusPill tone="neutral">随时可调</StatusPill>
+            </li>
+          </ol>
+        </section>
       </div>
     )
   }

@@ -24,7 +24,10 @@ def test_first_run_requires_one_time_admin_setup(settings):
     app = create_app(settings)
     app.state.disable_test_auto_auth = True
     with TestClient(app) as test_client:
-        assert test_client.get("/api/auth/setup").json() == {"needsSetup": True}
+        assert test_client.get("/api/auth/setup").json() == {
+            "needsSetup": True,
+            "desktopMode": False,
+        }
         assert test_client.post(
             "/api/auth/login", json={"username": "admin", "password": TEST_ADMIN_PASSWORD}
         ).status_code == 401
@@ -35,7 +38,10 @@ def test_first_run_requires_one_time_admin_setup(settings):
         )
         assert created.status_code == 201, created.text
         assert created.json()["user"]["isSuperuser"] is True
-        assert test_client.get("/api/auth/setup").json() == {"needsSetup": False}
+        assert test_client.get("/api/auth/setup").json() == {
+            "needsSetup": False,
+            "desktopMode": False,
+        }
         assert test_client.post(
             "/api/auth/register", json={"username": "second", "password": "second-pass"}
         ).status_code == 409

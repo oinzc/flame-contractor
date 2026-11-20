@@ -7,6 +7,7 @@ token 携带 user_id、session_id 与过期时间；校验顺序：签名合法 
 
 from __future__ import annotations
 
+import hmac
 import time
 from typing import Annotated
 
@@ -16,6 +17,23 @@ from sqlmodel import Session, select
 from ..core.database import SessionDep
 from ..core.security import decode_token
 from ..models import AuthSession, User
+
+
+def _resolve_desktop_user(
+    request: Request,
+    session: Session,
+    token: str,
+) -> User | None:
+    """桌面单机模式：仅在 desktop_mode=True 且与当次随机握手令牌精确匹配时放行。"""
+    settings = request.app.state.settings
+    expected = settings.desktop_token
+    if not settings.desktop_mode or not expected or len(expected) < 16:
+        return None
+    if not hmac.compare_digest(token, expected):
+        return None
+    return session.exec(
+        select(User).where(User.is_superuser == True).order_by(User.created_at.asc())  # noqa: E712
+    ).first()
 
 
 def _resolve(
@@ -61,6 +79,9 @@ def get_current_user(
     if not auth.startswith("Bearer "):
         raise _unauthorized("未登录")
     token = auth.removeprefix("Bearer ").strip()
+    desktop_user = _resolve_desktop_user(request, session, token)
+    if desktop_user is not None:
+        return desktop_user
     user, _auth_session = _resolve(request, session, token)
     return user
 

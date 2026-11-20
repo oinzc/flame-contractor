@@ -24,8 +24,55 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 6.0
 VALID_LEVELS = {"active", "timeSensitive", "critical", "passive"}
 DEFAULT_LEVEL = "active"
+MAX_BARK_URL_LEN = 255
 
 Sender = Callable[[str, str], Awaitable[None]]
+
+
+def _extract_bark_device_key(base_url: str) -> str:
+    """从 base_url 提取 device_key：取路径中最后一个非 push 的非空段。"""
+    path = urlsplit(base_url).path
+    segments = [seg for seg in path.split("/") if seg]
+    for segment in reversed(segments):
+        if segment != "push":
+            return segment
+    return ""
+
+
+def validate_bark_url(raw_url: str) -> str:
+    """校验 Bark 推送地址格式并返回规范化后的字符串；非法则抛 ValueError。"""
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        raise ValueError("Bark 推送地址不能为空")
+    if len(cleaned) > MAX_BARK_URL_LEN:
+        raise ValueError(f"Bark 推送地址长度不能超过 {MAX_BARK_URL_LEN} 个字符")
+    parts = urlsplit(cleaned)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("Bark 推送地址必须以 http:// 或 https:// 开头并包含合法域名")
+    if not _extract_bark_device_key(cleaned):
+        raise ValueError("Bark 推送地址缺少设备 Key 路径段，请按 https://api.day.app/<device_key> 格式填写")
+    return cleaned
+
+
+def mask_bark_url(raw_url: str | None) -> str | None:
+    """将 Bark 推送地址中的 device_key 脱敏，仅保留域名与末尾 4 位，严禁回显完整密钥。"""
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return None
+    parts = urlsplit(cleaned)
+    if not parts.scheme or not parts.netloc:
+        return "****"
+    raw_segments = [seg for seg in parts.path.split("/") if seg]
+    key_idx: int | None = None
+    for idx in range(len(raw_segments) - 1, -1, -1):
+        if raw_segments[idx] != "push":
+            key_idx = idx
+            break
+    if key_idx is not None:
+        key = raw_segments[key_idx]
+        raw_segments[key_idx] = f"****{key[-4:]}" if len(key) > 4 else "****"
+    masked_path = "/" + "/".join(raw_segments) if raw_segments else ""
+    return urlunsplit((parts.scheme, parts.netloc, masked_path, "", ""))
 
 
 @dataclass
@@ -47,17 +94,16 @@ class BarkNotifier:
     def enabled(self) -> bool:
         return bool(self.base_url and self.base_url.strip())
 
+    def set_base_url(self, base_url: str | None) -> None:
+        cleaned = (base_url or "").strip()
+        self.base_url = cleaned or None
+
     @staticmethod
     def _device_key(base_url: str) -> str:
         """从 base_url 中提取 device_key：取路径中最后一个非空段。
         兼容 `https://api.day.app/<key>` 与 `https://api.day.app/<key>/push`。
         """
-        path = urlsplit(base_url).path
-        segments = [seg for seg in path.split("/") if seg]
-        for segment in reversed(segments):
-            if segment != "push":
-                return segment
-        return ""
+        return _extract_bark_device_key(base_url)
 
     def _resolve_url(self, level: str) -> str | None:
         level = level or self.level
@@ -122,7 +168,7 @@ class BarkNotifier:
         """主动探测发送并返回脱敏结果文案（严禁包含 URL 或 device_key）。"""
         url = self._resolve_url(level)
         if not url:
-            return False, "尚未配置 FLAME_BARK_URL（请在 .env 中设置后重启服务）"
+            return False, "尚未配置 Bark 推送地址（可在「系统与调度」页面填写，或在 .env 设置 FLAME_BARK_URL）"
         effective_level = (
             (level or self.level)
             if (level or self.level) in VALID_LEVELS

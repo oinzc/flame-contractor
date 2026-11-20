@@ -348,28 +348,77 @@ export function shouldReloadOpenJobDetail(
 export interface BarkCardState {
   configured: boolean
   badgeLabel: '已启用' | '未配置'
+  sourceLabel: string | null
+  maskedUrl: string | null
   hint: string
   canSendTest: boolean
+  canClearOverride: boolean
 }
 
 export function describeBarkCardState(
-  status: { barkConfigured?: boolean } | null | undefined,
+  status:
+    | {
+        barkConfigured?: boolean
+        barkMaskedUrl?: string | null
+        barkSource?: 'settings' | 'env' | 'none'
+      }
+    | null
+    | undefined,
 ): BarkCardState {
   const configured = Boolean(status?.barkConfigured)
+  const source = status?.barkSource ?? (configured ? 'env' : 'none')
+  const maskedUrl = status?.barkMaskedUrl ?? null
   if (configured) {
+    const sourceLabel = source === 'settings' ? '页面配置' : '环境变量 FLAME_BARK_URL'
     return {
       configured: true,
       badgeLabel: '已启用',
-      hint: '登录失效、待复核与好友火花告急将推送至手机（私密 Key 仅存本机 .env）',
+      sourceLabel,
+      maskedUrl,
+      hint:
+        source === 'settings'
+          ? '登录失效、待复核与好友火花告急将推送至手机（私密 Key 已脱敏保存，不进入 JSON 备份）'
+          : '登录失效、待复核与好友火花告急将推送至手机（当前读取环境变量 FLAME_BARK_URL，可在下方直接覆盖）',
       canSendTest: true,
+      canClearOverride: source === 'settings',
     }
   }
   return {
     configured: false,
     badgeLabel: '未配置',
-    hint: '在 .env 设置 FLAME_BARK_URL 并重启服务后，可接收登录异常与火花告急提醒',
+    sourceLabel: null,
+    maskedUrl: null,
+    hint: '填写 Bark 推送地址后，登录失效、待复核与好友火花告急将第一时间推送到手机',
     canSendTest: false,
+    canClearOverride: false,
   }
+}
+
+export function validateBarkUrlInput(
+  raw: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const cleaned = raw.trim()
+  if (!cleaned) {
+    return { ok: false, error: '请输入 Bark 推送地址，例如 https://api.day.app/<你的设备Key>' }
+  }
+  if (cleaned.length > 255) {
+    return { ok: false, error: 'Bark 推送地址长度不能超过 255 个字符' }
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(cleaned)
+  } catch {
+    return { ok: false, error: 'Bark 推送地址格式无效，请以 https:// 或 http:// 开头' }
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'Bark 推送地址必须以 https:// 或 http:// 开头' }
+  }
+  const segments = parsed.pathname.split('/').filter(Boolean)
+  const hasDeviceKey = segments.some((seg) => seg !== 'push')
+  if (!hasDeviceKey) {
+    return { ok: false, error: 'Bark 推送地址缺少设备 Key，请按 https://api.day.app/<device_key> 填写' }
+  }
+  return { ok: true, value: cleaned }
 }
 
 const CORE_EDITABLE_SELECTOR_KEYS = [
