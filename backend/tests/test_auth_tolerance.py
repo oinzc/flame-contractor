@@ -203,6 +203,24 @@ def test_login_failure_captures_diagnostic_screenshot(settings):
         assert evidence is not None
         assert evidence["page_url"] == "https://www.douyin.com/chat"
         assert evidence["screenshot"] == shots[-1]
+        assert evidence["logged_out_signal"] is False
+
+
+def test_login_failure_evidence_records_logged_out_signal_when_present(settings):
+    """页面出现登出实证（登录跳转）时，现场证据明确标记 logged_out_signal=True。"""
+    page = FakePage(logged_in=False)
+    page.url = "https://www.douyin.com/login?from=chat"
+    app = make_app(settings, [page])
+    with TestClient(app) as client:
+        account = create_account(client)
+        _set_status(app, account["id"], AccountStatus.HEALTHY)
+
+        _scan(client, account["id"])
+
+        manager: BrowserManager = app.state.browser_manager
+        evidence = manager._auth_evidence.get(account["id"])
+        assert evidence is not None
+        assert evidence["logged_out_signal"] is True
 
 
 def test_login_check_timeout_is_configurable(engine, settings):

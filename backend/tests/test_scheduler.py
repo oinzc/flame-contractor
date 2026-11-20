@@ -1475,29 +1475,231 @@ def test_auto_scan_confirmed_auth_failure_notifies(engine):
     assert any("会话状态同步失败" in title for title in titles)
 
 
-def test_auto_scan_retries_immediately_after_unconfirmed_failure(engine):
-    """未确认失效时账号仍是 HEALTHY，因此会被判定「应当再扫一次」——即快速复核，
-    而不必等满一个同步周期。"""
+def test_auto_scan_unconfirmed_auth_failure_cools_down_before_retry(engine):
+    """未确认失效（单次抖动）必须先冷却再复判，不得在 60 秒后的下一轮 tick 立即耗尽容忍次数。
+
+    回归背景（2026-11-20 实测）：抖音会话页出现约 2 分钟骨架屏抖动，首轮自动同步记
+    1/2 未确认失效；旧实现仅凭 latest.overall == auth_expired 且账号 HEALTHY 就绕过
+    间隔在下一分钟立即复判，把仍有效的两个账号同时误标 AUTH_EXPIRED 并锁死调度。
+    冷却间隔（默认 10 分钟）既跨过短时抖动，也不必等满整个同步周期（如 24 小时）。
+    """
     account = make_account(engine)
     _add_target(engine)
     clock = make_clock(datetime(2026, 8, 27, 15, 0, tzinfo=timezone.utc))
+    calls: list[datetime] = []
+
+    async def scan(account_id: str) -> dict:
+        stamp = clock().replace(tzinfo=None)
+        calls.append(stamp)
+        with Session(engine) as session:
+            session.add(
+                ScanTask(
+                    id=f"scan-{len(calls)}",
+                    account_id=account_id,
+                    status=ScanTaskStatus.FAILED,
+                    overall="auth_expired",
+                    detail="登录判定未通过，但未确认失效（可能是瞬时抖动）；账号未被标记失效，会自动重试",
+                    started_at=stamp,
+                    finished_at=stamp,
+                    updated_at=stamp,
+                )
+            )
+            session.commit()
+        return {"overall": "auth_expired", "entries": []}
+
+    sched = Scheduler(
+        engine,
+        settings=None,
+        scan_account=scan,
+        auto_scan_interval_hours=24,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+    )
+
+    async def drive() -> None:
+        await sched.tick()
+        await sched.wait_idle()
+
+    # T=15:00：首次触发，出现未确认失效
+    asyncio.run(drive())
+    assert len(calls) == 1
+    status = sched.auto_scan_status()[0]
+    assert status["status"] == "scheduled"
+    assert status["next_scan_at"] == datetime(2026, 8, 27, 15, 10)
+
+    # T=15:01（1 分钟后）与 T=15:09:59：仍在冷却期，不得立即复判
+    clock.set(datetime(2026, 8, 27, 15, 1, tzinfo=timezone.utc))
+    asyncio.run(drive())
+    assert len(calls) == 1
+
+    clock.set(datetime(2026, 8, 27, 15, 9, 59, tzinfo=timezone.utc))
+    asyncio.run(drive())
+    assert len(calls) == 1
+
+    # T=15:10（满 10 分钟冷却）：自动复判，无需等满 24 小时
+    clock.set(datetime(2026, 8, 27, 15, 10, tzinfo=timezone.utc))
+    asyncio.run(drive())
+    assert len(calls) == 2
+
+
+def test_auto_scan_retries_immediately_after_relogin_recovery(engine):
+    """确认失效后重新扫码恢复 HEALTHY（刷新 last_verified_at），应立即补做同步，不受冷却与周期限制。"""
+    account = make_account(
+        engine,
+        status=AccountStatus.HEALTHY,
+        last_verified_at=datetime(2026, 8, 27, 15, 2),
+    )
+    _add_target(engine)
+    clock = make_clock(datetime(2026, 8, 27, 15, 2, tzinfo=timezone.utc))
     with Session(engine) as session:
         session.add(
             ScanTask(
-                id="scan-1",
+                id="scan-expired",
                 account_id=account.id,
                 status=ScanTaskStatus.FAILED,
                 overall="auth_expired",
-                detail="登录判定未通过，但未确认失效",
+                detail="登录已失效，请重新扫码",
+                started_at=datetime(2026, 8, 27, 15, 0),
+                finished_at=datetime(2026, 8, 27, 15, 0),
+                updated_at=datetime(2026, 8, 27, 15, 0),
             )
         )
         session.commit()
 
     sched = Scheduler(
-        engine, settings=None, scan_account=_noop_scan, clock=clock,
-        sleep=asyncio.sleep, loop_interval=0,
+        engine,
+        settings=None,
+        scan_account=_noop_scan,
+        auto_scan_interval_hours=24,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
     )
-    assert sched._auto_scan_due(account, clock()) is True
+    # 即使内存里留有之前的周期下一次时间，重新登录后也必须立刻允许补扫
+    sched._auto_scan_next_attempt_at[account.id] = datetime(2026, 8, 28, 15, 0)
+    assert sched._auto_scan_due(account, clock().replace(tzinfo=None)) is True
+    status = sched.auto_scan_status()[0]
+    assert status["status"] == "due"
+
+
+def test_auto_scan_serializes_multiple_due_accounts(engine):
+    """多账号同时到期自动同步时默认串行错峰（并发=1），避免同时拉起多个无头 Chromium。"""
+    account_a = make_account(engine, display_name="账号A")
+    account_b = make_account(engine, display_name="账号B")
+    with Session(engine) as session:
+        session.add_all(
+            [
+                ContractTarget(account_id=account_a.id, nickname_snapshot="好友A"),
+                ContractTarget(account_id=account_b.id, nickname_snapshot="好友B"),
+            ]
+        )
+        session.commit()
+
+    calls: list[str] = []
+    first_started = asyncio.Event()
+    release = asyncio.Event()
+    clock = make_clock(datetime(2026, 8, 27, 10, 0, tzinfo=timezone.utc))
+
+    async def scan(account_id: str) -> dict:
+        calls.append(account_id)
+        if len(calls) == 1:
+            first_started.set()
+            await release.wait()
+        stamp = clock().replace(tzinfo=None)
+        with Session(engine) as session:
+            session.add(
+                ScanTask(
+                    id=f"scan-{account_id}",
+                    account_id=account_id,
+                    status=ScanTaskStatus.COMPLETED,
+                    overall="ok",
+                    entries_json="[]",
+                    started_at=stamp,
+                    finished_at=stamp,
+                    updated_at=stamp,
+                )
+            )
+            session.commit()
+        return {"overall": "ok", "entries": []}
+
+    sched = Scheduler(
+        engine,
+        settings=None,
+        scan_account=scan,
+        auto_scan_interval_hours=24,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+    )
+
+    async def scenario() -> None:
+        await sched.tick()
+        await first_started.wait()
+        assert len(calls) == 1, "并发上限=1：同一 tick 不得同时启动两个账号的自动扫描"
+        release.set()
+        await sched.wait_idle()
+
+        clock.set(datetime(2026, 8, 27, 10, 1, tzinfo=timezone.utc))
+        await sched.tick()
+        await sched.wait_idle()
+        assert sorted(calls) == sorted([account_a.id, account_b.id])
+
+    asyncio.run(scenario())
+
+
+def test_auto_scan_defers_while_send_is_running_under_serial_concurrency(engine):
+    """全局浏览器并发=1 时，有账号正在发送则后台自动同步延后到下一轮，不与发送争抢资源。"""
+    account_a = make_account(engine, send_time_hhmm="21:30", display_name="发送账号")
+    account_b = make_account(
+        engine, send_window_start="23:00", send_window_end="23:30", display_name="同步账号"
+    )
+    with Session(engine) as session:
+        session.add(ContractTarget(account_id=account_b.id, nickname_snapshot="好友B"))
+        session.commit()
+
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+    scan_calls: list[str] = []
+
+    async def send(_account_id: str, **kwargs) -> dict:
+        send_started.set()
+        await release_send.wait()
+        return {"overall": "ok"}
+
+    async def scan(account_id: str) -> dict:
+        scan_calls.append(account_id)
+        return {"overall": "ok", "entries": []}
+
+    # 21:30 Asia/Shanghai = 13:30 UTC：账号A 到点发送，账号B 不在发送窗口且到期同步
+    clock = make_clock(datetime(2026, 8, 27, 13, 30, tzinfo=timezone.utc))
+    sched = Scheduler(
+        engine,
+        settings=None,
+        send_account=send,
+        scan_account=scan,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+        window_expiry_policy="dispatch",
+        max_concurrent_sends=1,
+    )
+
+    async def scenario() -> None:
+        await sched.tick()
+        await send_started.wait()
+        await asyncio.sleep(0)
+        assert sched.auto_scan_running_accounts == set(), "有发送任务在途时不应并行启动后台自动同步"
+        assert scan_calls == [], "有发送任务在途时不应并行启动后台自动同步"
+        release_send.set()
+        await sched.wait_idle()
+
+        clock.set(datetime(2026, 8, 27, 13, 31, tzinfo=timezone.utc))
+        await sched.tick()
+        await sched.wait_idle()
+        assert scan_calls == [account_b.id]
+
+    asyncio.run(scenario())
 
 
 def test_max_concurrent_sends_queues_due_accounts(engine):

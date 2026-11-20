@@ -1773,7 +1773,8 @@ class BrowserManager:
         # 重新扫码（事后用同一 profile 探测，列表 5 秒即出现）。因此：只要页面
         # 上没有「确实已登出」的实证，先整页重载再判一次，重载后仍失败才计入
         # 失效判定——宁可多花几十秒，也不把活会话误杀。
-        if not await self._has_logged_out_signal(chat):
+        logged_out_signal = await self._has_logged_out_signal(chat)
+        if not logged_out_signal:
             logger.warning(
                 "账号 %s 登录判定未通过且无登出实证（url=%s），重载会话页后复判",
                 account_id,
@@ -1802,12 +1803,21 @@ class BrowserManager:
                         page_url,
                     )
                     return SESSION_NETWORK_PROBLEM
+                logged_out_signal = await self._has_logged_out_signal(chat)
 
-        # 留现场：截图 + 页面 URL。没有它只能靠猜是「慢」「验证页」还是真登出。
+        # 留现场：截图 + 页面 URL + 是否有登出实证。没有它只能靠猜是「慢」「验证页」还是真登出。
         evidence = await self._capture_shot(chat, account_id, "auth_check_failed")
-        self._auth_evidence[account_id] = {"page_url": page_url, "screenshot": evidence}
+        self._auth_evidence[account_id] = {
+            "page_url": page_url,
+            "screenshot": evidence,
+            "logged_out_signal": logged_out_signal,
+        }
         logger.warning(
-            "账号 %s 登录判定失败（url=%s，现场截图=%s）", account_id, page_url, evidence
+            "账号 %s 登录判定失败（url=%s，登出实证=%s，现场截图=%s）",
+            account_id,
+            page_url,
+            "是" if logged_out_signal else "否",
+            evidence,
         )
 
         marked = self._mark_auth_expired(account_id)

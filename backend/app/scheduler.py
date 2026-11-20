@@ -64,6 +64,10 @@ DEFAULT_AUTO_SCAN_INITIAL_DELAY = 60.0
 DEFAULT_AUTO_SCAN_GUARD_MINUTES = 15
 # 与手动登录/发送/扫描发生账号级互斥时，短暂延后而不是错过一整天。
 DEFAULT_AUTO_SCAN_CONFLICT_RETRY_MINUTES = 5
+# 自动同步单次登录判定未通过（未确认失效）后的冷却复判间隔（分钟）：
+# 既不等满一个完整同步周期（如 24 小时），也不在 60 秒后的下一轮 tick 立刻撞同一次
+# 骨架屏/网络抖动，避免 2 分钟瞬时抖动把容忍次数耗尽而把活会话误标 AUTH_EXPIRED。
+DEFAULT_AUTO_SCAN_AUTH_RETRY_MINUTES = 10
 # 失败重试退避基数（秒），指数退避：60s, 120s, ...
 RETRY_BACKOFF_BASE = 60.0
 RETRY_MAX_COUNT = 2
@@ -149,7 +153,9 @@ class Scheduler:
         auto_scan_interval_hours: int = DEFAULT_AUTO_SCAN_INTERVAL_HOURS,
         auto_scan_initial_delay: float = DEFAULT_AUTO_SCAN_INITIAL_DELAY,
         auto_scan_guard_minutes: int = DEFAULT_AUTO_SCAN_GUARD_MINUTES,
+        auto_scan_auth_retry_minutes: int = DEFAULT_AUTO_SCAN_AUTH_RETRY_MINUTES,
         auto_scan_timeout: float = 900.0,
+        max_concurrent_auto_scans: int = 1,
         notifier: "Notifier | None" = None,
         loop_interval: float = 60.0,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
@@ -179,6 +185,8 @@ class Scheduler:
         )
         self._auto_scan_initial_delay = max(0.0, float(auto_scan_initial_delay))
         self._auto_scan_guard_minutes = max(0, int(auto_scan_guard_minutes))
+        self._auto_scan_auth_retry_minutes = max(1, int(auto_scan_auth_retry_minutes))
+        self._max_concurrent_auto_scans = max(1, int(max_concurrent_auto_scans))
         self._notifier = notifier or NullNotifier()
         self._loop_interval = loop_interval
         self._lease_seconds = lease_seconds
@@ -1301,6 +1309,26 @@ class Scheduler:
         guard_start = start_dt - timedelta(minutes=self._auto_scan_guard_minutes)
         return guard_start <= aware_now < end_dt
 
+    @classmethod
+    def _relogged_in_since_scan(cls, account: Account, latest: ScanTask) -> bool:
+        """判断账号是否在最近一次登录失败扫描之后重新恢复了可用登录态。
+
+        区分两类「latest.overall == auth_expired 且账号为 HEALTHY」的场景：
+        1. 经历过确认失效（AUTH_EXPIRED）后恢复，或扫码/核验成功刷新了 last_verified_at：
+           应立即补做此前被跳过的状态同步；
+        2. 仅单次登录判定未通过（未确认失效，账号从未离场 HEALTHY）：
+           属于瞬时抖动，不能在 60 秒后立刻复判消耗容忍次数，应走冷却退避。
+        """
+        if account.status != AccountStatus.HEALTHY or latest.overall != "auth_expired":
+            return False
+        verified_at = cls._utc_naive(account.last_verified_at)
+        scan_ref = cls._utc_naive(
+            latest.finished_at or latest.updated_at or latest.started_at
+        )
+        if verified_at is not None and (scan_ref is None or verified_at > scan_ref):
+            return True
+        return latest.detail == "登录已失效，请重新扫码"
+
     def _auto_scan_due(self, account: Account, now: datetime) -> bool:
         if self._scan_account is None:
             return False
@@ -1313,12 +1341,8 @@ class Scheduler:
         latest = self._latest_scan(account.id)
         if latest is not None and latest.status == "running":
             return False
-        # 登录刚恢复后，立即补做一次此前因失效而跳过的状态同步。
-        if (
-            latest is not None
-            and latest.overall == "auth_expired"
-            and account.status == AccountStatus.HEALTHY
-        ):
+        # 登录真正恢复后，立即补做一次此前因失效而跳过的状态同步。
+        if latest is not None and self._relogged_in_since_scan(account, latest):
             return True
         retry_at = self._auto_scan_next_attempt_at.get(account.id)
         if retry_at is not None and now < retry_at:
@@ -1327,6 +1351,14 @@ class Scheduler:
             return True
         reference = latest.updated_at or latest.finished_at or latest.started_at
         reference = self._utc_naive(reference)
+        if latest.overall == "auth_expired" and account.status == AccountStatus.HEALTHY:
+            if retry_at is not None:
+                return True
+            if reference is None:
+                return True
+            return now >= reference + timedelta(
+                minutes=self._auto_scan_auth_retry_minutes
+            )
         if reference is None:
             return True
         return now >= reference + timedelta(hours=self._auto_scan_interval_hours)
@@ -1334,11 +1366,18 @@ class Scheduler:
     def _dispatch_auto_scans(self, now: datetime) -> int:
         if self._scan_account is None or self._stopping:
             return 0
+        # 全局浏览器并发=1 时，有发送任务在途优先保障发送，后台自动同步延后到下一轮。
+        if self._running and self._max_concurrent_sends <= 1:
+            return 0
         with Session(self._engine) as session:
-            accounts = session.exec(select(Account).where(Account.enabled)).all()
+            accounts = session.exec(
+                select(Account).where(Account.enabled).order_by(Account.created_at)
+            ).all()
 
         dispatched = 0
         for account in accounts:
+            if len(self._auto_scan_running) >= self._max_concurrent_auto_scans:
+                break
             if account.status != AccountStatus.HEALTHY:
                 continue
             if not self._has_targets(account.id):
@@ -1404,10 +1443,16 @@ class Scheduler:
                         "critical",
                     )
                 else:
-                    # 单次判定未通过：账号仍 HEALTHY，下一轮（或即时的补扫）会重试，
-                    # 此时催用户重新扫码只会误导。
+                    # 单次判定未通过：账号仍 HEALTHY，先冷却一段时间再复判（避开同一次
+                    # 骨架屏/网络瞬时抖动），也不必等满完整同步周期，且不催用户重新扫码。
+                    retry_at = self._utc_naive(self._clock()) or datetime.now()
+                    self._auto_scan_next_attempt_at[account_id] = retry_at + timedelta(
+                        minutes=self._auto_scan_auth_retry_minutes
+                    )
                     logger.warning(
-                        "账号 %s 自动同步登录判定未通过但未确认失效，不推送", account_id
+                        "账号 %s 自动同步登录判定未通过但未确认失效，不推送；将于 %d 分钟后复判",
+                        account_id,
+                        self._auto_scan_auth_retry_minutes,
                     )
             elif overall == "ok":
                 await self._notify_spark_deteriorations(
@@ -1461,10 +1506,19 @@ class Scheduler:
                 detail = "全局自动调度已暂停"
             else:
                 retry_at = self._auto_scan_next_attempt_at.get(account.id)
-                if retry_at is not None and retry_at > now:
+                if latest is not None and self._relogged_in_since_scan(account, latest):
+                    next_at = now
+                elif retry_at is not None and retry_at > now:
                     next_at = retry_at
                 elif latest is not None and latest.overall == "auth_expired":
-                    next_at = now
+                    if retry_at is not None:
+                        next_at = retry_at
+                    elif last_at is not None:
+                        next_at = self._utc_naive(last_at) + timedelta(
+                            minutes=self._auto_scan_auth_retry_minutes
+                        )
+                    else:
+                        next_at = now
                 elif last_at is not None:
                     next_at = self._utc_naive(last_at) + interval
                 else:
