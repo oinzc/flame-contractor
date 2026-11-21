@@ -9,3 +9,7 @@ local.properties
 keystore.properties
 .cxx/
 captures/
+
+# 根 .gitignore 忽略运行期 data/，此处保留 Android Kotlin data 包源码
+!app/src/main/java/io/github/oinzc/flamecontractor/data/
+!app/src/test/java/io/github/oinzc/flamecontractor/data/
