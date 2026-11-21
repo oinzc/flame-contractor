@@ -62,19 +62,58 @@ object DouyinJsScripts {
           if (st && (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0')) return false;
           return true;
         }
+        function __flameResolveClickTarget(el, preferImgChild) {
+          if (!el) return null;
+          try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+          var anchor = el;
+          if (preferImgChild && el.querySelectorAll) {
+            try {
+              var imgs = el.querySelectorAll('img');
+              for (var i = 0; i < imgs.length; i++) {
+                if (__flameIsVisible(imgs[i])) {
+                  anchor = imgs[i];
+                  break;
+                }
+              }
+            } catch (_) {}
+          }
+          try {
+            var rect = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+            if (rect && rect.width > 0 && rect.height > 0 && document.elementFromPoint) {
+              var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              if (hit && el.contains(hit)) return hit;
+            }
+          } catch (_) {}
+          return anchor;
+        }
         function __flameDispatchClick(el) {
           if (!el) return false;
           try { el.scrollIntoView({ block: 'nearest' }); } catch (_) {}
           var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
           var cx = rect.left + rect.width / 2;
           var cy = rect.top + rect.height / 2;
-          var opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
-          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (_) {}
-          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (_) {}
-          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (_) {}
-          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (_) {}
-          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (_) {}
-          try { if (typeof el.click === 'function') el.click(); } catch (_) {}
+          var downOpts = {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            button: 0, buttons: 1, detail: 1, clientX: cx, clientY: cy,
+            pointerId: 1, pointerType: 'mouse', isPrimary: true
+          };
+          var upOpts = {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            button: 0, buttons: 0, detail: 1, clientX: cx, clientY: cy,
+            pointerId: 1, pointerType: 'mouse', isPrimary: true
+          };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', downOpts)); } catch (_) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', downOpts)); } catch (_) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', upOpts)); } catch (_) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', upOpts)); } catch (_) {}
+          var clickSent = false;
+          try {
+            el.dispatchEvent(new MouseEvent('click', upOpts));
+            clickSent = true;
+          } catch (_) {}
+          if (!clickSent) {
+            try { if (typeof el.click === 'function') el.click(); } catch (_) {}
+          }
           return true;
         }
         function __flameFirstVisible(selectors) {
@@ -1108,6 +1147,7 @@ object DouyinJsScripts {
                   .trim();
               };
               var signatures = [];
+              var pendingImgCount = 0;
               var boxes = document.querySelectorAll($boxesLit);
               for (var i = 0; i < boxes.length; i++) {
                 var box = boxes[i];
@@ -1119,13 +1159,20 @@ object DouyinJsScripts {
                     break;
                   }
                 }
+                if (!ownContent && String(box.className || '').indexOf('isFromMe') !== -1) {
+                  ownContent = contents.length ? contents[0] : box;
+                }
                 if (!ownContent) continue;
                 var imgs = ownContent.querySelectorAll('img');
                 var nonAvatar = [];
                 for (var k = 0; k < imgs.length; k++) {
-                  var src = String(imgs[k].currentSrc || imgs[k].src || '');
-                  if (src.toLowerCase().indexOf('avatar') === -1) {
-                    nonAvatar.push(String(imgs[k].className || '') + ':' + src.split(/[?#]/, 1)[0]);
+                  var rawSrc = String(imgs[k].getAttribute('src') || imgs[k].currentSrc || imgs[k].src || '').trim();
+                  if (!rawSrc) {
+                    pendingImgCount++;
+                    continue;
+                  }
+                  if (rawSrc.toLowerCase().indexOf('avatar') === -1) {
+                    nonAvatar.push(String(imgs[k].className || '') + ':' + rawSrc.split(/[?#]/, 1)[0]);
                   }
                 }
                 if (!nonAvatar.length) continue;
@@ -1135,6 +1182,8 @@ object DouyinJsScripts {
               }
               return {
                 failureMarkerHit: failureMarkerHit,
+                totalBoxes: boxes.length,
+                pendingImgCount: pendingImgCount,
                 signatures: signatures
               };
             })();
@@ -1208,10 +1257,17 @@ object DouyinJsScripts {
               var items = panel.querySelectorAll($itemLit);
               for (var i = 0; i < items.length; i++) {
                 var item = items[i];
+                if (!__flameIsVisible(item)) continue;
                 var desc = item.querySelector($itemNameLit);
-                if (desc && String(desc.innerText || desc.textContent || '').trim() === targetName) {
-                  __flameDispatchClick(item);
-                  return { clicked: true, method: 'item_name' };
+                var descText = desc ? String(desc.innerText || desc.textContent || '').trim() : '';
+                if (descText === targetName || descText === '[' + targetName + ']') {
+                  var clickTarget = __flameResolveClickTarget(item, true);
+                  __flameDispatchClick(clickTarget);
+                  return {
+                    clicked: true,
+                    method: 'item_name',
+                    targetTag: String((clickTarget && clickTarget.tagName) || '')
+                  };
                 }
               }
 
@@ -1223,8 +1279,13 @@ object DouyinJsScripts {
                 var title = String(an.getAttribute('title') || '').trim();
                 var alt = String(an.getAttribute('alt') || '').trim();
                 if (aria === targetName || title === targetName || alt === targetName) {
-                  __flameDispatchClick(an);
-                  return { clicked: true, method: 'attr_match' };
+                  var attrTarget = __flameResolveClickTarget(an, true);
+                  __flameDispatchClick(attrTarget);
+                  return {
+                    clicked: true,
+                    method: 'attr_match',
+                    targetTag: String((attrTarget && attrTarget.tagName) || '')
+                  };
                 }
               }
 
@@ -1232,8 +1293,13 @@ object DouyinJsScripts {
               if (fallbackIdx !== null) {
                 var slots = panel.querySelectorAll('[role="button"], img, [aria-label], [title]');
                 if (fallbackIdx >= 0 && fallbackIdx < slots.length) {
-                  __flameDispatchClick(slots[fallbackIdx]);
-                  return { clicked: true, method: 'fallback_index' };
+                  var slotTarget = __flameResolveClickTarget(slots[fallbackIdx], true);
+                  __flameDispatchClick(slotTarget);
+                  return {
+                    clicked: true,
+                    method: 'fallback_index',
+                    targetTag: String((slotTarget && slotTarget.tagName) || '')
+                  };
                 }
               }
 

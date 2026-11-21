@@ -677,6 +677,13 @@ class DouyinWebExecutor(
             )
         }
 
+        waitForMessageListSettled(
+            session = session,
+            bundle = bundle,
+            minWaitMs = 500L,
+            maxWaitMs = 1_500L,
+        )
+
         val normalizedKey = DouyinJsScripts.stripBlankAndZeroWidth(text)
         val beforeConfirmSnapshot = evalObject(
             session.webView,
@@ -796,37 +803,49 @@ class DouyinWebExecutor(
             )
         }
 
-        val beforeMediaObj = evalObject(
-            session.webView,
-            DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
-        )
-        val beforeMultiset = SendConfirmer.toMultiset(
-            beforeMediaObj?.stringListOrEmpty("signatures").orEmpty(),
-        )
+        // 先等当前会话的历史消息和图片完成初步水合，避免与发送动作并发渲染造成基线失真
+        waitForMessageListSettled(session, bundle)
 
         return try {
-            val openBtnRes = evalObject(
+            val alreadyOpenRes = evalObject(
                 session.webView,
-                DouyinJsScripts.buildOpenStickerPanelJs(bundle),
+                DouyinJsScripts.buildCheckStickerPanelReadyJs(bundle),
             )
-            if (openBtnRes?.boolOrDefault("clicked", false) != true) {
-                return SendExecutionResult(
-                    jobStatus = JobStatus.FAILED_RETRYABLE,
-                    failureClass = FailureClass.OTHER,
-                    inputMethodUsed = "sticker_click",
-                    summaryDetail = "未找到表情面板触发按钮",
+            val alreadyReady = alreadyOpenRes?.boolOrDefault("panelFound", false) == true &&
+                (alreadyOpenRes.intOrNull("itemCount") ?: 0) > 0
+            if (!alreadyReady) {
+                val openBtnRes = evalObject(
+                    session.webView,
+                    DouyinJsScripts.buildOpenStickerPanelJs(bundle),
                 )
+                if (openBtnRes?.boolOrDefault("clicked", false) != true) {
+                    return SendExecutionResult(
+                        jobStatus = JobStatus.FAILED_RETRYABLE,
+                        failureClass = FailureClass.OTHER,
+                        inputMethodUsed = "sticker_click",
+                        summaryDetail = "未找到表情面板触发按钮",
+                    )
+                }
+
+                val panelReady = waitForStickerPanelItems(session, bundle, STICKER_PANEL_TIMEOUT_MS)
+                if (!panelReady) {
+                    return SendExecutionResult(
+                        jobStatus = JobStatus.FAILED_RETRYABLE,
+                        failureClass = FailureClass.OTHER,
+                        inputMethodUsed = "sticker_click",
+                        summaryDetail = "表情面板打开后未渲染出可用表情项",
+                    )
+                }
             }
 
-            val panelReady = waitForStickerPanelItems(session, bundle, STICKER_PANEL_TIMEOUT_MS)
-            if (!panelReady) {
-                return SendExecutionResult(
-                    jobStatus = JobStatus.FAILED_RETRYABLE,
-                    failureClass = FailureClass.OTHER,
-                    inputMethodUsed = "sticker_click",
-                    summaryDetail = "表情面板打开后未渲染出可用表情项",
-                )
-            }
+            // 必须在表情面板就绪后、点击表情前一刻采样发送前媒体基线，防止历史气泡延迟渲染误判成功
+            val beforeMediaObj = evalObject(
+                session.webView,
+                DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
+            )
+            val beforeMultiset = SendConfirmer.toMultiset(
+                beforeMediaObj?.stringListOrEmpty("signatures").orEmpty(),
+            )
 
             onStageConfirming?.invoke()
 
@@ -850,6 +869,8 @@ class DouyinWebExecutor(
                     summaryDetail = "表情面板中未匹配到目标表情",
                 )
             }
+            val clickMethod = clickStickerRes?.stringOrNull("method") ?: "unknown"
+            val targetTag = clickStickerRes?.stringOrNull("targetTag").orEmpty().ifBlank { "?" }
 
             val firstOutcome = SendConfirmer.confirmStickerAfterClick(
                 clickResult = clickStickerRes,
@@ -921,7 +942,7 @@ class DouyinWebExecutor(
                 jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
                 failureClass = FailureClass.UNKNOWN_OUTCOME,
                 inputMethodUsed = "sticker_click",
-                summaryDetail = "已点击目标表情但未检测到新增媒体气泡，已阻止重复点击",
+                summaryDetail = "已点击目标表情（$clickMethod/$targetTag，发送前媒体数 ${beforeMultiset.values.sum()}）但未检测到新增媒体气泡，已阻止重复点击",
                 observedPlatformUserId = opened.observedPlatformUserId,
                 observedPlatformHandle = opened.observedPlatformHandle,
                 observedPlatformConversationId = opened.observedPlatformConversationId,
@@ -1677,6 +1698,62 @@ class DouyinWebExecutor(
         }
     }
 
+    private suspend fun waitForMessageListSettled(
+        session: SessionHandle,
+        bundle: SelectorBundle,
+        minWaitMs: Long = MESSAGE_LIST_MIN_SETTLE_MS,
+        maxWaitMs: Long = MESSAGE_LIST_MAX_SETTLE_MS,
+    ) {
+        val startMs = SystemClock.elapsedRealtime()
+        val deadline = startMs + maxWaitMs
+        var previous: MediaSettleSample? = null
+        var stablePolls = 0
+
+        while (true) {
+            val sampleObj = evalObject(
+                session.webView,
+                DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
+            )
+            val current = if (sampleObj != null) {
+                MediaSettleSample(
+                    totalBoxes = sampleObj.intOrNull("totalBoxes") ?: 0,
+                    pendingImgCount = sampleObj.intOrNull("pendingImgCount") ?: 0,
+                    signatures = sampleObj.stringListOrEmpty("signatures"),
+                )
+            } else {
+                null
+            }
+
+            if (current != null) {
+                val unchanged = previous != null &&
+                    current.pendingImgCount == 0 &&
+                    previous.totalBoxes == current.totalBoxes &&
+                    previous.signatures == current.signatures
+                stablePolls = if (unchanged) stablePolls + 1 else 1
+                val elapsedMs = SystemClock.elapsedRealtime() - startMs
+                if (isMessageListSettled(
+                        previous = previous,
+                        current = current,
+                        stablePolls = stablePolls,
+                        elapsedMs = elapsedMs,
+                        minWaitMs = minWaitMs,
+                    )
+                ) {
+                    return
+                }
+                previous = current
+            } else {
+                stablePolls = 0
+                previous = null
+            }
+
+            if (SystemClock.elapsedRealtime() >= deadline) {
+                return
+            }
+            delay(MESSAGE_LIST_POLL_INTERVAL_MS)
+        }
+    }
+
     private suspend fun loadIndexedDbIdentitiesOnce(session: SessionHandle) {
         if (session.cachedIdentitiesLoaded) return
         session.cachedIdentitiesLoaded = true
@@ -1892,6 +1969,12 @@ class DouyinWebExecutor(
         UNAUTHENTICATED,
     }
 
+    internal data class MediaSettleSample(
+        val totalBoxes: Int,
+        val pendingImgCount: Int,
+        val signatures: List<String>,
+    )
+
     companion object {
         private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
         private const val CONVERSATION_LIST_HYDRATION_DELAY_MS = 1_000L
@@ -1900,12 +1983,32 @@ class DouyinWebExecutor(
         private const val EDITOR_READY_TIMEOUT_MS = 8_000L
         private const val STICKER_PANEL_TIMEOUT_MS = 5_000L
         private const val STICKER_POST_CLICK_SETTLE_MS = 800L
+        private const val MESSAGE_LIST_POLL_INTERVAL_MS = 350L
+        private const val MESSAGE_LIST_MIN_SETTLE_MS = 700L
+        private const val MESSAGE_LIST_MAX_SETTLE_MS = 2_500L
+        private const val MESSAGE_LIST_EMPTY_MIN_WAIT_MS = 1_500L
         private const val JS_EVAL_TIMEOUT_MS = 5_000L
         private const val WARMUP_SCROLLS = 5
         private const val MAX_LIST_SCROLLS = 8
         private const val SCAN_MAX_ROUNDS = 15
         private const val SCAN_IDLE_ROUNDS = 3
         private const val SCAN_SCROLL_STEP_PX = 900
+
+        internal fun isMessageListSettled(
+            previous: MediaSettleSample?,
+            current: MediaSettleSample,
+            stablePolls: Int,
+            elapsedMs: Long,
+            minWaitMs: Long,
+            emptyMinWaitMs: Long = MESSAGE_LIST_EMPTY_MIN_WAIT_MS,
+        ): Boolean =
+            previous != null &&
+                current.pendingImgCount == 0 &&
+                previous.totalBoxes == current.totalBoxes &&
+                previous.signatures == current.signatures &&
+                stablePolls >= 2 &&
+                elapsedMs >= minWaitMs &&
+                (current.totalBoxes > 0 || elapsedMs >= emptyMinWaitMs)
 
         internal fun evaluateAuthPollDecision(
             probe: Map<String, Any?>?,

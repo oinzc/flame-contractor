@@ -422,6 +422,133 @@ class DouyinJsScriptsTest {
         )
     }
 
+    @Test
+    fun stickerClickScriptResolvesInnerImageTargetAndDispatchesSingleClick() {
+        val bundle = SelectorBundle.defaults()
+        val script = DouyinJsScripts.buildClickStickerJs(
+            bundle = bundle,
+            stickerName = "比心",
+        )
+
+        assertTrue(script.contains("__flameResolveClickTarget"))
+        assertTrue(script.contains("__flameIsVisible(item)"))
+        assertTrue(script.contains("targetTag"))
+        assertTrue(script.contains("__flameResolveClickTarget(item, true)"))
+        assertTrue(script.contains("el.dispatchEvent(new MouseEvent('click', upOpts))"))
+        assertTrue(script.contains("if (!clickSent)"))
+        assertTrue(
+            Regex("""if\s*\(!clickSent\)\s*\{\s*try\s*\{\s*if\s*\(typeof el\.click === 'function'\)\s*el\.click\(\);""")
+                .containsMatchIn(script),
+        )
+        assertFalse(script.contains("__flameDispatchClick(item)"))
+    }
+
+    @Test
+    fun outgoingMediaMultisetScriptPrefersAttributeSrcAndSkipsEmptyPendingImages() {
+        val bundle = SelectorBundle.defaults()
+        val script = DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle)
+
+        assertTrue(script.contains("getAttribute('src')"))
+        assertTrue(script.contains("pendingImgCount"))
+        assertTrue(script.contains("totalBoxes"))
+        assertTrue(script.contains("if (!ownContent && String(box.className || '').indexOf('isFromMe') !== -1)"))
+    }
+
+    @Test
+    fun messageListSettleLogicWaitsForPendingImagesAndStablePolls() {
+        val empty = DouyinWebExecutor.MediaSettleSample(
+            totalBoxes = 0,
+            pendingImgCount = 0,
+            signatures = emptyList(),
+        )
+        val pending = DouyinWebExecutor.MediaSettleSample(
+            totalBoxes = 3,
+            pendingImgCount = 1,
+            signatures = listOf("sig1"),
+        )
+        val settledV1 = DouyinWebExecutor.MediaSettleSample(
+            totalBoxes = 3,
+            pendingImgCount = 0,
+            signatures = listOf("sig1"),
+        )
+        val settledV2 = DouyinWebExecutor.MediaSettleSample(
+            totalBoxes = 4,
+            pendingImgCount = 0,
+            signatures = listOf("sig1", "sig2"),
+        )
+
+        // 首轮无 previous
+        assertFalse(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = null,
+                current = settledV1,
+                stablePolls = 1,
+                elapsedMs = 900L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 尚有未就绪图片 (pendingImgCount > 0)
+        assertFalse(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = pending,
+                current = pending,
+                stablePolls = 3,
+                elapsedMs = 1_200L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 签名/气泡总数发生变化
+        assertFalse(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = settledV1,
+                current = settledV2,
+                stablePolls = 1,
+                elapsedMs = 1_200L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 连续稳定次数不足 2
+        assertFalse(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = settledV1,
+                current = settledV1,
+                stablePolls = 1,
+                elapsedMs = 1_200L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 空列表未满 emptyMinWaitMs 时继续等待懒加载
+        assertFalse(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = empty,
+                current = empty,
+                stablePolls = 3,
+                elapsedMs = 1_000L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 空列表达到 emptyMinWaitMs 后放行
+        assertTrue(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = empty,
+                current = empty,
+                stablePolls = 3,
+                elapsedMs = 1_500L,
+                minWaitMs = 700L,
+            ),
+        )
+        // 有消息列表连续稳定 2 轮且达到 minWaitMs 后放行
+        assertTrue(
+            DouyinWebExecutor.isMessageListSettled(
+                previous = settledV2,
+                current = settledV2,
+                stablePolls = 2,
+                elapsedMs = 700L,
+                minWaitMs = 700L,
+            ),
+        )
+    }
+
     private class InMemoryAccountDao : AccountDao {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 
