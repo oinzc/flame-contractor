@@ -21,6 +21,7 @@ import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.notify.NotifyLevel
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
@@ -33,6 +34,7 @@ import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
+import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
@@ -96,6 +98,12 @@ class ExecutionForegroundService : Service() {
     @Volatile
     private var activeConfirmingAttemptNo: Int? = null
 
+    @Volatile
+    private var activeRunningAccountId: String? = null
+
+    @Volatile
+    private var activeBatchOutcomes: List<BatchTargetOutcome> = emptyList()
+
     override fun onCreate() {
         super.onCreate()
         val appCtx = applicationContext ?: this
@@ -124,12 +132,12 @@ class ExecutionForegroundService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        convergeConfirmingJobOnInterrupt()
+        convergeInterruptState(includeRunningAccount = false)
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        convergeConfirmingJobOnInterrupt()
+        convergeInterruptState(includeRunningAccount = true)
         hardTimeoutJob?.cancel()
         synchronized(queueLock) {
             pendingIntents.clear()
@@ -261,33 +269,13 @@ class ExecutionForegroundService : Service() {
 
     private suspend fun recoverCrashedJobsOnStartup(accountId: String) {
         val nowMs = System.currentTimeMillis()
-        val sendJobDao = database.sendJobDao()
-        val inProgress = sendJobDao.listJobsByStatuses(
+        val hasUnknown = ExecutionServiceStoreOps.recoverInterruptedAccountAndJobs(
             accountId = accountId,
-            statuses = SendGuard.CRASH_IN_PROGRESS_STATUSES.toList(),
+            accountDao = database.accountDao(),
+            sendJobDao = database.sendJobDao(),
+            nowMs = nowMs,
+            isMutexLocked = ExecutionMutex.isLocked(),
         )
-        if (inProgress.isEmpty()) return
-
-        val recovered = SendGuard.recoverCrashedJobs(inProgress, nowMs)
-        var hasUnknown = false
-        for (job in recovered) {
-            sendJobDao.updateJob(job)
-            val attempts = sendJobDao.listAttemptsForJob(job.id)
-            for (attempt in attempts) {
-                if (attempt.status == AttemptStatus.RUNNING) {
-                    sendJobDao.updateAttempt(
-                        attempt.copy(
-                            status = AttemptStatus.FAILED,
-                            failureClass = job.failureClass,
-                            finishedAt = nowMs,
-                        ),
-                    )
-                }
-            }
-            if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
-                hasUnknown = true
-            }
-        }
         if (hasUnknown) {
             sendUrgentBoth(
                 category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
@@ -466,6 +454,8 @@ class ExecutionForegroundService : Service() {
                 updatedAt = System.currentTimeMillis(),
             ) ?: authTransition.account.copy(status = AccountStatus.RUNNING)
             database.accountDao().update(runningAccount)
+            activeRunningAccountId = accountId
+            activeBatchOutcomes = emptyList()
 
             val minCooldownMs = runningAccount.cooldownMinSec.coerceIn(0, 60) * 1000L
             val maxCooldownMs = runningAccount.cooldownMaxSec.coerceIn(
@@ -473,86 +463,103 @@ class ExecutionForegroundService : Service() {
                 120,
             ) * 1000L
 
-            for ((index, target) in targetsToRun.withIndex()) {
-                if (index > 0 && maxCooldownMs > 0L) {
-                    val waitMs = if (maxCooldownMs == minCooldownMs) {
-                        minCooldownMs
-                    } else {
-                        Random.nextLong(minCooldownMs, maxCooldownMs + 1L)
+            var batchFinalizedNormally = false
+            try {
+                for ((index, target) in targetsToRun.withIndex()) {
+                    if (index > 0 && maxCooldownMs > 0L) {
+                        val waitMs = if (maxCooldownMs == minCooldownMs) {
+                            minCooldownMs
+                        } else {
+                            Random.nextLong(minCooldownMs, maxCooldownMs + 1L)
+                        }
+                        promoteForeground("冷却等待中（${index}/${targetsToRun.size}）…")
+                        delay(waitMs)
                     }
-                    promoteForeground("冷却等待中（${index}/${targetsToRun.size}）…")
-                    delay(waitMs)
+
+                    val progressText = "正在执行今日续火任务 ${index + 1}/${targetsToRun.size}"
+                    promoteForeground(progressText)
+                    updateProgressState(progressText, index, targetsToRun.size)
+
+                    val outcome = executeSingleTargetJob(
+                        session = session,
+                        account = runningAccount,
+                        target = target,
+                        businessDate = todayStr,
+                        slotId = SendGuard.DAILY_SLOT_ID,
+                        zoneId = zoneId,
+                        overrideText = null,
+                        isVisibleActivity = false,
+                    )
+
+                    when (outcome.outcomeType) {
+                        TargetRunKind.SKIPPED -> skippedCount++
+                        TargetRunKind.SUCCEEDED -> {
+                            succeededCount++
+                            outcomes.add(BatchTargetOutcome(JobStatus.SUCCEEDED))
+                        }
+                        TargetRunKind.UNKNOWN -> {
+                            unknownCount++
+                            outcomes.add(
+                                BatchTargetOutcome(
+                                    status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                                    failureClass = FailureClass.UNKNOWN_OUTCOME,
+                                ),
+                            )
+                        }
+                        TargetRunKind.FAILED -> {
+                            failedCount++
+                            outcomes.add(
+                                BatchTargetOutcome(
+                                    status = outcome.finalJobStatus ?: JobStatus.FAILED_TERMINAL,
+                                    failureClass = outcome.failureClass,
+                                    coreSkeletonBroken = outcome.coreSkeletonBroken,
+                                ),
+                            )
+                        }
+                    }
+                    activeBatchOutcomes = outcomes.toList()
+
+                    updateProgressState(progressText, index + 1, targetsToRun.size)
+
+                    if (outcome.coreSkeletonBroken || outcome.failureClass == FailureClass.DOM_CHANGED) {
+                        break
+                    }
                 }
 
-                val progressText = "正在执行今日续火任务 ${index + 1}/${targetsToRun.size}"
-                promoteForeground(progressText)
-                updateProgressState(progressText, index, targetsToRun.size)
-
-                val outcome = executeSingleTargetJob(
-                    session = session,
-                    account = runningAccount,
-                    target = target,
-                    businessDate = todayStr,
-                    slotId = SendGuard.DAILY_SLOT_ID,
-                    zoneId = zoneId,
-                    overrideText = null,
-                    isVisibleActivity = false,
+                val finalizedAccount = ExecutionServiceStoreOps.finalizeBatchAccountIfRunning(
+                    accountId = accountId,
+                    accountDao = database.accountDao(),
+                    outcomes = outcomes,
+                    nowMs = System.currentTimeMillis(),
                 )
+                batchFinalizedNormally = true
 
-                when (outcome.outcomeType) {
-                    TargetRunKind.SKIPPED -> skippedCount++
-                    TargetRunKind.SUCCEEDED -> {
-                        succeededCount++
-                        outcomes.add(BatchTargetOutcome(JobStatus.SUCCEEDED))
-                    }
-                    TargetRunKind.UNKNOWN -> {
-                        unknownCount++
-                        outcomes.add(
-                            BatchTargetOutcome(
-                                status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
-                                failureClass = FailureClass.UNKNOWN_OUTCOME,
-                            ),
+                when (finalizedAccount?.status) {
+                    AccountStatus.DOM_BROKEN -> sendUrgentBoth(
+                        category = UrgentCategory.DOM_BROKEN,
+                        title = "抖音页面核心结构异常",
+                        body = "检测到聊天页核心元素失效，已停止自动发送。请前往设置页运行「网页结构体检」。",
+                    )
+                    AccountStatus.COOLDOWN -> sendUrgentBoth(
+                        category = UrgentCategory.COOLDOWN,
+                        title = "连续失败熔断保护已触发",
+                        body = "连续 ${finalizedAccount.failureStreak} 轮批处理均以终态失败收场，请打开 App 核对目标与模板后解除熔断。",
+                    )
+                    else -> Unit
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    activeRunningAccountId = null
+                    activeBatchOutcomes = emptyList()
+                    if (!batchFinalizedNormally) {
+                        ExecutionServiceStoreOps.finalizeBatchAccountIfRunning(
+                            accountId = accountId,
+                            accountDao = database.accountDao(),
+                            outcomes = outcomes,
+                            nowMs = System.currentTimeMillis(),
                         )
                     }
-                    TargetRunKind.FAILED -> {
-                        failedCount++
-                        outcomes.add(
-                            BatchTargetOutcome(
-                                status = outcome.finalJobStatus ?: JobStatus.FAILED_TERMINAL,
-                                failureClass = outcome.failureClass,
-                                coreSkeletonBroken = outcome.coreSkeletonBroken,
-                            ),
-                        )
-                    }
                 }
-
-                updateProgressState(progressText, index + 1, targetsToRun.size)
-
-                if (outcome.coreSkeletonBroken || outcome.failureClass == FailureClass.DOM_CHANGED) {
-                    break
-                }
-            }
-
-            val latestAccount = database.accountDao().getAccount(accountId) ?: runningAccount
-            val finalizedAccount = AccountHealthReducer.onBatchFinished(
-                account = latestAccount,
-                outcomes = outcomes,
-                nowEpochMs = System.currentTimeMillis(),
-            )
-            database.accountDao().update(finalizedAccount)
-
-            when (finalizedAccount.status) {
-                AccountStatus.DOM_BROKEN -> sendUrgentBoth(
-                    category = UrgentCategory.DOM_BROKEN,
-                    title = "抖音页面核心结构异常",
-                    body = "检测到聊天页核心元素失效，已停止自动发送。请前往设置页运行「网页结构体检」。",
-                )
-                AccountStatus.COOLDOWN -> sendUrgentBoth(
-                    category = UrgentCategory.COOLDOWN,
-                    title = "连续失败熔断保护已触发",
-                    body = "连续 ${finalizedAccount.failureStreak} 轮批处理均以终态失败收场，请打开 App 核对目标与模板后解除熔断。",
-                )
-                else -> Unit
             }
         }
 
@@ -598,52 +605,12 @@ class ExecutionForegroundService : Service() {
                 // 记录一条不递增 retry attemptCount 的 NETWORK 尝试，供 DailySchedulePlanner 顺延 10 分钟（最多 5 次）
                 val firstTarget = targetsToRun.firstOrNull()
                 if (firstTarget != null) {
-                    val sendJobDao = database.sendJobDao()
-                    val existing = sendJobDao.getJobBySlot(
-                        account.id,
-                        firstTarget.id,
-                        todayStr,
-                        SendGuard.DAILY_SLOT_ID,
-                    )
-                    val job = if (existing != null) {
-                        existing
-                    } else {
-                        val inserted = SendJobEntity(
-                            accountId = account.id,
-                            targetId = firstTarget.id,
-                            templateId = firstTarget.templateId,
-                            businessDate = todayStr,
-                            messageSlotId = SendGuard.DAILY_SLOT_ID,
-                            status = JobStatus.FAILED_RETRYABLE,
-                            failureClass = FailureClass.NETWORK,
-                            summaryDetail = "网络异常，等待自动顺延重检",
-                            createdAt = nowMs,
-                            updatedAt = nowMs,
-                        )
-                        sendJobDao.insertIgnore(inserted)
-                        sendJobDao.getJobBySlot(account.id, firstTarget.id, todayStr, SendGuard.DAILY_SLOT_ID)
-                            ?: inserted
-                    }
-                    sendJobDao.updateJob(
-                        job.copy(
-                            status = JobStatus.FAILED_RETRYABLE,
-                            failureClass = FailureClass.NETWORK,
-                            summaryDetail = "网络不可用，等待 10 分钟后顺延重检",
-                            updatedAt = nowMs,
-                        ),
-                    )
-                    val nextAttemptNo = (sendJobDao.listAttemptsForJob(job.id).maxOfOrNull { it.attemptNo } ?: 0) + 1
-                    sendJobDao.insertAttempt(
-                        SendAttemptEntity(
-                            jobId = job.id,
-                            attemptNo = nextAttemptNo,
-                            stage = "auth_probe",
-                            status = AttemptStatus.FAILED,
-                            failureClass = FailureClass.NETWORK,
-                            errorCode = "network_unavailable",
-                            startedAt = nowMs,
-                            finishedAt = nowMs,
-                        ),
+                    ExecutionServiceStoreOps.recordNetworkDeferAttempt(
+                        accountId = account.id,
+                        target = firstTarget,
+                        todayStr = todayStr,
+                        sendJobDao = database.sendJobDao(),
+                        nowMs = nowMs,
                     )
                 }
                 ExecutionRuntimeBus.update {
@@ -1217,72 +1184,24 @@ class ExecutionForegroundService : Service() {
         ) ?: return TargetRunOutcome(TargetRunKind.SKIPPED, message = "未绑定可用模板或文案池今日无候选")
 
         val nowMs = System.currentTimeMillis()
-        val job = if (slotId == SendGuard.DAILY_SLOT_ID) {
-            val existing = sendJobDao.getJobBySlot(account.id, freshTarget.id, businessDate, slotId)
-            if (existing != null) {
-                if (!SendGuard.canDispatchDaily(listOf(existing))) {
-                    return TargetRunOutcome(TargetRunKind.SKIPPED, message = "当日任务状态不可再次派发")
-                }
-                existing
-            } else {
-                val created = SendJobEntity(
-                    accountId = account.id,
-                    targetId = freshTarget.id,
-                    templateId = resolved.templateId,
-                    businessDate = businessDate,
-                    messageSlotId = slotId,
-                    status = JobStatus.LEASED,
-                    scheduledAt = nowMs,
-                    createdAt = nowMs,
-                    updatedAt = nowMs,
-                )
-                sendJobDao.insertIgnore(created)
-                sendJobDao.getJobBySlot(account.id, freshTarget.id, businessDate, slotId) ?: created
-            }
-        } else {
-            val created = SendJobEntity(
-                accountId = account.id,
-                targetId = freshTarget.id,
-                templateId = resolved.templateId,
-                businessDate = businessDate,
-                messageSlotId = slotId,
-                status = JobStatus.LEASED,
-                scheduledAt = nowMs,
-                createdAt = nowMs,
-                updatedAt = nowMs,
-            )
-            sendJobDao.insertIgnore(created)
-            sendJobDao.getJobBySlot(account.id, freshTarget.id, businessDate, slotId) ?: created
-        }
-
-        val nextAttemptNo = job.attemptCount + 1
-        val attempt = SendAttemptEntity(
-            jobId = job.id,
-            attemptNo = nextAttemptNo,
-            stage = "opening_chat",
-            status = AttemptStatus.RUNNING,
-            startedAt = nowMs,
-        )
-        sendJobDao.insertAttempt(attempt)
-        sendJobDao.updateJob(
-            job.copy(
-                templateId = resolved.templateId,
-                status = JobStatus.OPENING_CHAT,
-                attemptCount = nextAttemptNo,
-                updatedAt = nowMs,
-            ),
-        )
+        val allocated = ExecutionServiceStoreOps.allocateJobAndAttemptForSend(
+            accountId = account.id,
+            target = freshTarget,
+            templateId = resolved.templateId,
+            businessDate = businessDate,
+            slotId = slotId,
+            sendJobDao = sendJobDao,
+            nowMs = nowMs,
+        ) ?: return TargetRunOutcome(TargetRunKind.SKIPPED, message = "当日任务状态不可再次派发")
 
         if (resolved.poolItemId != null) {
             // 仅在真正准备触发发送前更新文案池 LRU，列表预览绝不消耗
             database.templateDao().markPoolItemUsed(resolved.poolItemId, nowMs)
         }
 
-        var currentAttempt = attempt
-        var currentJob = sendJobDao.getJobById(job.id) ?: job.copy(
-            status = JobStatus.OPENING_CHAT,
-            attemptCount = nextAttemptNo,
-        )
+        var currentAttempt = allocated.attempt
+        var currentJob = allocated.job
+        val attemptRowNo = allocated.nextAttemptRowNo
 
         val execResult = try {
             if (resolved.sticker != null) {
@@ -1295,6 +1214,8 @@ class ExecutionForegroundService : Service() {
                     session = session,
                     onStageSending = {
                         val ts = System.currentTimeMillis()
+                        activeConfirmingJobId = currentJob.id
+                        activeConfirmingAttemptNo = attemptRowNo
                         currentJob = currentJob.copy(status = JobStatus.SENDING, updatedAt = ts)
                         currentAttempt = currentAttempt.copy(stage = "sending")
                         sendJobDao.updateJob(currentJob)
@@ -1303,7 +1224,7 @@ class ExecutionForegroundService : Service() {
                     onStageConfirming = {
                         val ts = System.currentTimeMillis()
                         activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = nextAttemptNo
+                        activeConfirmingAttemptNo = attemptRowNo
                         currentJob = currentJob.copy(status = JobStatus.CONFIRMING, updatedAt = ts)
                         currentAttempt = currentAttempt.copy(stage = "confirming", inputMethodUsed = "sticker_click")
                         sendJobDao.updateJob(currentJob)
@@ -1318,6 +1239,8 @@ class ExecutionForegroundService : Service() {
                     session = session,
                     onStageSending = {
                         val ts = System.currentTimeMillis()
+                        activeConfirmingJobId = currentJob.id
+                        activeConfirmingAttemptNo = attemptRowNo
                         currentJob = currentJob.copy(status = JobStatus.SENDING, updatedAt = ts)
                         currentAttempt = currentAttempt.copy(stage = "sending")
                         sendJobDao.updateJob(currentJob)
@@ -1326,7 +1249,7 @@ class ExecutionForegroundService : Service() {
                     onStageConfirming = {
                         val ts = System.currentTimeMillis()
                         activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = nextAttemptNo
+                        activeConfirmingAttemptNo = attemptRowNo
                         currentJob = currentJob.copy(status = JobStatus.CONFIRMING, updatedAt = ts)
                         currentAttempt = currentAttempt.copy(stage = "confirming", inputMethodUsed = "js_execCommand")
                         sendJobDao.updateJob(currentJob)
@@ -1365,7 +1288,7 @@ class ExecutionForegroundService : Service() {
         backfillObservedIdentityIfNeeded(freshTarget, execResult, doneMs)
 
         val finalStatus = when (execResult.jobStatus) {
-            JobStatus.FAILED_RETRYABLE -> SendGuard.classifyRetryableFailure(nextAttemptNo)
+            JobStatus.FAILED_RETRYABLE -> SendGuard.classifyRetryableFailure(allocated.nextRetryAttemptCount)
             else -> execResult.jobStatus
         }
         val confirmedAt = if (finalStatus == JobStatus.SUCCEEDED) doneMs else null
@@ -1564,43 +1487,62 @@ class ExecutionForegroundService : Service() {
         }
     }
 
-    private fun convergeConfirmingJobOnInterrupt() {
-        val jobId = activeConfirmingJobId ?: return
+    private fun convergeInterruptState(includeRunningAccount: Boolean) {
+        val jobId = activeConfirmingJobId
         val attemptNo = activeConfirmingAttemptNo
+        val runningAccId = if (includeRunningAccount) activeRunningAccountId else null
+        val outcomesSnapshot = if (includeRunningAccount) activeBatchOutcomes else emptyList()
+        if (jobId == null && runningAccId == null) return
+
         activeConfirmingJobId = null
         activeConfirmingAttemptNo = null
+        if (includeRunningAccount) {
+            activeRunningAccountId = null
+            activeBatchOutcomes = emptyList()
+        }
+
         try {
             runBlocking(Dispatchers.IO) {
                 withTimeoutOrNull(2_000L) {
                     val nowMs = System.currentTimeMillis()
-                    val dao = database.sendJobDao()
-                    val job = dao.getJobById(jobId)
-                    if (job != null && (job.status == JobStatus.CONFIRMING || job.status == JobStatus.SENDING)) {
-                        dao.updateJobOutcome(
-                            id = job.id,
-                            status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
-                            failureClass = FailureClass.UNKNOWN_OUTCOME,
-                            summaryDetail = "服务中断时任务已进入发送确认期，请人工核对结果",
-                            confirmedAt = null,
-                            updatedAt = nowMs,
-                        )
-                        if (attemptNo != null) {
-                            dao.listAttemptsForJob(job.id)
-                                .firstOrNull { it.attemptNo == attemptNo && it.status == AttemptStatus.RUNNING }
-                                ?.let { att ->
-                                    dao.updateAttempt(
-                                        att.copy(
-                                            status = AttemptStatus.FAILED,
-                                            failureClass = FailureClass.UNKNOWN_OUTCOME,
-                                            finishedAt = nowMs,
-                                        ),
-                                    )
-                                }
+                    if (jobId != null) {
+                        val dao = database.sendJobDao()
+                        val job = dao.getJobById(jobId)
+                        if (job != null && (job.status == JobStatus.CONFIRMING || job.status == JobStatus.SENDING)) {
+                            dao.updateJobOutcome(
+                                id = job.id,
+                                status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                                failureClass = FailureClass.UNKNOWN_OUTCOME,
+                                summaryDetail = "服务中断时任务已进入发送确认期，请人工核对结果",
+                                confirmedAt = null,
+                                updatedAt = nowMs,
+                            )
+                            if (attemptNo != null) {
+                                dao.listAttemptsForJob(job.id)
+                                    .firstOrNull { it.attemptNo == attemptNo && it.status == AttemptStatus.RUNNING }
+                                    ?.let { att ->
+                                        dao.updateAttempt(
+                                            att.copy(
+                                                status = AttemptStatus.FAILED,
+                                                failureClass = FailureClass.UNKNOWN_OUTCOME,
+                                                finishedAt = nowMs,
+                                            ),
+                                        )
+                                    }
+                            }
+                            localNotifier.notifyUrgentAlert(
+                                category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
+                                title = "任务被中断，待核对发送结果",
+                                body = "执行服务被中止时已有消息进入确认期，已转待复核状态并禁止自动重发。",
+                            )
                         }
-                        localNotifier.notifyUrgentAlert(
-                            category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
-                            title = "任务被中断，待核对发送结果",
-                            body = "执行服务被中止时已有消息进入确认期，已转待复核状态并禁止自动重发。",
+                    }
+                    if (runningAccId != null) {
+                        ExecutionServiceStoreOps.finalizeBatchAccountIfRunning(
+                            accountId = runningAccId,
+                            accountDao = database.accountDao(),
+                            outcomes = outcomesSnapshot,
+                            nowMs = nowMs,
                         )
                     }
                 }
@@ -1614,7 +1556,7 @@ class ExecutionForegroundService : Service() {
         hardTimeoutJob = serviceScope.launch {
             delay(HARD_TIMEOUT_MS)
             Log.w(TAG, "ExecutionForegroundService hit 10m hard timeout")
-            convergeConfirmingJobOnInterrupt()
+            convergeInterruptState(includeRunningAccount = true)
             workerJob?.cancel()
             releaseWakeLock()
             withContext(Dispatchers.Main) {
@@ -1831,6 +1773,219 @@ class ExecutionForegroundService : Service() {
                 false
             }
         }
+    }
+}
+
+internal data class AllocatedSendAttempt(
+    val job: SendJobEntity,
+    val attempt: SendAttemptEntity,
+    val nextRetryAttemptCount: Int,
+    val nextAttemptRowNo: Int,
+)
+
+/**
+ * 与服务持久化相关的纯接口逻辑抽离，便于在纯 JVM 单元测试下用内存 DAO 验证唯一约束与状态收敛。
+ */
+internal object ExecutionServiceStoreOps {
+
+    suspend fun recoverInterruptedAccountAndJobs(
+        accountId: String,
+        accountDao: AccountDao,
+        sendJobDao: SendJobDao,
+        nowMs: Long,
+        isMutexLocked: Boolean,
+    ): Boolean {
+        val inProgress = sendJobDao.listJobsByStatuses(
+            accountId = accountId,
+            statuses = SendGuard.CRASH_IN_PROGRESS_STATUSES.toList(),
+        )
+        var hasUnknown = false
+        if (inProgress.isNotEmpty()) {
+            val recovered = SendGuard.recoverCrashedJobs(inProgress, nowMs)
+            for (job in recovered) {
+                sendJobDao.updateJob(job)
+                val attempts = sendJobDao.listAttemptsForJob(job.id)
+                for (attempt in attempts) {
+                    if (attempt.status == AttemptStatus.RUNNING) {
+                        sendJobDao.updateAttempt(
+                            attempt.copy(
+                                status = AttemptStatus.FAILED,
+                                failureClass = job.failureClass,
+                                finishedAt = nowMs,
+                            ),
+                        )
+                    }
+                }
+                if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                    hasUnknown = true
+                }
+            }
+        }
+
+        if (!isMutexLocked) {
+            val account = accountDao.getAccount(accountId)
+            if (account != null && account.status == AccountStatus.RUNNING) {
+                accountDao.update(
+                    account.copy(
+                        status = AccountStatus.HEALTHY,
+                        updatedAt = nowMs,
+                    ),
+                )
+            }
+        }
+
+        return hasUnknown
+    }
+
+    suspend fun recordNetworkDeferAttempt(
+        accountId: String,
+        target: ContractTargetEntity,
+        todayStr: String,
+        sendJobDao: SendJobDao,
+        nowMs: Long,
+    ): SendAttemptEntity {
+        val existing = sendJobDao.getJobBySlot(
+            accountId = accountId,
+            targetId = target.id,
+            businessDate = todayStr,
+            slotId = SendGuard.DAILY_SLOT_ID,
+        )
+        val job = if (existing != null) {
+            existing
+        } else {
+            val inserted = SendJobEntity(
+                accountId = accountId,
+                targetId = target.id,
+                templateId = target.templateId,
+                businessDate = todayStr,
+                messageSlotId = SendGuard.DAILY_SLOT_ID,
+                status = JobStatus.FAILED_RETRYABLE,
+                failureClass = FailureClass.NETWORK,
+                summaryDetail = "网络异常，等待自动顺延重检",
+                createdAt = nowMs,
+                updatedAt = nowMs,
+            )
+            sendJobDao.insertIgnore(inserted)
+            sendJobDao.getJobBySlot(
+                accountId = accountId,
+                targetId = target.id,
+                businessDate = todayStr,
+                slotId = SendGuard.DAILY_SLOT_ID,
+            ) ?: inserted
+        }
+        sendJobDao.updateJob(
+            job.copy(
+                status = JobStatus.FAILED_RETRYABLE,
+                failureClass = FailureClass.NETWORK,
+                summaryDetail = "网络不可用，等待 10 分钟后顺延重检",
+                updatedAt = nowMs,
+            ),
+        )
+        val nextAttemptRowNo = (sendJobDao.listAttemptsForJob(job.id).maxOfOrNull { it.attemptNo } ?: 0) + 1
+        val attempt = SendAttemptEntity(
+            jobId = job.id,
+            attemptNo = nextAttemptRowNo,
+            stage = "auth_probe",
+            status = AttemptStatus.FAILED,
+            failureClass = FailureClass.NETWORK,
+            errorCode = "network_unavailable",
+            startedAt = nowMs,
+            finishedAt = nowMs,
+        )
+        sendJobDao.insertAttempt(attempt)
+        return attempt
+    }
+
+    suspend fun allocateJobAndAttemptForSend(
+        accountId: String,
+        target: ContractTargetEntity,
+        templateId: String?,
+        businessDate: String,
+        slotId: String,
+        sendJobDao: SendJobDao,
+        nowMs: Long,
+    ): AllocatedSendAttempt? {
+        val job = if (slotId == SendGuard.DAILY_SLOT_ID) {
+            val existing = sendJobDao.getJobBySlot(accountId, target.id, businessDate, slotId)
+            if (existing != null) {
+                if (!SendGuard.canDispatchDaily(listOf(existing))) {
+                    return null
+                }
+                existing
+            } else {
+                val created = SendJobEntity(
+                    accountId = accountId,
+                    targetId = target.id,
+                    templateId = templateId,
+                    businessDate = businessDate,
+                    messageSlotId = slotId,
+                    status = JobStatus.LEASED,
+                    scheduledAt = nowMs,
+                    createdAt = nowMs,
+                    updatedAt = nowMs,
+                )
+                sendJobDao.insertIgnore(created)
+                sendJobDao.getJobBySlot(accountId, target.id, businessDate, slotId) ?: created
+            }
+        } else {
+            val created = SendJobEntity(
+                accountId = accountId,
+                targetId = target.id,
+                templateId = templateId,
+                businessDate = businessDate,
+                messageSlotId = slotId,
+                status = JobStatus.LEASED,
+                scheduledAt = nowMs,
+                createdAt = nowMs,
+                updatedAt = nowMs,
+            )
+            sendJobDao.insertIgnore(created)
+            sendJobDao.getJobBySlot(accountId, target.id, businessDate, slotId) ?: created
+        }
+
+        val nextRetryAttemptCount = job.attemptCount + 1
+        // send_attempts.attempt_no 在单据维度严格单调递增，与受 RETRY_MAX_COUNT 约束的 job.attemptCount 解耦
+        val nextAttemptRowNo = (sendJobDao.listAttemptsForJob(job.id).maxOfOrNull { it.attemptNo } ?: 0) + 1
+        val attempt = SendAttemptEntity(
+            jobId = job.id,
+            attemptNo = nextAttemptRowNo,
+            stage = "opening_chat",
+            status = AttemptStatus.RUNNING,
+            startedAt = nowMs,
+        )
+        sendJobDao.insertAttempt(attempt)
+
+        val updatedJob = job.copy(
+            templateId = templateId,
+            status = JobStatus.OPENING_CHAT,
+            attemptCount = nextRetryAttemptCount,
+            updatedAt = nowMs,
+        )
+        sendJobDao.updateJob(updatedJob)
+        val persistedJob = sendJobDao.getJobById(job.id) ?: updatedJob
+        return AllocatedSendAttempt(
+            job = persistedJob,
+            attempt = attempt,
+            nextRetryAttemptCount = nextRetryAttemptCount,
+            nextAttemptRowNo = nextAttemptRowNo,
+        )
+    }
+
+    suspend fun finalizeBatchAccountIfRunning(
+        accountId: String,
+        accountDao: AccountDao,
+        outcomes: List<BatchTargetOutcome>,
+        nowMs: Long,
+    ): AccountEntity? {
+        val latest = accountDao.getAccount(accountId) ?: return null
+        if (latest.status != AccountStatus.RUNNING) return null
+        val finalized = AccountHealthReducer.onBatchFinished(
+            account = latest,
+            outcomes = outcomes,
+            nowEpochMs = nowMs,
+        )
+        accountDao.update(finalized)
+        return finalized
     }
 }
 

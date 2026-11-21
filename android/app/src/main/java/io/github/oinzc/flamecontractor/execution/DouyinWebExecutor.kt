@@ -682,19 +682,13 @@ class DouyinWebExecutor(
         onStageConfirming?.invoke()
 
         val clickRes = evalObject(session.webView, DouyinJsScripts.buildClickSendButtonJs(bundle))
-        if (clickRes?.boolOrDefault("clicked", false) != true) {
-            return SendExecutionResult(
-                jobStatus = JobStatus.FAILED_RETRYABLE,
-                failureClass = FailureClass.OTHER,
-                inputMethodUsed = inputMethod,
-                summaryDetail = "未能触发发送按钮点击",
-            )
-        }
-
-        val tracker = TextConfirmTracker()
-        val deadline = SystemClock.elapsedRealtime() + SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS
-        while (true) {
-            val timedOut = SystemClock.elapsedRealtime() >= deadline
+        var lastOutgoingMatched = false
+        val outcome = SendConfirmer.confirmTextAfterClick(
+            clickResult = clickRes,
+            timeoutMs = SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS,
+            pollIntervalMs = SendConfirmer.DEFAULT_POLL_INTERVAL_MS,
+            clockMs = { SystemClock.elapsedRealtime() },
+        ) {
             val pollObj = evalObject(
                 session.webView,
                 DouyinJsScripts.buildSampleTextConfirmJs(bundle, normalizedKey),
@@ -704,45 +698,51 @@ class DouyinWebExecutor(
                 pollObj?.stringListOrEmpty("outgoingSignatures").orEmpty(),
             )
             val outgoingMatched = SendConfirmer.diffMediaMultiset(beforeOutgoingMultiset, afterMultiset) > 0
+            if (outgoingMatched) lastOutgoingMatched = true
             val editorFound = pollObj?.boolOrDefault("editorFound", false) == true
             val editorEmpty = editorFound && (pollObj?.boolOrDefault("editorEmpty", false) == true)
-
-            val outcome = tracker.evaluateTextPoll(
+            TextPollSample(
                 failureMarkerHit = failureHit,
                 outgoingTextMatched = outgoingMatched,
                 editorEmpty = editorEmpty,
-                timedOut = timedOut,
             )
-            when (outcome) {
-                ConfirmOutcome.SUCCEEDED -> return SendExecutionResult(
-                    jobStatus = JobStatus.SUCCEEDED,
-                    inputMethodUsed = inputMethod,
-                    summaryDetail = if (outgoingMatched) "已确认发送成功（outgoing 气泡已渲染）" else "已确认发送成功（输入框连续 3 次清空且无失败标记）",
-                    observedPlatformUserId = opened.observedPlatformUserId,
-                    observedPlatformHandle = opened.observedPlatformHandle,
-                    observedPlatformConversationId = opened.observedPlatformConversationId,
-                    observedConversationType = opened.observedConversationType,
-                )
-                ConfirmOutcome.RETRYABLE_FAILURE -> return SendExecutionResult(
-                    jobStatus = JobStatus.FAILED_RETRYABLE,
-                    failureClass = FailureClass.OTHER,
-                    inputMethodUsed = inputMethod,
-                    summaryDetail = "页面出现明确发送失败提示，可按退避规则重试",
-                )
-                ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW -> return SendExecutionResult(
-                    jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
-                    failureClass = FailureClass.UNKNOWN_OUTCOME,
-                    inputMethodUsed = inputMethod,
-                    summaryDetail = "已触发发送但确认超时，已阻止自动重发，请人工核对",
-                    observedPlatformUserId = opened.observedPlatformUserId,
-                    observedPlatformHandle = opened.observedPlatformHandle,
-                    observedPlatformConversationId = opened.observedPlatformConversationId,
-                    observedConversationType = opened.observedConversationType,
-                )
-                ConfirmOutcome.CONFIRMING_PENDING -> {
-                    delay(SendConfirmer.DEFAULT_POLL_INTERVAL_MS)
-                }
-            }
+        }
+        return when (outcome) {
+            ConfirmOutcome.SUCCEEDED -> SendExecutionResult(
+                jobStatus = JobStatus.SUCCEEDED,
+                inputMethodUsed = inputMethod,
+                summaryDetail = if (lastOutgoingMatched) {
+                    "已确认发送成功（outgoing 气泡已渲染）"
+                } else {
+                    "已确认发送成功（输入框连续 3 次清空且无失败标记）"
+                },
+                observedPlatformUserId = opened.observedPlatformUserId,
+                observedPlatformHandle = opened.observedPlatformHandle,
+                observedPlatformConversationId = opened.observedPlatformConversationId,
+                observedConversationType = opened.observedConversationType,
+            )
+            ConfirmOutcome.RETRYABLE_FAILURE -> SendExecutionResult(
+                jobStatus = JobStatus.FAILED_RETRYABLE,
+                failureClass = FailureClass.OTHER,
+                inputMethodUsed = inputMethod,
+                summaryDetail = if (SendConfirmer.classifyIrreversibleClickResult(clickRes) == ClickDispatchOutcome.ABORT_RETRYABLE) {
+                    "未能触发发送按钮点击"
+                } else {
+                    "页面出现明确发送失败提示，可按退避规则重试"
+                },
+            )
+            ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW,
+            ConfirmOutcome.CONFIRMING_PENDING,
+            -> SendExecutionResult(
+                jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                failureClass = FailureClass.UNKNOWN_OUTCOME,
+                inputMethodUsed = inputMethod,
+                summaryDetail = "已触发发送但确认超时，已阻止自动重发，请人工核对",
+                observedPlatformUserId = opened.observedPlatformUserId,
+                observedPlatformHandle = opened.observedPlatformHandle,
+                observedPlatformConversationId = opened.observedPlatformConversationId,
+                observedConversationType = opened.observedConversationType,
+            )
         }
     }
 
@@ -832,7 +832,9 @@ class DouyinWebExecutor(
                     fallbackIndex = fallbackIndex,
                 ),
             )
-            if (clickStickerRes?.boolOrDefault("clicked", false) != true) {
+            if (SendConfirmer.classifyIrreversibleClickResult(clickStickerRes) ==
+                ClickDispatchOutcome.ABORT_RETRYABLE
+            ) {
                 return SendExecutionResult(
                     jobStatus = JobStatus.FAILED_RETRYABLE,
                     failureClass = FailureClass.OTHER,
@@ -841,9 +843,16 @@ class DouyinWebExecutor(
                 )
             }
 
-            delay(STICKER_POST_CLICK_SETTLE_MS)
-
-            val firstOutcome = pollStickerMediaConfirmation(session, bundle, beforeMultiset)
+            val firstOutcome = SendConfirmer.confirmStickerAfterClick(
+                clickResult = clickStickerRes,
+                beforeMultiset = beforeMultiset,
+                postClickSettleMs = STICKER_POST_CLICK_SETTLE_MS,
+                timeoutMs = SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS,
+                pollIntervalMs = SendConfirmer.DEFAULT_POLL_INTERVAL_MS,
+                clockMs = { SystemClock.elapsedRealtime() },
+            ) {
+                sampleStickerPoll(session, bundle)
+            }
             if (firstOutcome == ConfirmOutcome.SUCCEEDED) {
                 return SendExecutionResult(
                     jobStatus = JobStatus.SUCCEEDED,
@@ -864,10 +873,21 @@ class DouyinWebExecutor(
                 )
             }
 
-            // 未一点即发时，仅在发布按钮明确可用时补点一次发布按钮并再次轮询 15s
+            // 未一点即发时，仅在发布按钮明确可用（或求值结果未知）时补点一次发布按钮并再次轮询 15s
             val sendBtnRes = evalObject(session.webView, DouyinJsScripts.buildClickSendButtonJs(bundle))
-            if (sendBtnRes?.boolOrDefault("clicked", false) == true) {
-                val secondOutcome = pollStickerMediaConfirmation(session, bundle, beforeMultiset)
+            if (SendConfirmer.classifyIrreversibleClickResult(sendBtnRes) ==
+                ClickDispatchOutcome.PROCEED_TO_CONFIRM
+            ) {
+                val secondOutcome = SendConfirmer.confirmStickerAfterClick(
+                    clickResult = sendBtnRes,
+                    beforeMultiset = beforeMultiset,
+                    postClickSettleMs = 0L,
+                    timeoutMs = SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS,
+                    pollIntervalMs = SendConfirmer.DEFAULT_POLL_INTERVAL_MS,
+                    clockMs = { SystemClock.elapsedRealtime() },
+                ) {
+                    sampleStickerPoll(session, bundle)
+                }
                 if (secondOutcome == ConfirmOutcome.SUCCEEDED) {
                     return SendExecutionResult(
                         jobStatus = JobStatus.SUCCEEDED,
@@ -906,33 +926,22 @@ class DouyinWebExecutor(
         }
     }
 
-    private suspend fun pollStickerMediaConfirmation(
+    private suspend fun sampleStickerPoll(
         session: SessionHandle,
         bundle: SelectorBundle,
-        beforeMultiset: Map<String, Int>,
-    ): ConfirmOutcome {
-        val deadline = SystemClock.elapsedRealtime() + SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS
-        while (true) {
-            val timedOut = SystemClock.elapsedRealtime() >= deadline
-            val sampleObj = evalObject(
-                session.webView,
-                DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
-            )
-            val failureHit = sampleObj?.boolOrDefault("failureMarkerHit", false) == true
-            val afterMultiset = SendConfirmer.toMultiset(
-                sampleObj?.stringListOrEmpty("signatures").orEmpty(),
-            )
-            val outcome = SendConfirmer.evaluateStickerPoll(
-                failureMarkerHit = failureHit,
-                before = beforeMultiset,
-                after = afterMultiset,
-                timedOut = timedOut,
-            )
-            if (outcome != ConfirmOutcome.CONFIRMING_PENDING) {
-                return outcome
-            }
-            delay(SendConfirmer.DEFAULT_POLL_INTERVAL_MS)
-        }
+    ): StickerPollSample {
+        val sampleObj = evalObject(
+            session.webView,
+            DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
+        )
+        val failureHit = sampleObj?.boolOrDefault("failureMarkerHit", false) == true
+        val afterMultiset = SendConfirmer.toMultiset(
+            sampleObj?.stringListOrEmpty("signatures").orEmpty(),
+        )
+        return StickerPollSample(
+            failureMarkerHit = failureHit,
+            afterMultiset = afterMultiset,
+        )
     }
 
     private suspend fun checkAuthInSession(

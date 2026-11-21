@@ -1,5 +1,6 @@
 package io.github.oinzc.flamecontractor.execution
 
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -215,5 +216,79 @@ class SendConfirmerTest {
                 timedOut = false,
             ),
         )
+    }
+
+    @Test
+    fun clickEvalTimeoutNullNeverReturnsRetryableAndTurnsUnknownOnTimeout() = runTest {
+        assertEquals(
+            ClickDispatchOutcome.PROCEED_TO_CONFIRM,
+            SendConfirmer.classifyIrreversibleClickResult(null),
+        )
+        assertEquals(
+            ClickDispatchOutcome.PROCEED_TO_CONFIRM,
+            SendConfirmer.classifyIrreversibleClickResult(mapOf("clicked" to true)),
+        )
+        assertEquals(
+            ClickDispatchOutcome.ABORT_RETRYABLE,
+            SendConfirmer.classifyIrreversibleClickResult(mapOf("clicked" to false)),
+        )
+
+        // 1) 文本发送：clickResult == null（求值超时）且未出现成功证据时必须落 UNKNOWN_REQUIRES_REVIEW，绝不重发
+        var fakeNow = 1_000L
+        var textPolls = 0
+        val textTimeoutOutcome = SendConfirmer.confirmTextAfterClick(
+            clickResult = null,
+            timeoutMs = 1_500L,
+            pollIntervalMs = 500L,
+            clockMs = { fakeNow },
+            delayFn = { ms -> fakeNow += ms },
+        ) {
+            textPolls += 1
+            TextPollSample(failureMarkerHit = false, outgoingTextMatched = false, editorEmpty = false)
+        }
+        assertEquals(ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW, textTimeoutOutcome)
+        assertEquals(4, textPolls)
+
+        // 2) 文本发送：clickResult == null 但轮询证实已发出气泡时直接判 SUCCEEDED
+        fakeNow = 1_000L
+        val textSucceededOutcome = SendConfirmer.confirmTextAfterClick(
+            clickResult = null,
+            timeoutMs = 1_500L,
+            pollIntervalMs = 500L,
+            clockMs = { fakeNow },
+            delayFn = { ms -> fakeNow += ms },
+        ) {
+            TextPollSample(failureMarkerHit = false, outgoingTextMatched = true, editorEmpty = false)
+        }
+        assertEquals(ConfirmOutcome.SUCCEEDED, textSucceededOutcome)
+
+        // 3) 文本发送：JS 明确回报 clicked == false 时不轮询直接判 RETRYABLE_FAILURE
+        var abortedPolls = 0
+        val abortedOutcome = SendConfirmer.confirmTextAfterClick(
+            clickResult = mapOf("clicked" to false),
+            clockMs = { 0L },
+            delayFn = {},
+        ) {
+            abortedPolls += 1
+            TextPollSample(failureMarkerHit = false, outgoingTextMatched = false, editorEmpty = false)
+        }
+        assertEquals(ConfirmOutcome.RETRYABLE_FAILURE, abortedOutcome)
+        assertEquals(0, abortedPolls)
+
+        // 4) 表情发送：clickResult == null 且媒体差集未增长时必须落 UNKNOWN_REQUIRES_REVIEW
+        val beforeMedia = SendConfirmer.toMultiset(listOf("10:00\u001fsticker:old.png\u001f"))
+        fakeNow = 2_000L
+        val stickerTimeoutOutcome = SendConfirmer.confirmStickerAfterClick(
+            clickResult = null,
+            beforeMultiset = beforeMedia,
+            postClickSettleMs = 800L,
+            timeoutMs = 1_000L,
+            pollIntervalMs = 500L,
+            clockMs = { fakeNow },
+            delayFn = { ms -> fakeNow += ms },
+        ) {
+            StickerPollSample(failureMarkerHit = false, afterMultiset = beforeMedia)
+        }
+        assertEquals(ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW, stickerTimeoutOutcome)
     }
 }
