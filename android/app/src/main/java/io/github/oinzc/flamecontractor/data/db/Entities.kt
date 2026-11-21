@@ -10,6 +10,8 @@ import java.util.UUID
 
 const val DEFAULT_ACCOUNT_ID = "default"
 const val DEFAULT_STICKER_TEMPLATE_ID = "default-sticker-bixin"
+const val DEFAULT_STICKER_MORNING_TEMPLATE_ID = "default-sticker-zaoshanghao"
+const val DEFAULT_STICKER_SPARK_TEMPLATE_ID = "default-sticker-xuhuohua"
 const val DEFAULT_TEXT_TEMPLATE_ID = "default-text-daily"
 
 @Entity(tableName = "accounts")

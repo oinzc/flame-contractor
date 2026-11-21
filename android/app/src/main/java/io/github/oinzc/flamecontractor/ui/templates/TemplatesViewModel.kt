@@ -409,6 +409,24 @@ class TemplatesViewModel(
         updateEditor { it.copy(stickerLabel = stickerLabel, errorMessage = null) }
     }
 
+    fun applyStickerPreset(presetName: String) {
+        val trimmed = presetName.trim()
+        if (trimmed.isEmpty()) return
+        updateEditor { current ->
+            if (current.type != TemplateType.STICKER) return@updateEditor current
+            val shouldSyncName = current.isNew &&
+                (current.name.isBlank() || current.name.trim() in PRESET_STICKER_NAMES)
+            val shouldSyncLabel = current.stickerLabel.isBlank() ||
+                current.stickerLabel.trim() == current.stickerName.trim()
+            current.copy(
+                name = if (shouldSyncName) trimmed else current.name,
+                stickerName = trimmed,
+                stickerLabel = if (shouldSyncLabel) trimmed else current.stickerLabel,
+                errorMessage = null,
+            )
+        }
+    }
+
     fun updateEditorStickerCategory(stickerCategory: String) {
         updateEditor { it.copy(stickerCategory = stickerCategory, errorMessage = null) }
     }
@@ -1008,6 +1026,7 @@ class TemplatesViewModel(
 
     companion object {
         const val DEFAULT_STICKER_NAME = "比心"
+        val PRESET_STICKER_NAMES: List<String> = listOf("比心", "早上好", "续火花")
         val WEEKDAY_LABELS = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
         val WEEKDAY_SHORT_LABELS = listOf("一", "二", "三", "四", "五", "六", "日")
         val TEMPLATE_VARIABLES = listOf(

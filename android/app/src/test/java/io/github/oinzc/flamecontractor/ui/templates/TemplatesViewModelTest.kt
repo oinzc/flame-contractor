@@ -1,11 +1,18 @@
 package io.github.oinzc.flamecontractor.ui.templates
 
+import androidx.sqlite.db.SupportSQLiteDatabase
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_MORNING_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_SPARK_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
+import java.lang.reflect.Proxy
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -316,5 +323,114 @@ class TemplatesViewModelTest {
         } finally {
             vmScope.cancel()
         }
+    }
+
+    @Test
+    fun applyStickerPresetUpdatesFieldsWithoutOverwritingCustomName() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTemplatesRepository()
+            val vm = TemplatesViewModel(
+                repository = repo,
+                externalScope = vmScope,
+                ioDispatcher = dispatcher,
+            )
+
+            vm.openCreateTemplate(TemplateType.STICKER)
+            advanceUntilIdle()
+            assertEquals("比心", vm.uiState.value.editorState?.stickerName)
+            assertEquals("", vm.uiState.value.editorState?.name)
+
+            vm.applyStickerPreset("早上好")
+            advanceUntilIdle()
+            var editor = vm.uiState.value.editorState!!
+            assertEquals("早上好", editor.name)
+            assertEquals("早上好", editor.stickerName)
+            assertEquals("早上好", editor.stickerLabel)
+
+            vm.applyStickerPreset("续火花")
+            advanceUntilIdle()
+            editor = vm.uiState.value.editorState!!
+            assertEquals("续火花", editor.name)
+            assertEquals("续火花", editor.stickerName)
+            assertEquals("续火花", editor.stickerLabel)
+
+            // 用户已自定义模板名称和标签后，切换表情预设不会覆盖自定义内容
+            vm.updateEditorName("早安专属")
+            vm.updateEditorStickerLabel("自定义展示")
+            vm.applyStickerPreset("比心")
+            advanceUntilIdle()
+            editor = vm.uiState.value.editorState!!
+            assertEquals("早安专属", editor.name)
+            assertEquals("比心", editor.stickerName)
+            assertEquals("自定义展示", editor.stickerLabel)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun databaseSeedAndMigrationIncludeMorningAndSparkStickers() {
+        val calls = mutableListOf<Pair<String, List<Any?>>>()
+        val recordingDb = Proxy.newProxyInstance(
+            SupportSQLiteDatabase::class.java.classLoader,
+            arrayOf(SupportSQLiteDatabase::class.java),
+        ) { _, method, args ->
+            if (method.name == "execSQL") {
+                val sql = args?.getOrNull(0) as? String ?: ""
+                val bindArgs = if (args != null && args.size >= 2 && args[1] is Array<*>) {
+                    (args[1] as Array<*>).toList()
+                } else {
+                    emptyList()
+                }
+                calls += sql to bindArgs
+                null
+            } else {
+                when (method.returnType) {
+                    Boolean::class.javaPrimitiveType -> false
+                    Int::class.javaPrimitiveType -> 0
+                    Long::class.javaPrimitiveType -> 0L
+                    else -> null
+                }
+            }
+        } as SupportSQLiteDatabase
+
+        FlameDatabase.seedInitialData(
+            db = recordingDb,
+            nowEpochMs = 1_000L,
+            defaultTimezone = "Asia/Shanghai",
+        )
+        assertEquals(5, calls.size)
+        assertTrue(calls[0].first.contains("INSERT OR IGNORE INTO accounts"))
+        assertEquals(DEFAULT_ACCOUNT_ID, calls[0].second.firstOrNull())
+
+        val seededStickers = calls.subList(1, 4)
+        assertEquals(
+            listOf(
+                DEFAULT_STICKER_TEMPLATE_ID,
+                DEFAULT_STICKER_MORNING_TEMPLATE_ID,
+                DEFAULT_STICKER_SPARK_TEMPLATE_ID,
+            ),
+            seededStickers.map { it.second[0] },
+        )
+        assertEquals(listOf("比心", "早上好", "续火花"), seededStickers.map { it.second[2] })
+        assertEquals(listOf("比心", "早上好", "续火花"), seededStickers.map { it.second[5] })
+        assertTrue(seededStickers.all { it.second.size == 13 })
+        assertTrue(seededStickers.all { it.first.contains("INSERT OR IGNORE INTO message_templates") })
+        assertTrue(seededStickers.all { it.first.contains("WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)") })
+        assertEquals(DEFAULT_TEXT_TEMPLATE_ID, calls[4].second[0])
+
+        calls.clear()
+        FlameDatabase.MIGRATION_1_2.migrate(recordingDb)
+        assertEquals(2, calls.size)
+        assertEquals(
+            listOf(DEFAULT_STICKER_MORNING_TEMPLATE_ID, DEFAULT_STICKER_SPARK_TEMPLATE_ID),
+            calls.map { it.second[0] },
+        )
+        assertEquals(listOf("早上好", "续火花"), calls.map { it.second[5] })
+        assertTrue(calls.all { it.second.size == 13 })
+        assertTrue(calls.all { it.first.contains("INSERT OR IGNORE INTO message_templates") })
+        assertTrue(calls.all { it.first.contains("WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)") })
     }
 }

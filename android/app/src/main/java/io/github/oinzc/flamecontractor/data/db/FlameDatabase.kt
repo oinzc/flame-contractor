@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import java.time.ZoneId
 
@@ -58,7 +59,7 @@ class FlameTypeConverters {
         SendAttemptEntity::class,
         ScanRunEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(FlameTypeConverters::class)
@@ -77,12 +78,65 @@ abstract class FlameDatabase : RoomDatabase() {
     companion object {
         const val DATABASE_NAME = "flame_contractor.db"
 
+        internal data class DefaultStickerSeed(
+            val id: String,
+            val name: String,
+            val stickerName: String,
+            val stickerLabel: String,
+        )
+
+        internal val DEFAULT_STICKER_SEEDS: List<DefaultStickerSeed> = listOf(
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_TEMPLATE_ID,
+                name = "比心",
+                stickerName = "比心",
+                stickerLabel = "比心",
+            ),
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_MORNING_TEMPLATE_ID,
+                name = "早上好",
+                stickerName = "早上好",
+                stickerLabel = "早上好",
+            ),
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_SPARK_TEMPLATE_ID,
+                name = "续火花",
+                stickerName = "续火花",
+                stickerLabel = "续火花",
+            ),
+        )
+
+        internal val MIGRATION_1_2_STICKER_SEEDS: List<DefaultStickerSeed> = listOf(
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_MORNING_TEMPLATE_ID,
+                name = "早上好",
+                stickerName = "早上好",
+                stickerLabel = "早上好",
+            ),
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_SPARK_TEMPLATE_ID,
+                name = "续火花",
+                stickerName = "续火花",
+                stickerLabel = "续火花",
+            ),
+        )
+
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                seedDefaultStickerTemplates(
+                    db = db,
+                    seeds = MIGRATION_1_2_STICKER_SEEDS,
+                )
+            }
+        }
+
         fun create(context: Context): FlameDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 FlameDatabase::class.java,
                 DATABASE_NAME,
             )
+                .addMigrations(MIGRATION_1_2)
                 .addCallback(seedCallback())
                 .build()
 
@@ -91,6 +145,7 @@ abstract class FlameDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlameDatabase::class.java,
             )
+                .addMigrations(MIGRATION_1_2)
                 .addCallback(seedCallback())
                 .build()
 
@@ -98,6 +153,41 @@ abstract class FlameDatabase : RoomDatabase() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 super.onCreate(db)
                 seedInitialData(db)
+            }
+        }
+
+        internal fun seedDefaultStickerTemplates(
+            db: SupportSQLiteDatabase,
+            seeds: List<DefaultStickerSeed> = DEFAULT_STICKER_SEEDS,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ) {
+            seeds.forEachIndexed { index, seed ->
+                val createdAt = nowEpochMs + index.toLong()
+                db.execSQL(
+                    """
+                    INSERT OR IGNORE INTO message_templates (
+                        id, account_id, name, type, content,
+                        sticker_name, sticker_label, sticker_category, sticker_fallback_index,
+                        enabled, created_at, updated_at
+                    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)
+                    """.trimIndent(),
+                    arrayOf<Any?>(
+                        seed.id,
+                        DEFAULT_ACCOUNT_ID,
+                        seed.name,
+                        TemplateType.STICKER.wireValue,
+                        "",
+                        seed.stickerName,
+                        seed.stickerLabel,
+                        null,
+                        null,
+                        1,
+                        createdAt,
+                        createdAt,
+                        DEFAULT_ACCOUNT_ID,
+                    ),
+                )
             }
         }
 
@@ -139,30 +229,13 @@ abstract class FlameDatabase : RoomDatabase() {
                 ),
             )
 
-            db.execSQL(
-                """
-                INSERT OR IGNORE INTO message_templates (
-                    id, account_id, name, type, content,
-                    sticker_name, sticker_label, sticker_category, sticker_fallback_index,
-                    enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """.trimIndent(),
-                arrayOf<Any?>(
-                    DEFAULT_STICKER_TEMPLATE_ID,
-                    DEFAULT_ACCOUNT_ID,
-                    "比心",
-                    TemplateType.STICKER.wireValue,
-                    "",
-                    "比心",
-                    "比心",
-                    null,
-                    null,
-                    1,
-                    nowEpochMs,
-                    nowEpochMs,
-                ),
+            seedDefaultStickerTemplates(
+                db = db,
+                seeds = DEFAULT_STICKER_SEEDS,
+                nowEpochMs = nowEpochMs,
             )
 
+            val textCreatedAt = nowEpochMs + DEFAULT_STICKER_SEEDS.size.toLong()
             db.execSQL(
                 """
                 INSERT OR IGNORE INTO message_templates (
@@ -182,8 +255,8 @@ abstract class FlameDatabase : RoomDatabase() {
                     null,
                     null,
                     1,
-                    nowEpochMs + 1L,
-                    nowEpochMs + 1L,
+                    textCreatedAt,
+                    textCreatedAt,
                 ),
             )
         }

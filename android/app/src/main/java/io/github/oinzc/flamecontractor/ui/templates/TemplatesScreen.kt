@@ -127,6 +127,7 @@ fun TemplatesRoute(
             onStickerLabelChanged = viewModel::updateEditorStickerLabel,
             onStickerCategoryChanged = viewModel::updateEditorStickerCategory,
             onStickerFallbackIndexChanged = viewModel::updateEditorStickerFallbackIndex,
+            onApplyStickerPreset = viewModel::applyStickerPreset,
             onEnabledChanged = viewModel::updateEditorEnabled,
             onAddPoolDraft = viewModel::addEditorPoolDraftRow,
             onRemovePoolDraft = viewModel::removeEditorPoolDraftRow,
@@ -886,6 +887,7 @@ private fun TemplateEditorDialog(
     onStickerLabelChanged: (String) -> Unit,
     onStickerCategoryChanged: (String) -> Unit,
     onStickerFallbackIndexChanged: (String) -> Unit,
+    onApplyStickerPreset: (String) -> Unit,
     onEnabledChanged: (Boolean) -> Unit,
     onAddPoolDraft: () -> Unit,
     onRemovePoolDraft: (Int) -> Unit,
@@ -995,10 +997,21 @@ private fun TemplateEditorDialog(
                                 value = editor.stickerName,
                                 onValueChange = onStickerNameChanged,
                                 label = { Text("抖音原生表情名称") },
-                                placeholder = { Text("默认：比心") },
+                                placeholder = { Text("例如：比心 / 早上好 / 续火花") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                             )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                TemplatesViewModel.PRESET_STICKER_NAMES.forEach { preset ->
+                                    AssistChip(
+                                        onClick = { onApplyStickerPreset(preset) },
+                                        label = { Text(preset, style = MaterialTheme.typography.labelSmall) },
+                                    )
+                                }
+                            }
                             OutlinedTextField(
                                 value = editor.stickerLabel,
                                 onValueChange = onStickerLabelChanged,
