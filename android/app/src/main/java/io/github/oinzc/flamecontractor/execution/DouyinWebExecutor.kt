@@ -25,6 +25,7 @@ import io.github.oinzc.flamecontractor.domain.AuthProbeOutcome
 import io.github.oinzc.flamecontractor.execution.webview.DesktopWebViewFactory
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -110,6 +111,7 @@ class DouyinWebExecutor(
         internal val httpError: AtomicReference<Pair<Int, String>?>,
         internal val documentStartSupported: Boolean,
         internal val webViewVersion: String,
+        internal val pageFinished: AtomicBoolean = AtomicBoolean(false),
     ) {
         internal var warmedUp: Boolean = false
         internal var cachedIdentitiesLoaded: Boolean = false
@@ -315,6 +317,7 @@ class DouyinWebExecutor(
         val bridge = FlameBridge(identityStore, bridgeScope)
         val mainFrameError = AtomicReference<Pair<Int, String>?>(null)
         val httpError = AtomicReference<Pair<Int, String>?>(null)
+        val pageFinished = AtomicBoolean(false)
         val webViewRef = AtomicReference<WebView?>(null)
 
         return try {
@@ -324,7 +327,11 @@ class DouyinWebExecutor(
                     context = appContext,
                     widthPx = 1440,
                     heightPx = 900,
-                    onPageFinished = { _ -> },
+                    onPageFinished = { originPath ->
+                        if (originPath.startsWith("http://") || originPath.startsWith("https://")) {
+                            pageFinished.set(true)
+                        }
+                    },
                     onMainFrameError = { code, desc ->
                         mainFrameError.compareAndSet(null, code to desc)
                     },
@@ -345,6 +352,7 @@ class DouyinWebExecutor(
                     httpError = httpError,
                     documentStartSupported = config.documentStartSupported,
                     webViewVersion = webViewPkgVersion,
+                    pageFinished = pageFinished,
                 )
             }
             block(session)
@@ -949,8 +957,11 @@ class DouyinWebExecutor(
         timeoutMs: Long,
     ): AuthCheckResult {
         val bundle = selectorBundleStore.current()
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        val startMs = SystemClock.elapsedRealtime()
+        val deadline = startMs + timeoutMs
         var reloadedSkeletonOnce = false
+        var consecutiveVerificationSignals = 0
+        var consecutiveLoginSignals = 0
 
         while (true) {
             val probe = evalObject(
@@ -959,32 +970,53 @@ class DouyinWebExecutor(
             )
             val mainErr = session.mainFrameError.get()
             val httpErr = session.httpError.get()
+            val nowMs = SystemClock.elapsedRealtime()
+            val elapsed = nowMs - startMs
 
             if (probe != null) {
                 val isDouyinHost = probe.boolOrDefault("isDouyinHost", false)
-                val isErrorPage = probe.boolOrDefault("isErrorPage", false)
                 if (!session.documentStartSupported && isDouyinHost && !session.fallbackHookInjected) {
                     session.fallbackHookInjected = true
                     evalJsRaw(session.webView, DouyinJsScripts.buildIdentityCaptureDocumentStartJs())
                 }
-
-                if (isErrorPage || (mainErr != null && !isDouyinHost)) {
-                    return AuthCheckResult(
-                        outcome = AuthProbeOutcome.NETWORK_ERROR,
-                        webViewVersion = session.webViewVersion,
-                        detail = "页面未能正常加载（网络异常）",
-                    )
+                consecutiveVerificationSignals = if (probe.boolOrDefault("verificationRequired", false)) {
+                    consecutiveVerificationSignals + 1
+                } else {
+                    0
                 }
-
-                if (probe.boolOrDefault("verificationRequired", false)) {
-                    return AuthCheckResult(
-                        outcome = AuthProbeOutcome.VERIFICATION_REQUIRED,
-                        webViewVersion = session.webViewVersion,
-                        detail = "检测到抖音安全验证弹窗，请在页面内完成验证",
-                    )
+                consecutiveLoginSignals = if (probe.boolOrDefault("hasQrOrLoginSignal", false)) {
+                    consecutiveLoginSignals + 1
+                } else {
+                    0
                 }
+            } else {
+                consecutiveVerificationSignals = 0
+                consecutiveLoginSignals = 0
+            }
 
-                if (probe.boolOrDefault("loggedIn", false)) {
+            when (
+                evaluateAuthPollDecision(
+                    probe = probe,
+                    mainErr = mainErr,
+                    pageFinished = session.pageFinished.get(),
+                    elapsedMs = elapsed,
+                    consecutiveVerificationSignals = consecutiveVerificationSignals,
+                    consecutiveLoginSignals = consecutiveLoginSignals,
+                )
+            ) {
+                AuthPollDecision.NETWORK_ERROR -> return AuthCheckResult(
+                    outcome = AuthProbeOutcome.NETWORK_ERROR,
+                    webViewVersion = session.webViewVersion,
+                    detail = "页面未能正常加载（网络异常）",
+                )
+
+                AuthPollDecision.VERIFICATION_REQUIRED -> return AuthCheckResult(
+                    outcome = AuthProbeOutcome.VERIFICATION_REQUIRED,
+                    webViewVersion = session.webViewVersion,
+                    detail = "检测到抖音安全验证弹窗，请在页面内完成验证",
+                )
+
+                AuthPollDecision.AUTHENTICATED -> {
                     // 真机 M1 实证：CONVERSATION_LIST 首次出现后停 1000ms 让火花徽标与行水合完成
                     delay(CONVERSATION_LIST_HYDRATION_DELAY_MS)
                     val refreshed = evalObject(
@@ -993,37 +1025,36 @@ class DouyinWebExecutor(
                     ) ?: probe
                     return AuthCheckResult(
                         outcome = AuthProbeOutcome.AUTHENTICATED,
-                        selfUid = refreshed.stringOrNull("selfUid"),
-                        douyinNickname = refreshed.stringOrNull("douyinNickname"),
+                        selfUid = refreshed?.stringOrNull("selfUid"),
+                        douyinNickname = refreshed?.stringOrNull("douyinNickname"),
                         webViewVersion = session.webViewVersion,
                         detail = "登录态有效",
                     )
                 }
 
-                val hasUserInfo = probe.boolOrDefault("hasLocalStorageUserInfo", false)
-                val hasLoginSignal = probe.boolOrDefault("hasQrOrLoginSignal", false)
-                if (hasLoginSignal) {
-                    return AuthCheckResult(
-                        outcome = AuthProbeOutcome.UNAUTHENTICATED,
-                        webViewVersion = session.webViewVersion,
-                        detail = "页面存在扫码或登录提示，请重新扫码登录",
-                    )
-                }
+                AuthPollDecision.UNAUTHENTICATED -> return AuthCheckResult(
+                    outcome = AuthProbeOutcome.UNAUTHENTICATED,
+                    webViewVersion = session.webViewVersion,
+                    detail = "页面存在扫码或登录提示，请重新扫码登录",
+                )
 
-                val elapsed = timeoutMs - (deadline - SystemClock.elapsedRealtime())
-                if (hasUserInfo && !reloadedSkeletonOnce && elapsed >= 6_000L) {
-                    reloadedSkeletonOnce = true
-                    withContext(Dispatchers.Main) {
-                        session.webView.reload()
+                AuthPollDecision.CONTINUE -> {
+                    val hasUserInfo = probe?.boolOrDefault("hasLocalStorageUserInfo", false) == true
+                    if (hasUserInfo && !reloadedSkeletonOnce && elapsed >= 6_000L) {
+                        reloadedSkeletonOnce = true
+                        withContext(Dispatchers.Main) {
+                            session.webView.reload()
+                        }
+                        delay(2_500L)
+                        continue
                     }
-                    delay(2_500L)
-                    continue
                 }
             }
 
             if (SystemClock.elapsedRealtime() >= deadline) {
+                val isBlank = probe?.boolOrDefault("isBlankPage", false) == true
                 if (mainErr != null || (httpErr != null && httpErr.first >= 500) || probe == null ||
-                    probe.boolOrDefault("isErrorPage", false) || !probe.boolOrDefault("isDouyinHost", false)
+                    probe.boolOrDefault("isErrorPage", false) || isBlank || !probe.boolOrDefault("isDouyinHost", false)
                 ) {
                     return AuthCheckResult(
                         outcome = AuthProbeOutcome.NETWORK_ERROR,
@@ -1193,7 +1224,7 @@ class DouyinWebExecutor(
         val checkedAt = System.currentTimeMillis()
         val bundle = selectorBundleStore.current()
         val digest = selectorBundleStore.digest()
-        val auth = checkAuthInSession(session, 8_000L)
+        val auth = checkAuthInSession(session, AUTH_WAIT_TIMEOUT_MS)
 
         if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
             val baseObj = evalObject(session.webView, DouyinJsScripts.buildStructureProbeJs(bundle))
@@ -1853,8 +1884,16 @@ class DouyinWebExecutor(
         AuthProbeOutcome.AUTHENTICATED -> FailureClass.OTHER
     }
 
+    internal enum class AuthPollDecision {
+        CONTINUE,
+        NETWORK_ERROR,
+        VERIFICATION_REQUIRED,
+        AUTHENTICATED,
+        UNAUTHENTICATED,
+    }
+
     companion object {
-        private const val AUTH_WAIT_TIMEOUT_MS = 15_000L
+        private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
         private const val CONVERSATION_LIST_HYDRATION_DELAY_MS = 1_000L
         private const val SEARCH_RESULTS_TIMEOUT_MS = 12_000L
         private const val OPEN_CONFIRM_TIMEOUT_MS = 8_000L
@@ -1867,5 +1906,49 @@ class DouyinWebExecutor(
         private const val SCAN_MAX_ROUNDS = 15
         private const val SCAN_IDLE_ROUNDS = 3
         private const val SCAN_SCROLL_STEP_PX = 900
+
+        internal fun evaluateAuthPollDecision(
+            probe: Map<String, Any?>?,
+            mainErr: Pair<Int, String>?,
+            pageFinished: Boolean,
+            elapsedMs: Long,
+            consecutiveVerificationSignals: Int,
+            consecutiveLoginSignals: Int,
+        ): AuthPollDecision {
+            if (probe != null) {
+                val isDouyinHost = probe.boolOrDefault("isDouyinHost", false)
+                val isBlankPage = probe.boolOrDefault("isBlankPage", false)
+                val isErrorPage = probe.boolOrDefault("isErrorPage", false)
+                val loggedIn = probe.boolOrDefault("loggedIn", false)
+                val verificationRequired = probe.boolOrDefault("verificationRequired", false)
+                val hasUserInfo = probe.boolOrDefault("hasLocalStorageUserInfo", false)
+                val hasLoginSignal = probe.boolOrDefault("hasQrOrLoginSignal", false)
+
+                if (isErrorPage) {
+                    return AuthPollDecision.NETWORK_ERROR
+                }
+                if (isBlankPage && mainErr == null) {
+                    return AuthPollDecision.CONTINUE
+                }
+                if (mainErr != null && !isDouyinHost && (!isBlankPage || pageFinished || elapsedMs >= 1_500L)) {
+                    return AuthPollDecision.NETWORK_ERROR
+                }
+                if (loggedIn) {
+                    return AuthPollDecision.AUTHENTICATED
+                }
+                if (verificationRequired && (pageFinished || consecutiveVerificationSignals >= 2)) {
+                    return AuthPollDecision.VERIFICATION_REQUIRED
+                }
+                if (hasLoginSignal && !hasUserInfo && pageFinished && consecutiveLoginSignals >= 3) {
+                    return AuthPollDecision.UNAUTHENTICATED
+                }
+                return AuthPollDecision.CONTINUE
+            }
+
+            if (mainErr != null && (pageFinished || elapsedMs >= 1_500L)) {
+                return AuthPollDecision.NETWORK_ERROR
+            }
+            return AuthPollDecision.CONTINUE
+        }
     }
 }

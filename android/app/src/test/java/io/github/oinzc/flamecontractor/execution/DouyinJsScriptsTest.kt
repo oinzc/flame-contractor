@@ -309,6 +309,119 @@ class DouyinJsScriptsTest {
         assertEquals(AccountStatus.HEALTHY, accountDao.getAccount(DEFAULT_ACCOUNT_ID)?.status)
     }
 
+    @Test
+    fun authProbeScriptSeparatesAboutBlankFromChromeErrorPage() {
+        val script = DouyinJsScripts.buildAuthAndSelfIdentityProbeJs(SelectorBundle.defaults())
+
+        assertTrue(script.contains("var isBlankPage = !href || href === 'about:blank';"))
+        assertTrue(script.contains("var isErrorPage = href.indexOf('chrome-error://') === 0;"))
+        assertTrue(script.contains("isBlankPage: isBlankPage,"))
+    }
+
+    @Test
+    fun authPollWaitsThroughInitialAboutBlankAndFailsOnChromeErrorPage() {
+        val initialBlankProbe = mapOf<String, Any?>(
+            "isDouyinHost" to false,
+            "isBlankPage" to true,
+            "isErrorPage" to false,
+            "loggedIn" to false,
+            "verificationRequired" to false,
+            "hasLocalStorageUserInfo" to false,
+            "hasQrOrLoginSignal" to false,
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.CONTINUE,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = initialBlankProbe,
+                mainErr = null,
+                pageFinished = false,
+                elapsedMs = 50L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 0,
+            ),
+        )
+
+        val chromeErrorProbe = mapOf<String, Any?>(
+            "isDouyinHost" to false,
+            "isBlankPage" to false,
+            "isErrorPage" to true,
+            "loggedIn" to false,
+            "verificationRequired" to false,
+            "hasLocalStorageUserInfo" to false,
+            "hasQrOrLoginSignal" to false,
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.NETWORK_ERROR,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = chromeErrorProbe,
+                mainErr = null,
+                pageFinished = false,
+                elapsedMs = 500L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 0,
+            ),
+        )
+
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.NETWORK_ERROR,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = initialBlankProbe,
+                mainErr = -2 to "ERR_INTERNET_DISCONNECTED",
+                pageFinished = false,
+                elapsedMs = 1_600L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun authPollDoesNotFalseFailUnauthenticatedOnSingleTransientLoginFlash() {
+        val loginFlashProbe = mapOf<String, Any?>(
+            "isDouyinHost" to true,
+            "isBlankPage" to false,
+            "isErrorPage" to false,
+            "loggedIn" to false,
+            "verificationRequired" to false,
+            "hasLocalStorageUserInfo" to false,
+            "hasQrOrLoginSignal" to true,
+        )
+
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.CONTINUE,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = loginFlashProbe,
+                mainErr = null,
+                pageFinished = false,
+                elapsedMs = 500L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 1,
+            ),
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.CONTINUE,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = loginFlashProbe,
+                mainErr = null,
+                pageFinished = true,
+                elapsedMs = 1_500L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 1,
+            ),
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.UNAUTHENTICATED,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = loginFlashProbe,
+                mainErr = null,
+                pageFinished = true,
+                elapsedMs = 3_000L,
+                consecutiveVerificationSignals = 0,
+                consecutiveLoginSignals = 3,
+            ),
+        )
+    }
+
     private class InMemoryAccountDao : AccountDao {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 

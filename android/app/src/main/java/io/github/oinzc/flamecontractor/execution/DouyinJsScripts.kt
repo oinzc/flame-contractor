@@ -528,7 +528,8 @@ object DouyinJsScripts {
               var href = String(window.location && window.location.href ? window.location.href : '');
               var host = String(window.location && window.location.hostname ? window.location.hostname : '').toLowerCase();
               var pathname = String(window.location && window.location.pathname ? window.location.pathname : '');
-              var isErrorPage = !href || href.indexOf('chrome-error://') === 0 || href === 'about:blank';
+              var isBlankPage = !href || href === 'about:blank';
+              var isErrorPage = href.indexOf('chrome-error://') === 0;
               var bodyText = '';
               try { bodyText = String(document.body ? (document.body.innerText || '') : ''); } catch (_) {}
 
@@ -605,6 +606,7 @@ object DouyinJsScripts {
               return {
                 originPath: (host ? (String(window.location.protocol || '') + '//' + host + pathname) : pathname),
                 isDouyinHost: host.indexOf('douyin.com') !== -1,
+                isBlankPage: isBlankPage,
                 isErrorPage: isErrorPage,
                 readyState: String(document.readyState || ''),
                 loggedIn: loggedIn,
