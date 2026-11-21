@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -45,6 +46,8 @@ object DesktopWebViewFactory {
         blockDeepLinks: Boolean = true,
         onPageFinished: ((String) -> Unit)? = null,
         onMainFrameError: ((Int, String) -> Unit)? = null,
+        documentStartScript: String = DOCUMENT_START_SCRIPT,
+        onReceivedHttpError: ((Int, String) -> Unit)? = null,
     ): WebViewConfigResult {
         val defaultUa = WebSettings.getDefaultUserAgent(webView.context)
         val activeUa = buildDesktopUserAgent(defaultUa)
@@ -67,10 +70,10 @@ object DesktopWebViewFactory {
 
         val documentStartSupported =
             WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-        if (documentStartSupported) {
+        if (documentStartSupported && documentStartScript.isNotBlank()) {
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                DOCUMENT_START_SCRIPT,
+                documentStartScript,
                 setOf("https://www.douyin.com", "https://*.douyin.com"),
             )
         }
@@ -108,6 +111,23 @@ object DesktopWebViewFactory {
                     )
                 }
             }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?,
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (request?.isForMainFrame == true) {
+                    val statusCode = errorResponse?.statusCode ?: -1
+                    if (statusCode >= 400) {
+                        onReceivedHttpError?.invoke(
+                            statusCode,
+                            safeOriginPath(request.url?.toString()),
+                        )
+                    }
+                }
+            }
         }
 
         return WebViewConfigResult(
@@ -123,6 +143,8 @@ object DesktopWebViewFactory {
         heightPx: Int = 900,
         onPageFinished: ((String) -> Unit)? = null,
         onMainFrameError: ((Int, String) -> Unit)? = null,
+        documentStartScript: String = DOCUMENT_START_SCRIPT,
+        onReceivedHttpError: ((Int, String) -> Unit)? = null,
     ): Pair<WebView, WebViewConfigResult> {
         val webView = WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(widthPx, heightPx)
@@ -137,6 +159,8 @@ object DesktopWebViewFactory {
             blockDeepLinks = true,
             onPageFinished = onPageFinished,
             onMainFrameError = onMainFrameError,
+            documentStartScript = documentStartScript,
+            onReceivedHttpError = onReceivedHttpError,
         )
         return webView to config
     }

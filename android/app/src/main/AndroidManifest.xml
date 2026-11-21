@@ -31,9 +31,15 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".execution.LoginWebViewActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
-            android:name=".execution.OffscreenProbeService"
-            android:exported="true"
+            android:name=".execution.ExecutionForegroundService"
+            android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <receiver
