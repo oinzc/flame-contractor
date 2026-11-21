@@ -5,6 +5,19 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val requestedVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
+val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.4.0-dev"
+
+val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val hasReleaseSigning = releaseKeystorePath != null &&
+    file(releaseKeystorePath).isFile &&
+    releaseKeystorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
+
 android {
     namespace = "io.github.oinzc.flamecontractor"
     compileSdk = 35
@@ -13,8 +26,19 @@ android {
         applicationId = "io.github.oinzc.flamecontractor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.4.0-dev"
+        versionCode = requestedVersionCode
+        versionName = requestedVersionName
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -24,6 +48,9 @@ android {
         }
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

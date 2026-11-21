@@ -5,38 +5,20 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.outlined.Group
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
+import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
+import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
 import io.github.oinzc.flamecontractor.ui.today.TodayRoute
 
@@ -95,24 +77,24 @@ class MainActivity : AppCompatActivity() {
                         )
                     },
                     targetsContent = {
-                        TabPlaceholderScreen(
-                            title = "好友与扫描对账",
-                            description = "在此手动扫描抖音会话并按官方火花导入好友，支持单发测试与独立本机连续天数展示（待接入 TargetsRoute）。",
-                            icon = Icons.Outlined.Group,
+                        TargetsRoute(
+                            database = container.database,
+                            scheduleCoordinator = container.scheduleCoordinator,
+                            onNavigateToTodayReview = { selectedTab = MainTab.TODAY },
                         )
                     },
                     templatesContent = {
-                        TabPlaceholderScreen(
-                            title = "消息模板与文案池",
-                            description = "在此管理固定文本、星期轮换 LRU 文案池与抖音原生「比心」表情模板（待接入 TemplatesRoute）。",
-                            icon = Icons.Outlined.Forum,
+                        TemplatesRoute(
+                            database = container.database,
                         )
                     },
                     settingsContent = {
-                        TabPlaceholderScreen(
-                            title = "设置与保活体检",
-                            description = "在此配置同日发送窗口、Bark 通知、小米 HyperOS 保活体检、网页结构体检与定位器覆写（待接入 SettingsRoute）。",
-                            icon = Icons.Outlined.Settings,
+                        SettingsRoute(
+                            database = container.database,
+                            selectorBundleStore = container.selectorBundleStore,
+                            secretStore = container.secretStore,
+                            barkNotifier = container.barkNotifier,
+                            scheduleCoordinator = container.scheduleCoordinator,
                         )
                     },
                 )
@@ -135,48 +117,5 @@ class MainActivity : AppCompatActivity() {
             category = category,
             nonce = signalCounter,
         )
-    }
-}
-
-@Composable
-private fun TabPlaceholderScreen(
-    title: String,
-    description: String,
-    icon: ImageVector,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-            colors = CardDefaults.elevatedCardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            ),
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(36.dp),
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
     }
 }
