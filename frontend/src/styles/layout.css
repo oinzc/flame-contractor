@@ -225,6 +225,11 @@
   overflow: hidden;
 }
 
+.fc-stage.is-settings {
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
 .fc-paged-card {
   flex: 1;
   min-height: 0;
@@ -423,12 +428,6 @@
 
   .fc-paged-body {
     overflow-y: visible;
-  }
-}
-
-@media (max-width: 960px) {
-  .fc-stage.is-settings {
-    overflow-y: auto;
   }
 }
 

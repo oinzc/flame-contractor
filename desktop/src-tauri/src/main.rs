@@ -98,6 +98,25 @@ fn pick_free_loopback_port() -> u16 {
         .unwrap_or(18420)
 }
 
+#[cfg(all(windows, not(debug_assertions)))]
+fn is_dir_writable(dir: &Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(".flame_write_probe_{}", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn resolve_data_dir(app: &AppHandle) -> PathBuf {
     if let Ok(raw) = env::var("FLAME_DATA_DIR") {
         let trimmed = raw.trim();
@@ -105,6 +124,17 @@ fn resolve_data_dir(app: &AppHandle) -> PathBuf {
             let path = PathBuf::from(trimmed);
             let _ = fs::create_dir_all(&path);
             return path;
+        }
+    }
+    // Windows 正式安装版优先跟随软件安装目录存放 data，避免占用 C 盘系统目录；
+    // 若安装到 Program Files 等只读目录，则自动回退到 %LOCALAPPDATA%\FlameContractor。
+    #[cfg(all(windows, not(debug_assertions)))]
+    if let Ok(cur_exe) = env::current_exe() {
+        if let Some(install_dir) = cur_exe.parent() {
+            let portable = install_dir.join("data");
+            if is_dir_writable(&portable) {
+                return portable;
+            }
         }
     }
     #[cfg(windows)]

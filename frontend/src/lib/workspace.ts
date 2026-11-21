@@ -3,7 +3,11 @@ import type {
   ContractTarget,
   DrawerState,
   JobStatus,
+  ScanChatEntry,
+  ScanOfficialState,
   ScanProgress,
+  ScanReconciliationCategory,
+  ScanReconciliationItem,
   SendAttemptItem,
   SendJob,
   SendPreviewRead,
@@ -394,31 +398,285 @@ export function describeBarkCardState(
   }
 }
 
-export function validateBarkUrlInput(
-  raw: string,
-): { ok: true; value: string } | { ok: false; error: string } {
-  const cleaned = raw.trim()
-  if (!cleaned) {
-    return { ok: false, error: '请输入 Bark 推送地址，例如 https://api.day.app/<你的设备Key>' }
+const MAX_BARK_URL_LEN = 255
+const MAX_BARK_RAW_INPUT_LEN = 2048
+const CURL_URL_RE = /https?:\/\/[^\s'"`\\]+/i
+const JSON_DEVICE_KEY_RE =
+  /(?:\\?["'])device_key(?:\\?["'])\s*:\s*(?:\\?["'])([^"'\\]+)(?:\\?["'])/
+const FORM_DEVICE_KEY_RE = /(?:^|[&\s'"?])device_key=([^&\s'"]+)/
+const PERCENT_ENCODED_RE = /%[0-9a-fA-F]{2}/
+
+function extractBarkDeviceKeyFromBody(rawInput: string): string {
+  const start = rawInput.indexOf('{')
+  const end = rawInput.lastIndexOf('}')
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(rawInput.slice(start, end + 1)) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const rawKey = (parsed as Record<string, unknown>).device_key
+        if (typeof rawKey === 'string' && rawKey.trim()) {
+          return rawKey.trim()
+        }
+      }
+    } catch {
+      // 回退到正则提取，兼容带转义引号或不完整片段的 curl 示例
+    }
   }
-  if (cleaned.length > 255) {
-    return { ok: false, error: 'Bark 推送地址长度不能超过 255 个字符' }
+  const jsonMatch = rawInput.match(JSON_DEVICE_KEY_RE)
+  if (jsonMatch?.[1]?.trim()) return jsonMatch[1].trim()
+  const formMatch = rawInput.match(FORM_DEVICE_KEY_RE)
+  if (formMatch?.[1]?.trim()) return formMatch[1].trim()
+  return ''
+}
+
+function isExampleMessageSegment(segment: string): boolean {
+  const lower = segment.toLowerCase()
+  if (lower === 'title' || lower === 'body') return true
+  if (PERCENT_ENCODED_RE.test(segment)) return true
+  return /[^\x00-\x7f]/.test(segment)
+}
+
+function decodeSegmentSafe(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
   }
+}
+
+export function maskBarkUrlPreview(rawUrl: string): string {
   let parsed: URL
   try {
-    parsed = new URL(cleaned)
+    parsed = new URL(rawUrl)
+  } catch {
+    return '****'
+  }
+  const segments = parsed.pathname.split('/').filter(Boolean)
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (segments[i].toLowerCase() !== 'push') {
+      const key = segments[i]
+      segments[i] = key.length > 4 ? `****${key.slice(-4)}` : '****'
+      break
+    }
+  }
+  const maskedPath = segments.length > 0 ? `/${segments.join('/')}` : ''
+  return `${parsed.protocol}//${parsed.host}${maskedPath}`
+}
+
+export type BarkInputPreview =
+  | {
+      ok: true
+      value: string
+      masked: string
+      extractedFromExample: boolean
+    }
+  | { ok: false; error: string }
+
+export function parseBarkInputPreview(raw: string): BarkInputPreview {
+  const cleaned = raw.trim()
+  if (!cleaned) {
+    return { ok: false, error: '请输入 Bark 推送地址，或直接粘贴 Bark App 中的 curl 使用示例' }
+  }
+  if (cleaned.length > MAX_BARK_RAW_INPUT_LEN) {
+    return { ok: false, error: `输入内容长度不能超过 ${MAX_BARK_RAW_INPUT_LEN} 个字符` }
+  }
+
+  const isCurl = /^curl\b/i.test(cleaned) || /\s/.test(cleaned)
+  let candidateUrl = cleaned
+  if (isCurl) {
+    const match = cleaned.match(CURL_URL_RE)
+    if (!match) {
+      return { ok: false, error: '未能识别到 http:// 或 https:// Bark 服务地址' }
+    }
+    candidateUrl = match[0].replace(/[,;]+$/, '')
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(candidateUrl)
   } catch {
     return { ok: false, error: 'Bark 推送地址格式无效，请以 https:// 或 http:// 开头' }
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     return { ok: false, error: 'Bark 推送地址必须以 https:// 或 http:// 开头' }
   }
-  const segments = parsed.pathname.split('/').filter(Boolean)
-  const hasDeviceKey = segments.some((seg) => seg !== 'push')
-  if (!hasDeviceKey) {
-    return { ok: false, error: 'Bark 推送地址缺少设备 Key，请按 https://api.day.app/<device_key> 填写' }
+
+  let segments = parsed.pathname.split('/').filter(Boolean)
+  const bodyKey = isCurl ? extractBarkDeviceKeyFromBody(cleaned) : ''
+
+  if (bodyKey && (segments.length === 0 || segments[segments.length - 1].toLowerCase() === 'push')) {
+    if (segments.length > 0 && segments[segments.length - 1].toLowerCase() === 'push') {
+      segments.pop()
+    }
+    segments.push(bodyKey)
+  } else if (
+    segments.length >= 3 &&
+    segments[segments.length - 2].toLowerCase() === 'title' &&
+    segments[segments.length - 1].toLowerCase() === 'body'
+  ) {
+    segments = segments.slice(0, -2)
+  } else if (
+    parsed.host.toLowerCase() === 'api.day.app' &&
+    segments.length >= 2 &&
+    segments[0].toLowerCase() !== 'push' &&
+    !(segments.length === 2 && segments[1].toLowerCase() === 'push')
+  ) {
+    segments = [segments[0]]
+  } else if (isCurl && !/-X\s+POST\b/i.test(cleaned)) {
+    while (
+      segments.length >= 2 &&
+      segments[segments.length - 1].toLowerCase() !== 'push' &&
+      isExampleMessageSegment(segments[segments.length - 1])
+    ) {
+      segments.pop()
+    }
   }
-  return { ok: true, value: cleaned }
+
+  let deviceKey = ''
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (segments[i].toLowerCase() !== 'push') {
+      deviceKey = segments[i]
+      break
+    }
+  }
+  if (!deviceKey) {
+    return {
+      ok: false,
+      error: 'Bark 推送地址缺少设备 Key，请按 https://api.day.app/<device_key> 填写或粘贴完整示例',
+    }
+  }
+
+  const decodedKey = decodeSegmentSafe(deviceKey)
+  if (/[<>{}/?#\s]/.test(deviceKey) || /[<>{}/?#\s]/.test(decodedKey)) {
+    return { ok: false, error: '请将示例中的占位文本替换为真实的 Bark 设备 Key' }
+  }
+
+  const normalized = `${parsed.protocol}//${parsed.host}/${segments.join('/')}`
+  if (normalized.length > MAX_BARK_URL_LEN) {
+    return { ok: false, error: `Bark 推送地址长度不能超过 ${MAX_BARK_URL_LEN} 个字符` }
+  }
+
+  return {
+    ok: true,
+    value: normalized,
+    masked: maskBarkUrlPreview(normalized),
+    extractedFromExample: normalized !== cleaned,
+  }
+}
+
+export function validateBarkUrlInput(
+  raw: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const parsed = parseBarkInputPreview(raw)
+  return parsed.ok ? { ok: true, value: parsed.value } : parsed
+}
+
+export function hasObservedSpark(
+  state: Pick<ScanOfficialState, 'days' | 'kind' | 'label'> | null | undefined,
+): boolean {
+  if (!state) return false
+  const label = state.label?.trim() || null
+  if (label === '无火花') return false
+  if (state.days != null && state.days > 0) return true
+  if (label) return true
+  if (state.kind) return true
+  return false
+}
+
+export function isScanEntryImportable(entry: ScanChatEntry | undefined): boolean {
+  if (!entry) return false
+  if (entry.conversationType === 'group') {
+    return entry.conversationStatus !== 'ambiguous'
+  }
+  return entry.identityStatus !== 'ambiguous'
+}
+
+function compareSparkDaysDesc(aDays: number | null, bDays: number | null): number {
+  const aHas = aDays != null
+  const bHas = bDays != null
+  if (aHas && bHas) return bDays - aDays
+  if (aHas) return -1
+  if (bHas) return 1
+  return 0
+}
+
+export function sortScanReconciliationItems(
+  items: ScanReconciliationItem[],
+  category: ScanReconciliationCategory,
+  existingTitleSet: ReadonlySet<string>,
+): ScanReconciliationItem[] {
+  return items
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => {
+      if (category === 'new') {
+        const aSpark = hasObservedSpark(a.item.current)
+        const bSpark = hasObservedSpark(b.item.current)
+        const aImported = existingTitleSet.has(a.item.title)
+        const bImported = existingTitleSet.has(b.item.title)
+        const aTier = (aSpark ? 0 : 2) + (aImported ? 1 : 0)
+        const bTier = (bSpark ? 0 : 2) + (bImported ? 1 : 0)
+        if (aTier !== bTier) return aTier - bTier
+        if (aSpark && bSpark) {
+          const daysCmp = compareSparkDaysDesc(a.item.current.days, b.item.current.days)
+          if (daysCmp !== 0) return daysCmp
+        }
+        return a.idx - b.idx
+      }
+
+      const aCurSpark = hasObservedSpark(a.item.current)
+      const bCurSpark = hasObservedSpark(b.item.current)
+      const aPrevSpark = hasObservedSpark(a.item.previous)
+      const bPrevSpark = hasObservedSpark(b.item.previous)
+      const aTier = aCurSpark ? 0 : aPrevSpark ? 1 : 2
+      const bTier = bCurSpark ? 0 : bPrevSpark ? 1 : 2
+      if (aTier !== bTier) return aTier - bTier
+      if (aTier < 2) {
+        const aDays = a.item.current.days ?? a.item.previous.days
+        const bDays = b.item.current.days ?? b.item.previous.days
+        const daysCmp = compareSparkDaysDesc(aDays, bDays)
+        if (daysCmp !== 0) return daysCmp
+      }
+      return a.idx - b.idx
+    })
+    .map((entry) => entry.item)
+}
+
+export function filterScanReconciliationItems(
+  items: ScanReconciliationItem[],
+  query: string,
+  entriesByTitle: ReadonlyMap<string, ScanChatEntry>,
+): ScanReconciliationItem[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return items
+  return items.filter((item) => {
+    if (item.title.toLowerCase().includes(q)) return true
+    const entry = entriesByTitle.get(item.title)
+    if (entry?.platformHandle?.toLowerCase().includes(q)) return true
+    if (item.current.label?.toLowerCase().includes(q)) return true
+    if (item.previous.label?.toLowerCase().includes(q)) return true
+    if (item.current.days != null && `${item.current.days}天`.includes(q)) return true
+    if (item.previous.days != null && `${item.previous.days}天`.includes(q)) return true
+    if (item.conversationType === 'group' && (q === '群' || q === '群聊')) return true
+    return false
+  })
+}
+
+export function selectAutoImportSparkTitles(
+  reconEntries: ScanReconciliationItem[],
+  entriesByTitle: ReadonlyMap<string, ScanChatEntry>,
+  existingTitleSet: ReadonlySet<string>,
+): string[] {
+  const picked: string[] = []
+  const seen = new Set<string>()
+  for (const item of reconEntries) {
+    if (item.category !== 'new') continue
+    if (seen.has(item.title) || existingTitleSet.has(item.title)) continue
+    if (!hasObservedSpark(item.current)) continue
+    if (!isScanEntryImportable(entriesByTitle.get(item.title))) continue
+    seen.add(item.title)
+    picked.push(item.title)
+  }
+  return picked
 }
 
 const CORE_EDITABLE_SELECTOR_KEYS = [

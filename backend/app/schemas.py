@@ -671,8 +671,8 @@ class SchedulerSettingsPatch(APIBase):
         ge=FIXED_TIME_GRACE_MINUTES_MIN,
         le=FIXED_TIME_GRACE_MINUTES_MAX,
     )
-    # 传入非空 URL 写入/更新页面配置；传入空字符串清空页面配置（有环境变量则回退 env）。
-    bark_url: str | None = Field(default=None, max_length=255)
+    # 传入非空 URL 或 Bark curl 示例时提取规范化后写入；传入空字符串清空页面配置（有环境变量则回退 env）。
+    bark_url: str | None = Field(default=None, max_length=2048)
 
 
 class SchedulerStatusRead(APIBase):

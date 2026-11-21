@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../../api.ts'
 import {
   getDesktopAutostart,
@@ -15,6 +15,7 @@ import { paginateItems } from '../../lib/pagination.ts'
 import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
 import {
   describeBarkCardState,
+  parseBarkInputPreview,
   parseSchedulerSettingsForm,
   validateBarkUrlInput,
 } from '../../lib/workspace.ts'
@@ -243,6 +244,10 @@ export function SettingsView({
   }
 
   const barkState = describeBarkCardState(schedulerStatus)
+  const barkPreview = useMemo(
+    () => (barkUrlInput.trim() ? parseBarkInputPreview(barkUrlInput) : null),
+    [barkUrlInput],
+  )
 
   async function handleSaveProfile(e: FormEvent) {
     e.preventDefault()
@@ -363,118 +368,190 @@ export function SettingsView({
 
         {tab === 'scheduler' && (
           <div className="fc-settings-grid">
-            {/* Left: Global Scheduler */}
-            <section className="fc-card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <div>
-                  <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>全局自动调度器</h2>
-                  <p className="fc-hint">控制后台自动扫描会话快照与定时触发续火</p>
-                </div>
-                {schedulerStatus && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <StatusPill tone={schedulerStatus.paused ? 'warn' : 'ok'} dot>
-                      {schedulerStatus.paused ? '已全局暂停' : '自动调度运行中'}
-                    </StatusPill>
-                    <Switch
-                      checked={!schedulerStatus.paused}
-                      disabled={togglingPause}
-                      label="启用全局自动调度"
-                      onChange={() => void handleTogglePause()}
-                    />
-                  </div>
-                )}
-              </div>
-
-              <form
-                onSubmit={(e) => void handleSaveScheduler(e)}
-                style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}
-              >
-                <div className="fc-form-grid-2">
-                  <div className="fc-field">
-                    <label className="fc-label" htmlFor="st-scan-hours">
-                      自动会话扫描间隔（1–168 小时）
-                    </label>
-                    <input
-                      id="st-scan-hours"
-                      type="number"
-                      min={1}
-                      max={168}
-                      className="fc-input fc-mono"
-                      value={scanInterval}
-                      onChange={(e) => setScanInterval(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="fc-field">
-                    <label className="fc-label" htmlFor="st-grace">
-                      固定时刻宽限期（0–1440 分钟）
-                    </label>
-                    <input
-                      id="st-grace"
-                      type="number"
-                      min={0}
-                      max={1440}
-                      className="fc-input fc-mono"
-                      value={graceMinutes}
-                      onChange={(e) => setGraceMinutes(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+            {/* Left: Global Scheduler + Desktop Runtime + Backup */}
+            <div className="fc-settings-col">
+              <section className="fc-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <div>
-                    <div style={{ fontWeight: 500 }}>到点强制再发一遍（scheduledAlwaysSend）</div>
-                    <div className="fc-hint">开启后定时排程到点忽略当天已成功记录；默认建议关闭</div>
+                    <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>全局自动调度器</h2>
+                    <p className="fc-hint">控制后台自动扫描会话快照与定时触发续火</p>
                   </div>
-                  <Switch
-                    checked={alwaysSend}
-                    label="到点强制再发一遍"
-                    onChange={setAlwaysSend}
-                  />
+                  {schedulerStatus && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <StatusPill tone={schedulerStatus.paused ? 'warn' : 'ok'} dot>
+                        {schedulerStatus.paused ? '已全局暂停' : '自动调度运行中'}
+                      </StatusPill>
+                      <Switch
+                        checked={!schedulerStatus.paused}
+                        disabled={togglingPause}
+                        label="启用全局自动调度"
+                        onChange={() => void handleTogglePause()}
+                      />
+                    </div>
+                  )}
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <form
+                  onSubmit={(e) => void handleSaveScheduler(e)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}
+                >
+                  <div className="fc-form-grid-2">
+                    <div className="fc-field">
+                      <label className="fc-label" htmlFor="st-scan-hours">
+                        自动会话扫描间隔（1–168 小时）
+                      </label>
+                      <input
+                        id="st-scan-hours"
+                        type="number"
+                        min={1}
+                        max={168}
+                        className="fc-input fc-mono"
+                        value={scanInterval}
+                        onChange={(e) => setScanInterval(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="fc-field">
+                      <label className="fc-label" htmlFor="st-grace">
+                        固定时刻宽限期（0–1440 分钟）
+                      </label>
+                      <input
+                        id="st-grace"
+                        type="number"
+                        min={0}
+                        max={1440}
+                        className="fc-input fc-mono"
+                        value={graceMinutes}
+                        onChange={(e) => setGraceMinutes(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+                    <div>
+                      <div style={{ fontWeight: 500 }}>到点强制再发一遍（scheduledAlwaysSend）</div>
+                      <div className="fc-hint">开启后定时排程到点忽略当天已成功记录；默认建议关闭</div>
+                    </div>
+                    <Switch
+                      checked={alwaysSend}
+                      label="到点强制再发一遍"
+                      onChange={setAlwaysSend}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="submit"
+                      className="fc-btn fc-btn-primary fc-btn-sm"
+                      disabled={savingScheduler}
+                    >
+                      {savingScheduler ? '保存中…' : '保存调度设置'}
+                    </button>
+                  </div>
+                </form>
+
+                {pagedSchedules.total > 0 && (
+                  <>
+                    <div className="fc-kv-list">
+                      {pagedSchedules.pageItems.map((sch) => (
+                        <div key={sch.id} className="fc-kv-row">
+                          <span>
+                            <strong>{accountNames.get(sch.accountId) ?? sch.accountId}</strong> ·{' '}
+                            <span className="fc-mono">{formatDateTime(sch.scheduledAt)}</span>
+                          </span>
+                          <StatusPill tone={SCHEDULE_STATUS_LIGHT_TONES[sch.status]}>
+                            {SCHEDULE_STATUS_LABELS[sch.status]}
+                          </StatusPill>
+                        </div>
+                      ))}
+                    </div>
+                    {pagedSchedules.totalPages > 1 && (
+                      <PaginationBar
+                        compact
+                        page={pagedSchedules.safePage}
+                        totalPages={pagedSchedules.totalPages}
+                        totalItems={pagedSchedules.total}
+                        rangeStart={pagedSchedules.rangeStart}
+                        rangeEnd={pagedSchedules.rangeEnd}
+                        onPageChange={setSchedulePage}
+                      />
+                    )}
+                  </>
+                )}
+              </section>
+
+              {isDesktop && desktopBootstrap && (
+                <section className="fc-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>桌面应用与运行环境</h2>
+                      <p className="fc-hint">关闭窗口将缩进右下角系统托盘，继续准点续火</p>
+                    </div>
+                    {schedulerStatus?.browserRuntime && (
+                      <StatusPill tone={schedulerStatus.browserRuntime.ready ? 'ok' : 'warn'} dot>
+                        {schedulerStatus.browserRuntime.label}
+                      </StatusPill>
+                    )}
+                  </div>
+
+                  <div className="fc-settings-row" style={{ marginTop: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 500 }}>开机自动启动</div>
+                      <div className="fc-hint">登录 Windows 后自动在托盘就绪，避免遗忘开启续火</div>
+                    </div>
+                    <Switch
+                      checked={autostartEnabled}
+                      disabled={togglingAutostart}
+                      label="开机自动启动"
+                      onChange={(next) => void handleToggleAutostart(next)}
+                    />
+                  </div>
+
+                  <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0, flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0, flex: '1 1 200px' }}>
+                      <div style={{ fontWeight: 500 }}>本机数据目录</div>
+                      <div className="fc-hint">
+                        默认跟随安装目录下的 data 文件夹（只读目录时回退系统目录），升级不丢数据
+                      </div>
+                      <div className="fc-hint fc-mono" style={{ wordBreak: 'break-all', marginTop: 2 }}>
+                        {desktopBootstrap.dataDir}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="fc-btn fc-btn-secondary fc-btn-sm"
+                      onClick={() => void openDesktopDataDir()}
+                    >
+                      打开目录
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              <section className="fc-card">
+                <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
+                  <div>
+                    <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>本地配置备份</h2>
+                    <p className="fc-hint">
+                      导出账号窗口、好友契约与全部消息模板（JSON，不含浏览器 Cookie）
+                    </p>
+                  </div>
                   <button
-                    type="submit"
-                    className="fc-btn fc-btn-primary fc-btn-sm"
-                    disabled={savingScheduler}
+                    type="button"
+                    className="fc-btn fc-btn-secondary"
+                    onClick={() =>
+                      void api.downloadBackup().catch((err) =>
+                        setError(err instanceof ApiError ? err.message : '备份导出失败'),
+                      )
+                    }
                   >
-                    {savingScheduler ? '保存中…' : '保存调度设置'}
+                    <DownloadIcon /> 导出 JSON 备份
                   </button>
                 </div>
-              </form>
+              </section>
+            </div>
 
-              {pagedSchedules.total > 0 && (
-                <>
-                  <div className="fc-kv-list">
-                    {pagedSchedules.pageItems.map((sch) => (
-                      <div key={sch.id} className="fc-kv-row">
-                        <span>
-                          <strong>{accountNames.get(sch.accountId) ?? sch.accountId}</strong> ·{' '}
-                          <span className="fc-mono">{formatDateTime(sch.scheduledAt)}</span>
-                        </span>
-                        <StatusPill tone={SCHEDULE_STATUS_LIGHT_TONES[sch.status]}>
-                          {SCHEDULE_STATUS_LABELS[sch.status]}
-                        </StatusPill>
-                      </div>
-                    ))}
-                  </div>
-                  {pagedSchedules.totalPages > 1 && (
-                    <PaginationBar
-                      compact
-                      page={pagedSchedules.safePage}
-                      totalPages={pagedSchedules.totalPages}
-                      totalItems={pagedSchedules.total}
-                      rangeStart={pagedSchedules.rangeStart}
-                      rangeEnd={pagedSchedules.rangeEnd}
-                      onPageChange={setSchedulePage}
-                    />
-                  )}
-                </>
-              )}
-            </section>
-
-            {/* Right: Appearance + Bark Notification + Backup */}
+            {/* Right: Appearance + Bark Notification */}
             <div className="fc-settings-col">
               <section className="fc-card">
                 <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
@@ -518,112 +595,82 @@ export function SettingsView({
                 </div>
 
                 {user.isSuperuser && (
-                  <form
-                    onSubmit={(e) => void handleSaveBark(e)}
-                    className="fc-bark-form"
-                  >
-                    <div className="fc-field" style={{ flex: 1 }}>
-                      <label className="fc-label" htmlFor="st-bark-url">
-                        Bark 推送地址（保存后即热生效，仅脱敏回显）
-                      </label>
-                      <input
-                        id="st-bark-url"
-                        type="password"
-                        autoComplete="off"
-                        className="fc-input fc-mono"
-                        placeholder="https://api.day.app/<你的设备Key>"
-                        value={barkUrlInput}
-                        onChange={(e) => setBarkUrlInput(e.target.value)}
-                      />
-                    </div>
-                    <div className="fc-bark-actions">
-                      <button
-                        type="submit"
-                        className="fc-btn fc-btn-primary fc-btn-sm"
-                        disabled={savingBark || !barkUrlInput.trim()}
-                      >
-                        {savingBark ? '保存中…' : '保存地址'}
-                      </button>
-                      {barkState.canClearOverride && (
-                        <button
-                          type="button"
-                          className="fc-btn fc-btn-secondary fc-btn-sm"
-                          disabled={savingBark}
-                          onClick={() => void handleClearBark()}
-                        >
-                          清空页面配置
-                        </button>
-                      )}
-                    </div>
-                  </form>
-                )}
-              </section>
+                  <>
+                    <details className="fc-bark-guide">
+                      <summary className="fc-bark-guide-summary">
+                        如何获取 Bark 推送地址？（支持直接粘贴使用示例）
+                      </summary>
+                      <ol className="fc-bark-guide-steps">
+                        <li>在 iPhone App Store 安装并打开 <strong>Bark</strong>，允许通知权限。</li>
+                        <li>
+                          在 Bark 首页「使用示例」卡片中任选 <code>GET</code> / <code>POST</code> /{' '}
+                          <code>JSON</code>，直接点<strong>「复制」</strong>。
+                        </li>
+                        <li>
+                          粘贴到下方输入框，系统会自动提取服务地址与设备 Key；点击「保存地址」后可点「发送测试推送」验证。
+                        </li>
+                      </ol>
+                    </details>
 
-              {isDesktop && desktopBootstrap && (
-                <section className="fc-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <div>
-                      <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>桌面应用与运行环境</h2>
-                      <p className="fc-hint">关闭窗口将缩进右下角系统托盘，继续准点续火</p>
-                    </div>
-                    {schedulerStatus?.browserRuntime && (
-                      <StatusPill tone={schedulerStatus.browserRuntime.ready ? 'ok' : 'warn'} dot>
-                        {schedulerStatus.browserRuntime.label}
-                      </StatusPill>
-                    )}
-                  </div>
-
-                  <div className="fc-settings-row" style={{ marginTop: 8 }}>
-                    <div>
-                      <div style={{ fontWeight: 500 }}>开机自动启动</div>
-                      <div className="fc-hint">登录 Windows 后自动在托盘就绪，避免遗忘开启续火</div>
-                    </div>
-                    <Switch
-                      checked={autostartEnabled}
-                      disabled={togglingAutostart}
-                      label="开机自动启动"
-                      onChange={(next) => void handleToggleAutostart(next)}
-                    />
-                  </div>
-
-                  <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0, flexWrap: 'wrap' }}>
-                    <div style={{ minWidth: 0, flex: '1 1 200px' }}>
-                      <div style={{ fontWeight: 500 }}>本机数据目录</div>
-                      <div className="fc-hint fc-mono" style={{ wordBreak: 'break-all' }}>
-                        {desktopBootstrap.dataDir}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="fc-btn fc-btn-secondary fc-btn-sm"
-                      onClick={() => void openDesktopDataDir()}
+                    <form
+                      onSubmit={(e) => void handleSaveBark(e)}
+                      className="fc-bark-form"
                     >
-                      打开目录
-                    </button>
-                  </div>
-                </section>
-              )}
-
-              <section className="fc-card">
-                <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
-                  <div>
-                    <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>本地配置备份</h2>
-                    <p className="fc-hint">
-                      导出账号窗口、好友契约与全部消息模板（JSON，不含浏览器 Cookie）
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="fc-btn fc-btn-secondary"
-                    onClick={() =>
-                      void api.downloadBackup().catch((err) =>
-                        setError(err instanceof ApiError ? err.message : '备份导出失败'),
-                      )
-                    }
-                  >
-                    <DownloadIcon /> 导出 JSON 备份
-                  </button>
-                </div>
+                      <div className="fc-field" style={{ flex: 1 }}>
+                        <label className="fc-label" htmlFor="st-bark-url">
+                          Bark 推送地址或使用示例（保存后即热生效，仅脱敏回显）
+                        </label>
+                        <textarea
+                          id="st-bark-url"
+                          rows={3}
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="fc-textarea fc-mono fc-bark-textarea"
+                          placeholder={'https://api.day.app/<你的设备Key>\n或直接粘贴 Bark 首页复制的 curl 示例（GET / POST / JSON）'}
+                          value={barkUrlInput}
+                          onChange={(e) => setBarkUrlInput(e.target.value)}
+                        />
+                        {barkPreview && (
+                          <div
+                            className={`fc-bark-preview ${barkPreview.ok ? 'is-ok' : 'is-err'}`}
+                          >
+                            {barkPreview.ok ? (
+                              <>
+                                <span>
+                                  {barkPreview.extractedFromExample
+                                    ? '已自动识别为：'
+                                    : '识别地址：'}
+                                </span>
+                                <code className="fc-mono">{barkPreview.masked}</code>
+                              </>
+                            ) : (
+                              <span>{barkPreview.error}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="fc-bark-actions">
+                        <button
+                          type="submit"
+                          className="fc-btn fc-btn-primary fc-btn-sm"
+                          disabled={savingBark || !barkUrlInput.trim()}
+                        >
+                          {savingBark ? '保存中…' : '保存地址'}
+                        </button>
+                        {barkState.canClearOverride && (
+                          <button
+                            type="button"
+                            className="fc-btn fc-btn-secondary fc-btn-sm"
+                            disabled={savingBark}
+                            onClick={() => void handleClearBark()}
+                          >
+                            清空页面配置
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  </>
+                )}
               </section>
             </div>
           </div>

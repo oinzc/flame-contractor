@@ -1191,6 +1191,86 @@
   flex-wrap: wrap;
 }
 
+.fc-bark-guide {
+  margin-top: 10px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  padding: 8px 11px;
+  font-size: 12px;
+  color: var(--body);
+}
+
+.fc-bark-guide-summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--ink);
+  user-select: none;
+}
+
+.fc-bark-guide-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.fc-bark-guide-steps code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+}
+
+.fc-bark-textarea {
+  min-height: 68px;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.fc-bark-preview {
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  word-break: break-all;
+}
+
+.fc-bark-preview.is-ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+.fc-bark-preview.is-err {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+  color: var(--err);
+}
+
+.fc-scan-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fc-scan-search-input {
+  flex: 1;
+  height: 32px;
+  font-size: 12.5px;
+}
+
 @media (max-width: 960px) {
   .fc-settings-grid {
     grid-template-columns: 1fr;

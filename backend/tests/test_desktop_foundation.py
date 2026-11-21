@@ -114,6 +114,42 @@ def test_web_mode_ignores_desktop_token(tmp_path: Path):
 
 def test_bark_url_validation_and_masking():
     assert validate_bark_url("https://api.day.app/AbCdEf123456") == "https://api.day.app/AbCdEf123456"
+    assert validate_bark_url("https://api.day.app/AbCdEf123456/") == "https://api.day.app/AbCdEf123456"
+    assert (
+        validate_bark_url(
+            "curl -X GET https://api.day.app/ExampleDeviceKey123456/title/body?group=example&ttl=600"
+        )
+        == "https://api.day.app/ExampleDeviceKey123456"
+    )
+    assert (
+        validate_bark_url(
+            "curl -X GET https://bark.example.com/prefix/ExampleDeviceKey123456/title/body?group=example&ttl=600"
+        )
+        == "https://bark.example.com/prefix/ExampleDeviceKey123456"
+    )
+    assert (
+        validate_bark_url(
+            'curl -X POST https://api.day.app/ExampleDeviceKey123456 \\\n  -d "title=title" \\\n  -d "body=body" \\\n  -d "group=example" \\\n  -d "ttl=600"'
+        )
+        == "https://api.day.app/ExampleDeviceKey123456"
+    )
+    assert (
+        validate_bark_url(
+            'curl -X POST https://api.day.app/push \\\n  -H "Content-Type: application/json" \\\n  -d \'{\n    "device_key": "ExampleDeviceKey123456",\n    "title": "title",\n    "body": "body",\n    "group": "example",\n    "ttl": 600\n  }\''
+        )
+        == "https://api.day.app/ExampleDeviceKey123456"
+    )
+    assert (
+        validate_bark_url(
+            'curl -X POST https://bark.example.com/sub/push -H "Content-Type: application/json" -d \'{"device_key": "ExampleDeviceKey123456"}\''
+        )
+        == "https://bark.example.com/sub/ExampleDeviceKey123456"
+    )
+    assert (
+        validate_bark_url("https://api.day.app/ExampleDeviceKey123456/这里改成你自己的推送内容")
+        == "https://api.day.app/ExampleDeviceKey123456"
+    )
+
     assert mask_bark_url("https://api.day.app/AbCdEf123456") == "https://api.day.app/****3456"
     assert mask_bark_url("https://bark.example.com/custom/SecretKey99/push") == (
         "https://bark.example.com/custom/****ey99/push"
@@ -121,7 +157,15 @@ def test_bark_url_validation_and_masking():
     assert mask_bark_url("https://api.day.app/abc") == "https://api.day.app/****"
     assert mask_bark_url(None) is None
 
-    for bad in ("ftp://api.day.app/key", "https://api.day.app/", "not-a-url", "https://api.day.app/push"):
+    for bad in (
+        "ftp://api.day.app/key",
+        "https://api.day.app/",
+        "not-a-url",
+        "https://api.day.app/push",
+        "https://api.day.app/<你的设备Key>",
+        'curl -X POST https://api.day.app/push -d \'{"title": "only"}\'',
+        "https://api.day.app/" + ("x" * 260),
+    ):
         try:
             validate_bark_url(bad)
         except ValueError:
@@ -175,6 +219,23 @@ def test_bark_url_editable_in_settings_persists_masks_and_excludes_backup(tmp_pa
             json={"barkUrl": "https://api.day.app/"},
         )
         assert bad.status_code == 422
+
+        # 支持直接粘贴 Bark 官方 JSON curl 使用示例，保存后自动提取、热更新且脱敏
+        json_curl_key = "JsonExampleDeviceKey8888"
+        json_curl = (
+            'curl -X POST https://api.day.app/push \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            f'  -d \'{{"device_key": "{json_curl_key}", "title": "title", "body": "body"}}\''
+        )
+        saved_curl = client.patch(
+            "/api/scheduler/settings",
+            headers=admin_headers,
+            json={"barkUrl": json_curl},
+        )
+        assert saved_curl.status_code == 200
+        assert saved_curl.json()["barkMaskedUrl"] == "https://api.day.app/****8888"
+        assert app.state.scheduler._notifier.base_url == f"https://api.day.app/{json_curl_key}"
+        assert json_curl_key not in saved_curl.text
 
         # 保存后热生效且脱敏，绝不泄露完整 device_key
         saved = client.patch(
@@ -266,6 +327,9 @@ def test_desktop_packaging_config_and_workflow_are_consistent():
     workflow_raw = (repo_root / ".github" / "workflows" / "release-desktop.yml").read_text(
         encoding="utf-8"
     )
+    main_rs = (repo_root / "desktop" / "src-tauri" / "src" / "main.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert tauri_conf["version"] == desktop_pkg["version"] == frontend_pkg["version"] == Settings().version
     assert tauri_conf["bundle"]["targets"] == ["nsis"]
@@ -275,3 +339,8 @@ def test_desktop_packaging_config_and_workflow_are_consistent():
     assert "scripts/build_desktop_backend.py" in workflow_raw
     assert "FLAME_DESKTOP_MODE" in workflow_raw
     assert "127.0.0.1" in workflow_raw
+    # 桌面端数据目录优先跟随安装目录 data，不可写时回退 LOCALAPPDATA，支持 FLAME_DATA_DIR 覆盖。
+    assert "FLAME_DATA_DIR" in main_rs
+    assert "current_exe" in main_rs
+    assert "is_dir_writable" in main_rs
+    assert "LOCALAPPDATA" in main_rs

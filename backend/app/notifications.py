@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -25,6 +27,14 @@ DEFAULT_TIMEOUT = 6.0
 VALID_LEVELS = {"active", "timeSensitive", "critical", "passive"}
 DEFAULT_LEVEL = "active"
 MAX_BARK_URL_LEN = 255
+MAX_BARK_RAW_INPUT_LEN = 2048
+
+_CURL_URL_RE = re.compile(r"https?://[^\s'\"`\\]+", re.IGNORECASE)
+_JSON_DEVICE_KEY_RE = re.compile(
+    r"""(?:\\?["'])device_key(?:\\?["'])\s*:\s*(?:\\?["'])([^"'\\]+)(?:\\?["'])"""
+)
+_FORM_DEVICE_KEY_RE = re.compile(r"""(?:^|[&\s'"?])device_key=([^&\s'"]+)""")
+_PERCENT_ENCODED_RE = re.compile(r"%[0-9a-fA-F]{2}")
 
 Sender = Callable[[str, str], Awaitable[None]]
 
@@ -34,24 +44,111 @@ def _extract_bark_device_key(base_url: str) -> str:
     path = urlsplit(base_url).path
     segments = [seg for seg in path.split("/") if seg]
     for segment in reversed(segments):
-        if segment != "push":
+        if segment.lower() != "push":
             return segment
     return ""
 
 
-def validate_bark_url(raw_url: str) -> str:
-    """校验 Bark 推送地址格式并返回规范化后的字符串；非法则抛 ValueError。"""
-    cleaned = (raw_url or "").strip()
+def _extract_device_key_from_body(raw_input: str) -> str:
+    """从 curl 示例的 JSON / 表单请求体中提取 device_key。"""
+    start = raw_input.find("{")
+    end = raw_input.rfind("}")
+    if start != -1 and end > start:
+        candidate = raw_input[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw_key = parsed.get("device_key")
+            if isinstance(raw_key, str) and raw_key.strip():
+                return raw_key.strip()
+
+    json_match = _JSON_DEVICE_KEY_RE.search(raw_input)
+    if json_match:
+        return json_match.group(1).strip()
+
+    form_match = _FORM_DEVICE_KEY_RE.search(raw_input)
+    if form_match:
+        return form_match.group(1).strip()
+    return ""
+
+
+def _is_example_message_segment(segment: str) -> bool:
+    """判断路径末段是否为 Bark 示例中的占位文本/中文测试内容。"""
+    if segment.lower() in {"title", "body"}:
+        return True
+    if _PERCENT_ENCODED_RE.search(segment):
+        return True
+    return any(ord(ch) > 127 for ch in segment)
+
+
+def normalize_bark_url(raw_input: str) -> str:
+    """解析并规范化 Bark 推送地址（兼容纯 URL 与 Bark 官方 GET / POST / JSON curl 示例）。"""
+    cleaned = (raw_input or "").strip()
     if not cleaned:
         raise ValueError("Bark 推送地址不能为空")
-    if len(cleaned) > MAX_BARK_URL_LEN:
-        raise ValueError(f"Bark 推送地址长度不能超过 {MAX_BARK_URL_LEN} 个字符")
-    parts = urlsplit(cleaned)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    if len(cleaned) > MAX_BARK_RAW_INPUT_LEN:
+        raise ValueError(f"输入内容长度不能超过 {MAX_BARK_RAW_INPUT_LEN} 个字符")
+
+    is_curl = cleaned.lower().startswith("curl") or any(ch.isspace() for ch in cleaned)
+    if is_curl:
+        url_match = _CURL_URL_RE.search(cleaned)
+        if not url_match:
+            raise ValueError("未能从粘贴内容中识别出 http:// 或 https:// Bark 服务地址")
+        candidate_url = url_match.group(0).rstrip(",;")
+    else:
+        candidate_url = cleaned
+
+    parts = urlsplit(candidate_url)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
         raise ValueError("Bark 推送地址必须以 http:// 或 https:// 开头并包含合法域名")
-    if not _extract_bark_device_key(cleaned):
+
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc
+    segments = [seg for seg in parts.path.split("/") if seg]
+    body_key = _extract_device_key_from_body(cleaned) if is_curl else ""
+
+    if body_key and (not segments or segments[-1].lower() == "push"):
+        if segments and segments[-1].lower() == "push":
+            segments.pop()
+        segments.append(body_key)
+    else:
+        if (
+            len(segments) >= 3
+            and segments[-2].lower() == "title"
+            and segments[-1].lower() == "body"
+        ):
+            segments = segments[:-2]
+        elif (
+            netloc.lower() == "api.day.app"
+            and len(segments) >= 2
+            and segments[0].lower() != "push"
+            and not (len(segments) == 2 and segments[1].lower() == "push")
+        ):
+            segments = [segments[0]]
+        elif is_curl and not re.search(r"-X\s+POST\b", cleaned, re.IGNORECASE):
+            while len(segments) >= 2 and segments[-1].lower() != "push" and _is_example_message_segment(segments[-1]):
+                segments.pop()
+
+    if not segments:
         raise ValueError("Bark 推送地址缺少设备 Key 路径段，请按 https://api.day.app/<device_key> 格式填写")
-    return cleaned
+
+    normalized_path = "/" + "/".join(segments)
+    normalized = urlunsplit((scheme, netloc, normalized_path, "", ""))
+    device_key = _extract_bark_device_key(normalized)
+    if not device_key:
+        raise ValueError("Bark 推送地址缺少设备 Key 路径段，请按 https://api.day.app/<device_key> 格式填写")
+    if any(ch in device_key for ch in "<>{}") or any(ch.isspace() for ch in device_key):
+        raise ValueError("请将示例中的占位文本替换为真实的 Bark 设备 Key")
+    if len(normalized) > MAX_BARK_URL_LEN:
+        raise ValueError(f"Bark 推送地址长度不能超过 {MAX_BARK_URL_LEN} 个字符")
+    return normalized
+
+
+def validate_bark_url(raw_url: str) -> str:
+    """校验并规范化 Bark 推送地址；支持纯 URL 与 Bark GET / POST / JSON 示例。"""
+    return normalize_bark_url(raw_url)
 
 
 def mask_bark_url(raw_url: str | None) -> str | None:

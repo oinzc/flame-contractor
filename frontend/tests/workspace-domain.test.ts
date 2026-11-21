@@ -7,13 +7,18 @@ import {
   collectAccountReviewItems,
   deriveTargetDayMap,
   describeBarkCardState,
+  filterScanReconciliationItems,
+  hasObservedSpark,
   mergeAccountSendPreview,
+  parseBarkInputPreview,
   parseSchedulerSettingsForm,
   parseSelectorOverridesDraft,
   pickDefaultScreenshotAttempt,
   resolveDrawerOnViewChange,
+  selectAutoImportSparkTitles,
   shouldFinalizeRecoveredScan,
   shouldReloadOpenJobDetail,
+  sortScanReconciliationItems,
   validateBarkUrlInput,
 } from '../src/lib/workspace.ts'
 import { formatAttemptStage } from '../src/lib/format.ts'
@@ -430,10 +435,176 @@ test('describeBarkCardState reflects configured status, source, masked preview a
     ok: true,
     value: 'https://api.day.app/MyDeviceKey123',
   })
+  assert.deepEqual(
+    validateBarkUrlInput(
+      'curl -X GET https://api.day.app/ExampleDeviceKey123456/title/body?group=example&ttl=600',
+    ),
+    {
+      ok: true,
+      value: 'https://api.day.app/ExampleDeviceKey123456',
+    },
+  )
+  assert.deepEqual(
+    validateBarkUrlInput(
+      'curl -X POST https://api.day.app/ExampleDeviceKey123456 \\\n  -d "title=title" \\\n  -d "body=body"',
+    ),
+    {
+      ok: true,
+      value: 'https://api.day.app/ExampleDeviceKey123456',
+    },
+  )
+  const jsonExample = [
+    'curl -X POST https://api.day.app/push \\',
+    '  -H "Content-Type: application/json" \\',
+    '  -d \'{',
+    '    "device_key": "ExampleDeviceKey123456",',
+    '    "title": "title",',
+    '    "body": "body",',
+    '    "group": "example",',
+    '    "ttl": 600',
+    '  }\'',
+  ].join('\n')
+  assert.deepEqual(validateBarkUrlInput(jsonExample), {
+    ok: true,
+    value: 'https://api.day.app/ExampleDeviceKey123456',
+  })
+  const preview = parseBarkInputPreview(jsonExample)
+  assert.equal(preview.ok, true)
+  if (preview.ok) {
+    assert.equal(preview.masked, 'https://api.day.app/****3456')
+    assert.equal(preview.extractedFromExample, true)
+    assert.ok(!preview.masked.includes('ExampleDeviceKey123456'))
+  }
+  assert.deepEqual(
+    validateBarkUrlInput('https://api.day.app/ExampleDeviceKey123456/这里改成你自己的推送内容'),
+    {
+      ok: true,
+      value: 'https://api.day.app/ExampleDeviceKey123456',
+    },
+  )
   assert.equal(validateBarkUrlInput('').ok, false)
   assert.equal(validateBarkUrlInput('ftp://api.day.app/abc').ok, false)
   assert.equal(validateBarkUrlInput('https://api.day.app/').ok, false)
   assert.equal(validateBarkUrlInput('https://api.day.app/push').ok, false)
+  assert.equal(validateBarkUrlInput('https://api.day.app/<你的设备Key>').ok, false)
+  assert.equal(
+    validateBarkUrlInput('curl -X POST https://api.day.app/push -d \'{"title": "missing"}\'').ok,
+    false,
+  )
+})
+
+test('scan reconciliation sorting, filtering and auto-selection prioritize new spark chats', () => {
+  const emptyPrev = { days: null, kind: null, label: null, scannedAt: null }
+  assert.equal(hasObservedSpark({ days: 88, kind: 'normal', label: '88天' }), true)
+  assert.equal(hasObservedSpark({ days: null, kind: 'normal', label: '3 天后消失' }), true)
+  assert.equal(hasObservedSpark({ days: null, kind: null, label: '无火花' }), false)
+  assert.equal(hasObservedSpark(emptyPrev), false)
+
+  const reconItems = [
+    {
+      targetId: null,
+      title: '普通无火花A',
+      conversationType: 'user' as const,
+      category: 'new' as const,
+      previous: emptyPrev,
+      current: { days: null, kind: null, label: '无火花', scannedAt: null },
+    },
+    {
+      targetId: null,
+      title: '已导入高火花',
+      conversationType: 'user' as const,
+      category: 'new' as const,
+      previous: emptyPrev,
+      current: { days: 500, kind: 'normal', label: '500天', scannedAt: null },
+    },
+    {
+      targetId: null,
+      title: '新倒计时好友',
+      conversationType: 'user' as const,
+      category: 'new' as const,
+      previous: emptyPrev,
+      current: { days: null, kind: 'normal', label: '2 天后消失', scannedAt: null },
+    },
+    {
+      targetId: null,
+      title: '新火花朋友B',
+      conversationType: 'group' as const,
+      category: 'new' as const,
+      previous: emptyPrev,
+      current: { days: 120, kind: 'normal', label: '120天', scannedAt: null },
+    },
+    {
+      targetId: null,
+      title: '同名冲突火花',
+      conversationType: 'user' as const,
+      category: 'new' as const,
+      previous: emptyPrev,
+      current: { days: 300, kind: 'normal', label: '300天', scannedAt: null },
+    },
+  ]
+
+  const mkEntry = (
+    title: string,
+    opts?: {
+      conversationType?: 'user' | 'group'
+      identityStatus?: 'bound' | 'ambiguous' | 'not_observed'
+      conversationStatus?: 'bound' | 'ambiguous' | 'not_observed'
+      platformHandle?: string | null
+    },
+  ) => ({
+    title,
+    platformUserId: 'u-' + title,
+    platformHandle: opts?.platformHandle ?? null,
+    platformConversationId: opts?.conversationType === 'group' ? 'c-' + title : null,
+    conversationType: opts?.conversationType ?? ('user' as const),
+    identityStatus: opts?.identityStatus ?? ('bound' as const),
+    identitySource: null,
+    identityCandidateCount: 1,
+    identityDetail: null,
+    conversationStatus: opts?.conversationStatus ?? ('bound' as const),
+    conversationCandidateCount: 1,
+    conversationDetail: null,
+    preview: '',
+    streakDays: null,
+    streakKind: null,
+    streakLabel: null,
+  })
+
+  const entriesByTitle = new Map([
+    ['普通无火花A', mkEntry('普通无火花A')],
+    ['已导入高火花', mkEntry('已导入高火花')],
+    ['新倒计时好友', mkEntry('新倒计时好友', { platformHandle: 'dy_handle_99' })],
+    ['新火花朋友B', mkEntry('新火花朋友B', { conversationType: 'group' })],
+    ['同名冲突火花', mkEntry('同名冲突火花', { identityStatus: 'ambiguous' })],
+  ])
+  const existingTitles = new Set(['已导入高火花'])
+
+  // 排序：未导入有火花(数字降序 -> 无数字标签) -> 已导入有火花 -> 无火花
+  const sorted = sortScanReconciliationItems(reconItems, 'new', existingTitles)
+  assert.deepEqual(
+    sorted.map((i) => i.title),
+    ['同名冲突火花', '新火花朋友B', '新倒计时好友', '已导入高火花', '普通无火花A'],
+  )
+
+  // 搜索：匹配昵称、抖音号、官方标签与群聊筛选
+  assert.deepEqual(
+    filterScanReconciliationItems(sorted, 'dy_handle_99', entriesByTitle).map((i) => i.title),
+    ['新倒计时好友'],
+  )
+  assert.deepEqual(
+    filterScanReconciliationItems(sorted, '天后消失', entriesByTitle).map((i) => i.title),
+    ['新倒计时好友'],
+  )
+  assert.deepEqual(
+    filterScanReconciliationItems(sorted, '群', entriesByTitle).map((i) => i.title),
+    ['新火花朋友B'],
+  )
+
+  // 自动勾选：只选未导入、有火花且无同名冲突的条目
+  assert.deepEqual(
+    selectAutoImportSparkTitles(reconItems, entriesByTitle, existingTitles),
+    ['新倒计时好友', '新火花朋友B'],
+  )
 })
 
 test('parseSelectorOverridesDraft extracts changed keys and rejects invalid types or CHAT_URL', () => {
