@@ -16,6 +16,7 @@ import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.ui.history.HistoryRoute
 import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
 import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
 import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
@@ -46,7 +47,11 @@ class MainActivity : AppCompatActivity() {
 
                 LaunchedEffect(urgentSignal) {
                     if (urgentSignal != null) {
-                        selectedTab = MainTab.TODAY
+                        selectedTab = if (urgentSignal.category == "SPARK_DETERIORATING") {
+                            MainTab.TARGETS
+                        } else {
+                            MainTab.TODAY
+                        }
                     }
                 }
 
@@ -86,6 +91,12 @@ class MainActivity : AppCompatActivity() {
                     templatesContent = {
                         TemplatesRoute(
                             database = container.database,
+                        )
+                    },
+                    historyContent = {
+                        HistoryRoute(
+                            database = container.database,
+                            onNavigateToTodayReview = { selectedTab = MainTab.TODAY },
                         )
                     },
                     settingsContent = {

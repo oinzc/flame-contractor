@@ -20,10 +20,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
@@ -65,6 +67,11 @@ enum class MainTab(
         selectedIcon = Icons.Filled.Forum,
         unselectedIcon = Icons.Outlined.Forum,
     ),
+    HISTORY(
+        label = "记录",
+        selectedIcon = Icons.Filled.History,
+        unselectedIcon = Icons.Outlined.History,
+    ),
     SETTINGS(
         label = "设置",
         selectedIcon = Icons.Filled.Settings,
@@ -74,7 +81,7 @@ enum class MainTab(
 
 /**
  * 手机 / 平板自适应导航外壳：
- * - `< 600.dp` 采用底部 4 栏 [NavigationBar]；
+ * - `< 600.dp` 采用底部 5 栏 [NavigationBar]；
  * - `>= 600.dp` 采用左侧常驻 [NavigationRail]。
  */
 @Composable
@@ -84,6 +91,7 @@ fun AdaptiveNavShell(
     todayContent: @Composable () -> Unit,
     targetsContent: @Composable () -> Unit,
     templatesContent: @Composable () -> Unit,
+    historyContent: @Composable () -> Unit,
     settingsContent: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     todayAlertBadge: Boolean = false,
@@ -93,6 +101,7 @@ fun AdaptiveNavShell(
             MainTab.TODAY -> todayContent()
             MainTab.TARGETS -> targetsContent()
             MainTab.TEMPLATES -> templatesContent()
+            MainTab.HISTORY -> historyContent()
             MainTab.SETTINGS -> settingsContent()
         }
     }
@@ -143,7 +152,7 @@ fun AdaptiveNavShell(
                                     showBadge = tab == MainTab.TODAY && todayAlertBadge,
                                 )
                             },
-                            label = { Text(text = tab.label) },
+                            label = { Text(text = tab.label, maxLines = 1) },
                             alwaysShowLabel = true,
                         )
                     }
@@ -184,7 +193,8 @@ fun AdaptiveNavShell(
                                         showBadge = tab == MainTab.TODAY && todayAlertBadge,
                                     )
                                 },
-                                label = { Text(text = tab.label) },
+                                label = { Text(text = tab.label, maxLines = 1) },
+                                alwaysShowLabel = true,
                             )
                         }
                     }
