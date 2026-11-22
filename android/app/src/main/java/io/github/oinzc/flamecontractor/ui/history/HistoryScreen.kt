@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -37,10 +38,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -52,9 +57,11 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -78,6 +85,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -98,6 +106,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -202,115 +211,285 @@ fun HistoryScreen(
     onNavigateToTodayReview: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var searchQuery by remember { mutableStateOf("") }
+    val trimmedQuery = searchQuery.trim()
+    val displayJobs = remember(state.filteredJobs, trimmedQuery) {
+        if (trimmedQuery.isEmpty()) {
+            state.filteredJobs
+        } else {
+            val q = trimmedQuery.lowercase(Locale.ROOT)
+            state.filteredJobs.filter { item ->
+                item.targetName.lowercase(Locale.ROOT).contains(q) ||
+                    item.job.businessDate.contains(trimmedQuery) ||
+                    (item.job.summaryDetail?.lowercase(Locale.ROOT)?.contains(q) == true)
+            }
+        }
+    }
+    val groupedByDate = remember(displayJobs) {
+        displayJobs.groupBy { it.job.businessDate }.entries.toList()
+    }
+    var userToggledDates by remember(state.windowDays, state.selectedDate, state.statusFilter, trimmedQuery) {
+        mutableStateOf<Map<String, Boolean>>(emptyMap())
+    }
+    var expandAllOverride by remember(state.windowDays, state.selectedDate, state.statusFilter, trimmedQuery) {
+        mutableStateOf<Boolean?>(null)
+    }
+    var showAllForDates by remember(state.windowDays, state.selectedDate, state.statusFilter, trimmedQuery) {
+        mutableStateOf<Set<String>>(emptySet())
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { innerPadding ->
-        LazyColumn(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item(key = "header") {
-                HistoryHeaderSection(
-                    windowDays = state.windowDays,
-                    today = state.today,
-                    isExportingCsv = isExportingCsv,
-                    onSelectWindowDays = onSelectWindowDays,
-                    onExportCsvClick = onExportCsvClick,
-                )
-            }
+            val isWide = maxWidth >= 600.dp
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item(key = "header") {
+                    HistoryHeaderSection(
+                        windowDays = state.windowDays,
+                        today = state.today,
+                        isExportingCsv = isExportingCsv,
+                        onSelectWindowDays = onSelectWindowDays,
+                        onExportCsvClick = onExportCsvClick,
+                    )
+                }
 
-            item(key = "kpi") {
-                HistoryKpiGrid(
-                    summary = state.summary,
-                    onNavigateToTodayReview = onNavigateToTodayReview,
-                )
-            }
+                item(key = "kpi") {
+                    HistoryKpiGrid(
+                        summary = state.summary,
+                        onNavigateToTodayReview = onNavigateToTodayReview,
+                    )
+                }
 
-            item(key = "chart") {
-                DailyTrendChartCard(
-                    summary = state.summary,
-                    selectedDate = state.selectedDate,
-                    onToggleDate = onToggleDate,
-                    onClearDateFilter = onClearDateFilter,
-                )
-            }
+                item(key = "chart") {
+                    DailyTrendChartCard(
+                        summary = state.summary,
+                        selectedDate = state.selectedDate,
+                        onToggleDate = onToggleDate,
+                        onClearDateFilter = onClearDateFilter,
+                    )
+                }
 
-            item(key = "filters") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = if (state.selectedDate != null) {
-                                "执行明细 · ${state.selectedDate}"
-                            } else {
-                                "近 ${state.windowDays} 天执行明细"
+                item(key = "filters") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (state.selectedDate != null) {
+                                    "执行明细 · ${state.selectedDate}"
+                                } else {
+                                    "近 ${state.windowDays} 天执行明细"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = "共 ${displayJobs.size} 条 · 点击查看时间线",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (groupedByDate.size > 1) {
+                                    val showAllGroups = expandAllOverride == true
+                                    TextButton(
+                                        onClick = {
+                                            userToggledDates = emptyMap()
+                                            expandAllOverride = if (showAllGroups) null else true
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    ) {
+                                        Text(
+                                            text = if (showAllGroups) "仅看最新" else "展开全部日期",
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(HistoryStatusFilter.entries) { filter ->
+                                val count = state.filterCounts[filter] ?: 0
+                                FilterChip(
+                                    selected = state.statusFilter == filter,
+                                    onClick = { onSelectStatusFilter(filter) },
+                                    label = { Text("${filter.label} ($count)") },
+                                )
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("按好友名、日期或摘要筛选明细…") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Search,
+                                    contentDescription = null,
+                                )
                             },
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            text = "共 ${state.filteredJobs.size} 条 · 点击查看时间线",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Close,
+                                            contentDescription = "清除搜索",
+                                        )
+                                    }
+                                }
+                            },
                         )
                     }
+                }
 
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(HistoryStatusFilter.entries) { filter ->
-                            val count = state.filterCounts[filter] ?: 0
-                            FilterChip(
-                                selected = state.statusFilter == filter,
-                                onClick = { onSelectStatusFilter(filter) },
-                                label = { Text("${filter.label} ($count)") },
+                if (state.isLoading) {
+                    item(key = "loading") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 28.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                } else if (displayJobs.isEmpty()) {
+                    item(key = "empty") {
+                        EmptyHistoryCard(
+                            windowDays = state.windowDays,
+                            hasAnyJobsInWindow = state.totalJobsInWindow > 0,
+                            hasActiveFilter = state.selectedDate != null ||
+                                state.statusFilter != HistoryStatusFilter.ALL ||
+                                trimmedQuery.isNotEmpty(),
+                            onClearAllFilters = {
+                                searchQuery = ""
+                                onClearAllFilters()
+                            },
+                        )
+                    }
+                } else {
+                    groupedByDate.forEachIndexed { groupIndex, entry ->
+                        val dateKey = entry.key
+                        val groupItems = entry.value
+                        val defaultExpanded = state.selectedDate != null ||
+                            state.statusFilter != HistoryStatusFilter.ALL ||
+                            trimmedQuery.isNotEmpty() ||
+                            groupIndex == 0
+                        val isExpanded = userToggledDates[dateKey] ?: expandAllOverride ?: defaultExpanded
+                        val showAllForDate = dateKey in showAllForDates
+
+                        item(key = "date_hdr_$dateKey") {
+                            HistoryDateGroupHeader(
+                                businessDate = dateKey,
+                                items = groupItems,
+                                isExpanded = isExpanded,
+                                onToggleExpand = {
+                                    userToggledDates = userToggledDates + (dateKey to !isExpanded)
+                                },
                             )
+                        }
+
+                        if (isExpanded) {
+                            val visibleItems = if (showAllForDate) {
+                                groupItems
+                            } else {
+                                groupItems.take(DEFAULT_VISIBLE_JOBS_PER_DAY)
+                            }
+                            if (isWide) {
+                                items(
+                                    items = visibleItems.chunked(2),
+                                    key = { pair -> "row_${dateKey}_${pair.first().job.id}" },
+                                ) { pair ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(IntrinsicSize.Max),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        HistoryJobCard(
+                                            item = pair[0],
+                                            onClick = { onSelectJob(pair[0].job.id) },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight(),
+                                        )
+                                        if (pair.size > 1) {
+                                            HistoryJobCard(
+                                                item = pair[1],
+                                                onClick = { onSelectJob(pair[1].job.id) },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxHeight(),
+                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            } else {
+                                items(
+                                    items = visibleItems,
+                                    key = { it.job.id },
+                                ) { item ->
+                                    HistoryJobCard(
+                                        item = item,
+                                        onClick = { onSelectJob(item.job.id) },
+                                    )
+                                }
+                            }
+
+                            if (groupItems.size > DEFAULT_VISIBLE_JOBS_PER_DAY) {
+                                item(key = "date_more_$dateKey") {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                showAllForDates = if (showAllForDate) {
+                                                    showAllForDates - dateKey
+                                                } else {
+                                                    showAllForDates + dateKey
+                                                }
+                                            },
+                                        ) {
+                                            Text(
+                                                text = if (showAllForDate) {
+                                                    "收起至前 $DEFAULT_VISIBLE_JOBS_PER_DAY 条"
+                                                } else {
+                                                    "展开当日剩余 ${groupItems.size - DEFAULT_VISIBLE_JOBS_PER_DAY} 条（共 ${groupItems.size} 条）"
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            if (state.isLoading) {
-                item(key = "loading") {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 28.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator()
-                    }
+                item(key = "bottom_spacer") {
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
-            } else if (state.filteredJobs.isEmpty()) {
-                item(key = "empty") {
-                    EmptyHistoryCard(
-                        windowDays = state.windowDays,
-                        hasAnyJobsInWindow = state.totalJobsInWindow > 0,
-                        hasActiveFilter = state.selectedDate != null || state.statusFilter != HistoryStatusFilter.ALL,
-                        onClearAllFilters = onClearAllFilters,
-                    )
-                }
-            } else {
-                items(
-                    items = state.filteredJobs,
-                    key = { it.job.id },
-                ) { item ->
-                    HistoryJobCard(
-                        item = item,
-                        onClick = { onSelectJob(item.job.id) },
-                    )
-                }
-            }
-
-            item(key = "bottom_spacer") {
-                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -655,13 +834,6 @@ private fun DailyTrendChartCard(
 ) {
     val semantics = FlameThemeTokens.semanticColors
     val maxDayTotal = summary.daily.maxOfOrNull { it.total }?.coerceAtLeast(1) ?: 1
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(summary.windowDays, summary.daily.lastOrNull()?.date) {
-        if (summary.daily.isNotEmpty() && summary.windowDays > 7) {
-            listState.scrollToItem(summary.daily.lastIndex)
-        }
-    }
 
     Card(
         shape = MaterialTheme.shapes.large,
@@ -698,45 +870,114 @@ private fun DailyTrendChartCard(
                 }
             }
 
-            if (summary.daily.size <= 7) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    summary.daily.forEach { bucket ->
-                        DayStackedBarColumn(
-                            bucket = bucket,
-                            maxDayTotal = maxDayTotal,
-                            isSelected = bucket.date == selectedDate,
-                            showLabel = true,
-                            onClick = { onToggleDate(bucket.date) },
-                            modifier = Modifier.weight(1f),
-                        )
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                when {
+                    summary.daily.size <= 7 -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.Bottom,
+                        ) {
+                            summary.daily.forEach { bucket ->
+                                DayStackedBarColumn(
+                                    bucket = bucket,
+                                    maxDayTotal = maxDayTotal,
+                                    isSelected = bucket.date == selectedDate,
+                                    showLabel = true,
+                                    reserveLabelSpace = true,
+                                    maxBarWidth = 36.dp,
+                                    horizontalPadding = 2.dp,
+                                    onClick = { onToggleDate(bucket.date) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
                     }
-                }
-            } else {
-                LazyRow(
-                    state = listState,
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    itemsIndexed(
-                        items = summary.daily,
-                        key = { _, bucket -> bucket.date.toString() },
-                    ) { index, bucket ->
-                        val isLast = index == summary.daily.lastIndex
-                        val isSelected = bucket.date == selectedDate
-                        val showDateTick = isSelected || index == 0 || isLast || index % 5 == 0
-                        DayStackedBarColumn(
-                            bucket = bucket,
-                            maxDayTotal = maxDayTotal,
-                            isSelected = isSelected,
-                            showLabel = showDateTick,
-                            onClick = { onToggleDate(bucket.date) },
-                            modifier = Modifier.width(26.dp),
-                        )
+
+                    maxWidth >= 560.dp -> {
+                        val tickIndices = remember(summary.daily.size) {
+                            computeAxisTickIndices(summary.daily.size, 6)
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.Bottom,
+                            ) {
+                                summary.daily.forEach { bucket ->
+                                    DayStackedBarColumn(
+                                        bucket = bucket,
+                                        maxDayTotal = maxDayTotal,
+                                        isSelected = bucket.date == selectedDate,
+                                        showLabel = false,
+                                        reserveLabelSpace = false,
+                                        maxBarWidth = 18.dp,
+                                        horizontalPadding = 1.dp,
+                                        onClick = { onToggleDate(bucket.date) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                tickIndices.forEach { idx ->
+                                    val date = summary.daily[idx].date
+                                    val isTickSelected = date == selectedDate
+                                    Text(
+                                        text = SHORT_DAY_FORMATTER.format(date),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isTickSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        fontWeight = if (isTickSelected) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    else -> {
+                        val listState = rememberLazyListState()
+                        LaunchedEffect(summary.windowDays, summary.daily.lastOrNull()?.date) {
+                            if (summary.daily.isNotEmpty() && summary.windowDays > 7) {
+                                listState.scrollToItem(summary.daily.lastIndex)
+                            }
+                        }
+                        LazyRow(
+                            state = listState,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.Bottom,
+                        ) {
+                            itemsIndexed(
+                                items = summary.daily,
+                                key = { _, bucket -> bucket.date.toString() },
+                            ) { index, bucket ->
+                                val isLast = index == summary.daily.lastIndex
+                                val isSelected = bucket.date == selectedDate
+                                val showDateTick = isSelected || index == 0 || isLast || index % 5 == 0
+                                DayStackedBarColumn(
+                                    bucket = bucket,
+                                    maxDayTotal = maxDayTotal,
+                                    isSelected = isSelected,
+                                    showLabel = showDateTick,
+                                    reserveLabelSpace = true,
+                                    maxBarWidth = 16.dp,
+                                    horizontalPadding = 2.dp,
+                                    onClick = { onToggleDate(bucket.date) },
+                                    modifier = Modifier.width(40.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -787,6 +1028,9 @@ private fun DayStackedBarColumn(
     maxDayTotal: Int,
     isSelected: Boolean,
     showLabel: Boolean,
+    reserveLabelSpace: Boolean,
+    maxBarWidth: Dp,
+    horizontalPadding: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -805,7 +1049,7 @@ private fun DayStackedBarColumn(
             .background(containerColor)
             .border(width = 1.dp, color = borderColor, shape = RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 4.dp, horizontal = 2.dp),
+            .padding(vertical = 4.dp, horizontal = horizontalPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -819,6 +1063,7 @@ private fun DayStackedBarColumn(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(0.75f)
+                        .widthIn(max = maxBarWidth)
                         .height(3.dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
@@ -830,6 +1075,7 @@ private fun DayStackedBarColumn(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth(0.68f)
+                        .widthIn(max = maxBarWidth)
                         .height(barHeight)
                         .clip(RoundedCornerShape(4.dp)),
                 ) {
@@ -869,15 +1115,98 @@ private fun DayStackedBarColumn(
             }
         }
 
-        Text(
-            text = if (showLabel) SHORT_DAY_FORMATTER.format(bucket.date) else "",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Clip,
-        )
+        if (reserveLabelSpace) {
+            Text(
+                text = if (showLabel) SHORT_DAY_FORMATTER.format(bucket.date) else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+            )
+        }
+    }
+}
+
+private fun computeAxisTickIndices(totalCount: Int, targetTicks: Int = 6): List<Int> {
+    if (totalCount <= 0) return emptyList()
+    if (totalCount == 1) return listOf(0)
+    if (totalCount <= targetTicks) return (0 until totalCount).toList()
+    val indices = LinkedHashSet<Int>(targetTicks)
+    for (i in 0 until targetTicks) {
+        val ratio = i.toFloat() / (targetTicks - 1).toFloat()
+        val index = (ratio * (totalCount - 1).toFloat()).roundToInt().coerceIn(0, totalCount - 1)
+        indices.add(index)
+    }
+    indices.add(0)
+    indices.add(totalCount - 1)
+    return indices.sorted()
+}
+
+@Composable
+private fun HistoryDateGroupHeader(
+    businessDate: String,
+    items: List<HistoryJobItem>,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+) {
+    val succeededCount = items.count { it.job.status == JobStatus.SUCCEEDED }
+    val unknownCount = items.count { it.job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW }
+    val failedCount = items.count {
+        it.job.status == JobStatus.FAILED_RETRYABLE || it.job.status == JobStatus.FAILED_TERMINAL
+    }
+    val summaryParts = buildList {
+        if (succeededCount > 0) add("成功 $succeededCount")
+        if (unknownCount > 0) add("待核对 $unknownCount")
+        if (failedCount > 0) add("失败 $failedCount")
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClick = onToggleExpand),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    text = businessDate,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "${items.size} 条",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (summaryParts.isNotEmpty()) {
+                    Text(
+                        text = summaryParts.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (isExpanded) "收起该日明细" else "展开该日明细",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -908,11 +1237,12 @@ private fun ChartLegendDot(
 private fun HistoryJobCard(
     item: HistoryJobItem,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val job = item.job
     val badge = jobStatusBadge(job.status)
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = MaterialTheme.shapes.medium,
@@ -1393,6 +1723,8 @@ private fun failureClassLabel(failureClass: FailureClass): String = when (failur
     FailureClass.UNKNOWN_OUTCOME -> "发送结果未明"
     FailureClass.OTHER -> "其他错误"
 }
+
+private const val DEFAULT_VISIBLE_JOBS_PER_DAY = 10
 
 private val SHORT_DAY_FORMATTER = DateTimeFormatter.ofPattern("M/d")
 private val DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm")
