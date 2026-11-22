@@ -878,6 +878,7 @@ class TodayViewModel(
                 TemplateType.STICKER -> "${tpl.name}（表情）"
                 TemplateType.POOL -> "${tpl.name}（文案池）"
                 TemplateType.TEXT -> "${tpl.name}（文本）"
+                TemplateType.IMAGE -> "${tpl.name}（图片）"
             }
         }
         return if (job.messageSlotId.startsWith(SendGuard.MANUAL_SLOT_PREFIX)) {

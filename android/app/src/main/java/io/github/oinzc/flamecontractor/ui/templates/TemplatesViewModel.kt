@@ -538,6 +538,11 @@ class TemplatesViewModel(
                     return
                 }
             }
+
+            TemplateType.IMAGE -> {
+                setEditorError("图片模板编辑器将在 UI 模块接入后启用")
+                return
+            }
         }
 
         localControls.update { it.copy(isBusy = true) }

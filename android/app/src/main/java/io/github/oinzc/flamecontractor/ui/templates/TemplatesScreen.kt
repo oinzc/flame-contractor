@@ -1100,6 +1100,8 @@ private fun TemplateEditorDialog(
                                 Text("添加一条候选句子")
                             }
                         }
+
+                        TemplateType.IMAGE -> Unit
                     }
 
                     Row(

@@ -18,7 +18,13 @@ interface AccountDao {
     suspend fun getAccount(accountId: String = DEFAULT_ACCOUNT_ID): AccountEntity?
 
     @Query("SELECT * FROM accounts ORDER BY created_at ASC")
+    fun observeAll(): Flow<List<AccountEntity>>
+
+    @Query("SELECT * FROM accounts ORDER BY created_at ASC")
     suspend fun listAll(): List<AccountEntity>
+
+    @Query("DELETE FROM accounts WHERE id = :accountId")
+    suspend fun deleteById(accountId: String)
 
     @Upsert
     suspend fun upsert(account: AccountEntity)
@@ -266,6 +272,12 @@ interface TemplateDao {
     @Query("DELETE FROM message_templates WHERE id = :id")
     suspend fun deleteTemplateById(id: String)
 
+    @Query("DELETE FROM message_templates WHERE account_id = :accountId")
+    suspend fun deleteAllByAccount(accountId: String)
+
+    @Query("SELECT image_path FROM message_templates WHERE image_path IS NOT NULL AND image_path != ''")
+    suspend fun listAllReferencedImagePaths(): List<String>
+
     @Query("SELECT * FROM template_pool_items WHERE template_id = :templateId ORDER BY created_at ASC, id ASC")
     fun observePoolItems(templateId: String): Flow<List<TemplatePoolItemEntity>>
 
@@ -469,4 +481,7 @@ interface ScanRunDao {
 
     @Update
     suspend fun update(scanRun: ScanRunEntity)
+
+    @Query("DELETE FROM scan_runs WHERE account_id = :accountId")
+    suspend fun deleteAllByAccount(accountId: String)
 }

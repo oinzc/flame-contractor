@@ -12,6 +12,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 
 enum class UrgentCategory {
     AUTH_EXPIRED,
@@ -56,7 +57,11 @@ class LocalNotifier(context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun notifyDailySummary(title: String, body: String): Boolean {
+    fun notifyDailySummary(
+        title: String,
+        body: String,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): Boolean {
         ensureChannels()
         if (!canPostNotifications()) return false
         val builder = NotificationCompat.Builder(appContext, CHANNEL_DAILY_SUMMARY)
@@ -68,7 +73,7 @@ class LocalNotifier(context: Context) {
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
-        createLaunchPendingIntent(category = null)?.let { builder.setContentIntent(it) }
+        createLaunchPendingIntent(category = null, accountId = accountId)?.let { builder.setContentIntent(it) }
         return try {
             NotificationManagerCompat.from(appContext).notify(NOTIFICATION_ID_DAILY_SUMMARY, builder.build())
             true
@@ -78,7 +83,12 @@ class LocalNotifier(context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun notifyUrgentAlert(category: UrgentCategory, title: String, body: String): Boolean {
+    fun notifyUrgentAlert(
+        category: UrgentCategory,
+        title: String,
+        body: String,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): Boolean {
         ensureChannels()
         if (!canPostNotifications()) return false
         val builder = NotificationCompat.Builder(appContext, CHANNEL_ALERTS_URGENT)
@@ -91,7 +101,7 @@ class LocalNotifier(context: Context) {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
-        createLaunchPendingIntent(category = category)?.let { builder.setContentIntent(it) }
+        createLaunchPendingIntent(category = category, accountId = accountId)?.let { builder.setContentIntent(it) }
         return try {
             NotificationManagerCompat.from(appContext).notify(notificationIdFor(category), builder.build())
             true
@@ -111,7 +121,10 @@ class LocalNotifier(context: Context) {
         return NotificationManagerCompat.from(appContext).areNotificationsEnabled()
     }
 
-    private fun createLaunchPendingIntent(category: UrgentCategory?): PendingIntent? {
+    private fun createLaunchPendingIntent(
+        category: UrgentCategory?,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): PendingIntent? {
         val launchIntent = appContext.packageManager
             ?.getLaunchIntentForPackage(appContext.packageName)
             ?: return null
@@ -120,6 +133,7 @@ class LocalNotifier(context: Context) {
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP,
         )
+        launchIntent.putExtra(EXTRA_ACCOUNT_ID, accountId)
         if (category != null) {
             launchIntent.putExtra(EXTRA_URGENT_CATEGORY, category.name)
         }
@@ -140,6 +154,7 @@ class LocalNotifier(context: Context) {
         const val CHANNEL_DAILY_SUMMARY = "daily_summary"
         const val CHANNEL_ALERTS_URGENT = "alerts_urgent"
         const val EXTRA_URGENT_CATEGORY = "extra_urgent_category"
+        const val EXTRA_ACCOUNT_ID = "extra_account_id"
         const val NOTIFICATION_ID_DAILY_SUMMARY = 3001
 
         internal fun notificationIdFor(category: UrgentCategory): Int = when (category) {

@@ -1656,6 +1656,7 @@ class ExecutionForegroundService : Service() {
                     ),
                 )
             }
+            TemplateType.IMAGE -> null
         }
     }
 

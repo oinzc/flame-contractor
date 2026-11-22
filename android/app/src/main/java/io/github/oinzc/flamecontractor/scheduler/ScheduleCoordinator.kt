@@ -74,9 +74,10 @@ class ScheduleCoordinator private constructor(
     internal suspend fun evaluateCurrentSchedule(
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): ScheduleReadSnapshot? {
         val db = databaseProvider()
-        val account = db.accountDao().getAccount(DEFAULT_ACCOUNT_ID) ?: return null
+        val account = db.accountDao().getAccount(accountId) ?: return null
         val zoneId = DailySchedulePlanner.resolveZoneId(account.timezone)
         val todayStr = ZonedDateTime.ofInstant(now, zoneId).toLocalDate().toString()
         val targets = db.targetDao().listEnabledTargets(account.id)
@@ -162,8 +163,15 @@ class ScheduleCoordinator private constructor(
         return snapshot
     }
 
-    suspend fun inspectNextAutoScanAt(now: Instant = Instant.now()): Instant? {
-        val snapshot = evaluateCurrentSchedule(now = now, staleCrashRecoveryMillis = null)
+    suspend fun inspectNextAutoScanAt(
+        now: Instant = Instant.now(),
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): Instant? {
+        val snapshot = evaluateCurrentSchedule(
+            now = now,
+            staleCrashRecoveryMillis = null,
+            accountId = accountId,
+        )
             ?: return null
         val autoScanEval = snapshot.autoScanEvaluation ?: return null
         return if (autoScanEval.eligible) autoScanEval.nextAutoScanAt else null

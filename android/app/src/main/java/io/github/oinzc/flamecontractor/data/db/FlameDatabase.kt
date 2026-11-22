@@ -59,7 +59,7 @@ class FlameTypeConverters {
         SendAttemptEntity::class,
         ScanRunEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(FlameTypeConverters::class)
@@ -145,13 +145,25 @@ abstract class FlameDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE message_templates ADD COLUMN image_path TEXT",
+        )
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_3_4_STATEMENTS.forEach { sql ->
+                    db.execSQL(sql)
+                }
+            }
+        }
+
         fun create(context: Context): FlameDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 FlameDatabase::class.java,
                 DATABASE_NAME,
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .addCallback(seedCallback())
                 .build()
 
@@ -160,7 +172,7 @@ abstract class FlameDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlameDatabase::class.java,
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .addCallback(seedCallback())
                 .build()
 
@@ -276,6 +288,57 @@ abstract class FlameDatabase : RoomDatabase() {
                     1,
                     textCreatedAt,
                     textCreatedAt,
+                ),
+            )
+        }
+
+        /**
+         * 为新建的多账号播种默认的文本模板与 3 个内置表情模板，幂等执行（仅当该账号尚无任何模板时写入）。
+         */
+        suspend fun seedDefaultTemplatesForAccount(
+            database: FlameDatabase,
+            accountId: String,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ) {
+            val templateDao = database.templateDao()
+            if (templateDao.countTemplates(accountId) > 0) return
+
+            DEFAULT_STICKER_SEEDS.forEachIndexed { index, seed ->
+                val ts = nowEpochMs + index.toLong()
+                val scopedId = if (accountId == DEFAULT_ACCOUNT_ID) seed.id else "$accountId:${seed.id}"
+                templateDao.upsertTemplate(
+                    MessageTemplateEntity(
+                        id = scopedId,
+                        accountId = accountId,
+                        name = seed.name,
+                        type = TemplateType.STICKER,
+                        content = "",
+                        stickerName = seed.stickerName,
+                        stickerLabel = seed.stickerLabel,
+                        stickerCategory = null,
+                        stickerFallbackIndex = null,
+                        enabled = true,
+                        createdAt = ts,
+                        updatedAt = ts,
+                    ),
+                )
+            }
+            val textTs = nowEpochMs + DEFAULT_STICKER_SEEDS.size.toLong()
+            val textId = if (accountId == DEFAULT_ACCOUNT_ID) {
+                DEFAULT_TEXT_TEMPLATE_ID
+            } else {
+                "$accountId:$DEFAULT_TEXT_TEMPLATE_ID"
+            }
+            templateDao.upsertTemplate(
+                MessageTemplateEntity(
+                    id = textId,
+                    accountId = accountId,
+                    name = "每日续火",
+                    type = TemplateType.TEXT,
+                    content = "每日续火打卡 🔥",
+                    enabled = true,
+                    createdAt = textTs,
+                    updatedAt = textTs,
                 ),
             )
         }

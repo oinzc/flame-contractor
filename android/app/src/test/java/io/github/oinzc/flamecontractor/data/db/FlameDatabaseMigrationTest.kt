@@ -81,6 +81,32 @@ class FlameDatabaseMigrationTest {
         assertNull(colToValue["last_auto_scan_attempt_at"])
     }
 
+    @Test
+    fun templateTypeImageAndMigration3To4AreExact() {
+        assertEquals(TemplateType.IMAGE, TemplateType.fromWireValue("image"))
+        val imgTemplate = MessageTemplateEntity(
+            name = "早安图",
+            type = TemplateType.IMAGE,
+        )
+        assertNull(imgTemplate.imagePath)
+
+        assertEquals(
+            listOf("ALTER TABLE message_templates ADD COLUMN image_path TEXT"),
+            FlameDatabase.MIGRATION_3_4_STATEMENTS,
+        )
+        assertEquals(3, FlameDatabase.MIGRATION_3_4.startVersion)
+        assertEquals(4, FlameDatabase.MIGRATION_3_4.endVersion)
+
+        val recorder = RecordingSqliteDb()
+        FlameDatabase.MIGRATION_3_4.migrate(recorder.db)
+        assertEquals(1, recorder.calls.size)
+        assertEquals(
+            FlameDatabase.MIGRATION_3_4_STATEMENTS,
+            recorder.calls.map { it.sql },
+        )
+        assertNull(recorder.calls.single().bindArgs)
+    }
+
     private class RecordingSqliteDb {
         data class ExecCall(
             val sql: String,

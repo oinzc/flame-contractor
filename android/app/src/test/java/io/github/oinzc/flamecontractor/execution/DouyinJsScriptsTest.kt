@@ -553,10 +553,14 @@ class DouyinJsScriptsTest {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 
         override fun observeAccount(accountId: String): Flow<AccountEntity?> = emptyFlow()
+        override fun observeAll(): Flow<List<AccountEntity>> = emptyFlow()
         override suspend fun getAccount(accountId: String): AccountEntity? = accounts[accountId]
         override suspend fun listAll(): List<AccountEntity> = accounts.values.toList()
         override suspend fun upsert(account: AccountEntity) {
             accounts[account.id] = account
+        }
+        override suspend fun deleteById(accountId: String) {
+            accounts.remove(accountId)
         }
 
         override suspend fun update(account: AccountEntity) {

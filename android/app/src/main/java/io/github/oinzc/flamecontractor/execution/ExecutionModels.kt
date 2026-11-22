@@ -221,10 +221,12 @@ object ScanReconciliationCodec {
 
 data class ExecutionLiveState(
     val running: Boolean = false,
+    val activeAccountId: String? = null,
     val currentTask: String? = null,
     val progressCurrent: Int = 0,
     val progressTotal: Int = 0,
     val scanDiscoveredCount: Int = 0,
+    val latestScanSnapshotAccountId: String? = null,
     val latestScanSnapshot: ScanReconciliationSnapshot? = null,
     val latestProbeReport: StructureProbeReport? = null,
     val lastMessage: String? = null,

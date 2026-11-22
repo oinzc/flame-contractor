@@ -177,6 +177,8 @@ data class MessageTemplateEntity(
     val createdAt: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(name = "image_path")
+    val imagePath: String? = null,
 )
 
 @Entity(

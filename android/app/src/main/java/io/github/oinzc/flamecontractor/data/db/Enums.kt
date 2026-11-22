@@ -24,6 +24,7 @@ enum class TemplateType(val wireValue: String) {
     TEXT("text"),
     POOL("pool"),
     STICKER("sticker"),
+    IMAGE("image"),
     ;
 
     companion object {
