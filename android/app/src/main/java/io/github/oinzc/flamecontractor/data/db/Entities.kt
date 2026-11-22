@@ -51,6 +51,12 @@ data class AccountEntity(
     val createdAt: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(name = "auto_scan_enabled")
+    val autoScanEnabled: Boolean = true,
+    @ColumnInfo(name = "auto_scan_interval_hours")
+    val autoScanIntervalHours: Int = 24,
+    @ColumnInfo(name = "last_auto_scan_attempt_at")
+    val lastAutoScanAttemptAt: Long? = null,
 )
 
 @Entity(
@@ -341,4 +347,6 @@ data class ScanRunEntity(
     val startedAt: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "finished_at")
     val finishedAt: Long? = null,
+    @ColumnInfo(name = "alert_summary")
+    val alertSummary: String? = null,
 )

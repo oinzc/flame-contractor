@@ -601,6 +601,19 @@ class DouyinJsScriptsTest {
                 accounts[accountId] = it.copy(lastSuccessAt = successAt, updatedAt = successAt)
             }
         }
+
+        override suspend fun updateLastAutoScanAttemptAt(
+            accountId: String,
+            attemptAt: Long,
+            updatedAt: Long,
+        ) {
+            accounts[accountId]?.let {
+                accounts[accountId] = it.copy(
+                    lastAutoScanAttemptAt = attemptAt,
+                    updatedAt = updatedAt,
+                )
+            }
+        }
     }
 
     private class InMemoryStrictSendJobDao : SendJobDao {
@@ -642,6 +655,33 @@ class DouyinJsScriptsTest {
         ): List<SendJobEntity> = jobs.values.filter { it.accountId == accountId && it.status in statuses }
 
         override fun observeRecentJobs(accountId: String, limit: Int): Flow<List<SendJobEntity>> = emptyFlow()
+
+        override fun observeJobsSince(accountId: String, sinceDate: String): Flow<List<SendJobEntity>> = emptyFlow()
+
+        override suspend fun listAllJobs(accountId: String): List<SendJobEntity> =
+            jobs.values
+                .filter { it.accountId == accountId }
+                .sortedWith(compareBy<SendJobEntity> { it.businessDate }.thenBy { it.createdAt })
+
+        override suspend fun listAllAttemptsForAccount(accountId: String): List<SendAttemptEntity> {
+            val accountJobIds = jobs.values.filter { it.accountId == accountId }.mapTo(HashSet()) { it.id }
+            return attempts
+                .filter { it.jobId in accountJobIds }
+                .sortedWith(compareBy<SendAttemptEntity> { it.startedAt }.thenBy { it.attemptNo })
+        }
+
+        override suspend fun upsertJob(job: SendJobEntity) {
+            jobs[job.id] = job
+        }
+
+        override suspend fun upsertAttempt(attempt: SendAttemptEntity) {
+            val idx = attempts.indexOfFirst { it.id == attempt.id }
+            if (idx >= 0) {
+                attempts[idx] = attempt
+            } else {
+                attempts.add(attempt)
+            }
+        }
 
         override suspend fun insertIgnore(job: SendJobEntity): Long {
             val dup = getJobBySlot(job.accountId, job.targetId, job.businessDate, job.messageSlotId)

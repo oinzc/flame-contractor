@@ -63,6 +63,9 @@ interface AccountDao {
 
     @Query("UPDATE accounts SET last_success_at = :successAt, updated_at = :successAt WHERE id = :accountId")
     suspend fun updateLastSuccessAt(accountId: String, successAt: Long)
+
+    @Query("UPDATE accounts SET last_auto_scan_attempt_at = :attemptAt, updated_at = :updatedAt WHERE id = :accountId")
+    suspend fun updateLastAutoScanAttemptAt(accountId: String, attemptAt: Long, updatedAt: Long)
 }
 
 @Dao
@@ -85,6 +88,9 @@ interface TargetDao {
         """,
     )
     suspend fun listActiveTargets(accountId: String = DEFAULT_ACCOUNT_ID): List<ContractTargetEntity>
+
+    @Query("SELECT * FROM contract_targets WHERE account_id = :accountId ORDER BY created_at ASC")
+    suspend fun listAllTargetsIncludingDeleted(accountId: String = DEFAULT_ACCOUNT_ID): List<ContractTargetEntity>
 
     @Query(
         """
@@ -374,6 +380,21 @@ interface SendJobDao {
         limit: Int = 50,
     ): Flow<List<SendJobEntity>>
 
+    @Query("SELECT * FROM send_jobs WHERE account_id = :accountId AND business_date >= :sinceDate ORDER BY business_date DESC, created_at DESC")
+    fun observeJobsSince(accountId: String, sinceDate: String): Flow<List<SendJobEntity>>
+
+    @Query("SELECT * FROM send_jobs WHERE account_id = :accountId ORDER BY business_date ASC, created_at ASC")
+    suspend fun listAllJobs(accountId: String = DEFAULT_ACCOUNT_ID): List<SendJobEntity>
+
+    @Query("SELECT a.* FROM send_attempts a INNER JOIN send_jobs j ON a.job_id = j.id WHERE j.account_id = :accountId ORDER BY a.started_at ASC, a.attempt_no ASC")
+    suspend fun listAllAttemptsForAccount(accountId: String = DEFAULT_ACCOUNT_ID): List<SendAttemptEntity>
+
+    @Upsert
+    suspend fun upsertJob(job: SendJobEntity)
+
+    @Upsert
+    suspend fun upsertAttempt(attempt: SendAttemptEntity)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(job: SendJobEntity): Long
 
@@ -424,6 +445,15 @@ interface ScanRunDao {
 
     @Query("SELECT * FROM scan_runs WHERE account_id = :accountId ORDER BY started_at DESC LIMIT 1")
     suspend fun getLatestScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity?
+
+    @Query("SELECT * FROM scan_runs WHERE account_id = :accountId AND status = 'completed' ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1")
+    suspend fun getLatestCompletedScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity?
+
+    @Query("SELECT * FROM scan_runs WHERE account_id = :accountId AND source = 'automatic' ORDER BY started_at DESC LIMIT 1")
+    suspend fun getLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity?
+
+    @Query("SELECT * FROM scan_runs WHERE account_id = :accountId AND source = 'automatic' ORDER BY started_at DESC LIMIT 1")
+    fun observeLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): Flow<ScanRunEntity?>
 
     @Query("SELECT * FROM scan_runs WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): ScanRunEntity?

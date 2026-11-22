@@ -59,7 +59,7 @@ class FlameTypeConverters {
         SendAttemptEntity::class,
         ScanRunEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters(FlameTypeConverters::class)
@@ -130,13 +130,28 @@ abstract class FlameDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE accounts ADD COLUMN auto_scan_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE accounts ADD COLUMN auto_scan_interval_hours INTEGER NOT NULL DEFAULT 24",
+            "ALTER TABLE accounts ADD COLUMN last_auto_scan_attempt_at INTEGER",
+            "ALTER TABLE scan_runs ADD COLUMN alert_summary TEXT",
+        )
+
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_2_3_STATEMENTS.forEach { sql ->
+                    db.execSQL(sql)
+                }
+            }
+        }
+
         fun create(context: Context): FlameDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 FlameDatabase::class.java,
                 DATABASE_NAME,
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(seedCallback())
                 .build()
 
@@ -145,7 +160,7 @@ abstract class FlameDatabase : RoomDatabase() {
                 context.applicationContext,
                 FlameDatabase::class.java,
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(seedCallback())
                 .build()
 
@@ -203,8 +218,9 @@ abstract class FlameDatabase : RoomDatabase() {
                     send_window_start, send_window_end, send_time_hhmm,
                     jitter_max_minutes, cooldown_min_sec, cooldown_max_sec,
                     auth_fail_count, failure_streak, self_uid, douyin_nickname,
-                    last_verified_at, last_success_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_verified_at, last_success_at, created_at, updated_at,
+                    auto_scan_enabled, auto_scan_interval_hours, last_auto_scan_attempt_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent(),
                 arrayOf<Any?>(
                     DEFAULT_ACCOUNT_ID,
@@ -226,6 +242,9 @@ abstract class FlameDatabase : RoomDatabase() {
                     null,
                     nowEpochMs,
                     nowEpochMs,
+                    1,
+                    24,
+                    null,
                 ),
             )
 
