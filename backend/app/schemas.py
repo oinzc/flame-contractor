@@ -1,6 +1,6 @@
 import re
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1027,6 +1027,7 @@ class BackupRead(APIBase):
     schema_version: int
     exported_at: datetime
     data: BackupData
+    android_extensions: dict[str, Any] | None = Field(default=None, exclude=True)
 
 
 class BackupImportResult(APIBase):
