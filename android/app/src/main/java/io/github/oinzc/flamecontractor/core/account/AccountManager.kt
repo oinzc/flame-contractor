@@ -15,13 +15,7 @@ class AccountManager(
     private val imageStore: TemplateImageStorage,
     private val pendingProfileCleanupStore: PendingProfileCleanupStore,
     private val isMultiProfileSupported: () -> Boolean = { WebViewProfileRegistry.isMultiProfileSupported() },
-    private val onClearAccountCookies: suspend (String) -> Unit = { accountId ->
-        suspendCancellableCoroutine { cont ->
-            WebViewProfileRegistry.clearAccountCookies(accountId) {
-                if (cont.isActive) cont.resume(Unit)
-            }
-        }
-    },
+    private val onClearAccountCookies: (suspend (String) -> Unit)? = null,
     private val onScheduleChanged: suspend () -> Unit = {},
     private val isAccountBusy: (String) -> Boolean = { false },
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
@@ -117,7 +111,11 @@ class AccountManager(
             }
         }
 
-        onClearAccountCookies(accountId)
+        if (onClearAccountCookies != null) {
+            onClearAccountCookies.invoke(accountId)
+        } else {
+            defaultClearAccountCookies(accountId)
+        }
         val profileName = WebViewProfileRegistry.profileNameForAccount(accountId)
         if (profileName != WebViewProfileRegistry.DEFAULT_PROFILE_NAME) {
             pendingProfileCleanupStore.enqueue(profileName)
@@ -127,5 +125,13 @@ class AccountManager(
         activeAccountStore.reconcileWithAvailableAccounts(remainingIds)
         onScheduleChanged()
         return true
+    }
+
+    private suspend fun defaultClearAccountCookies(accountId: String) {
+        suspendCancellableCoroutine { cont ->
+            WebViewProfileRegistry.clearAccountCookies(accountId) {
+                if (cont.isActive) cont.resume(Unit)
+            }
+        }
     }
 }

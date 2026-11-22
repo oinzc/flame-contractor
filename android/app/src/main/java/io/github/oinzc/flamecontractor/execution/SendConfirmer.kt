@@ -95,7 +95,7 @@ object SendConfirmer {
         timeoutMs: Long = DEFAULT_CONFIRM_TIMEOUT_MS,
         pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
         clockMs: () -> Long = { System.currentTimeMillis() },
-        delayFn: suspend (Long) -> Unit = { delay(it) },
+        delayFn: (suspend (Long) -> Unit)? = null,
         pollSample: suspend () -> TextPollSample,
     ): ConfirmOutcome {
         if (classifyIrreversibleClickResult(clickResult) == ClickDispatchOutcome.ABORT_RETRYABLE) {
@@ -115,7 +115,7 @@ object SendConfirmer {
             if (outcome != ConfirmOutcome.CONFIRMING_PENDING) {
                 return outcome
             }
-            delayFn(pollIntervalMs)
+            if (delayFn != null) delayFn(pollIntervalMs) else delay(pollIntervalMs)
         }
     }
 
@@ -126,14 +126,14 @@ object SendConfirmer {
         timeoutMs: Long = DEFAULT_CONFIRM_TIMEOUT_MS,
         pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
         clockMs: () -> Long = { System.currentTimeMillis() },
-        delayFn: suspend (Long) -> Unit = { delay(it) },
+        delayFn: (suspend (Long) -> Unit)? = null,
         pollSample: suspend () -> StickerPollSample,
     ): ConfirmOutcome {
         if (classifyIrreversibleClickResult(clickResult) == ClickDispatchOutcome.ABORT_RETRYABLE) {
             return ConfirmOutcome.RETRYABLE_FAILURE
         }
         if (postClickSettleMs > 0L) {
-            delayFn(postClickSettleMs)
+            if (delayFn != null) delayFn(postClickSettleMs) else delay(postClickSettleMs)
         }
         val deadline = clockMs() + timeoutMs
         while (true) {
@@ -148,7 +148,7 @@ object SendConfirmer {
             if (outcome != ConfirmOutcome.CONFIRMING_PENDING) {
                 return outcome
             }
-            delayFn(pollIntervalMs)
+            if (delayFn != null) delayFn(pollIntervalMs) else delay(pollIntervalMs)
         }
     }
 
