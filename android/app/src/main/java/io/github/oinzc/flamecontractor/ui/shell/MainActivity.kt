@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
+import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
@@ -47,7 +48,7 @@ class MainActivity : AppCompatActivity() {
 
                 LaunchedEffect(urgentSignal) {
                     if (urgentSignal != null) {
-                        selectedTab = if (urgentSignal.category == "SPARK_DETERIORATING") {
+                        selectedTab = if (urgentSignal.category == UrgentCategory.SPARK_DETERIORATING.name) {
                             MainTab.TARGETS
                         } else {
                             MainTab.TODAY
@@ -106,6 +107,7 @@ class MainActivity : AppCompatActivity() {
                             secretStore = container.secretStore,
                             barkNotifier = container.barkNotifier,
                             scheduleCoordinator = container.scheduleCoordinator,
+                            backupManager = container.backupManager,
                         )
                     },
                 )

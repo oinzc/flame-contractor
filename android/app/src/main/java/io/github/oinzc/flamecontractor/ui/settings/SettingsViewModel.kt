@@ -1500,7 +1500,7 @@ internal class AndroidScheduleGateway(
 ) : SettingsScheduleGateway {
     override suspend fun rescheduleAll(): Instant? = coordinator.rescheduleAll()
 
-    override suspend fun inspectNextAutoScanAt(): Instant? = null // TODO(integrator): delegate to scheduleCoordinator.inspectNextAutoScanAt()
+    override suspend fun inspectNextAutoScanAt(): Instant? = coordinator.inspectNextAutoScanAt()
 }
 
 internal class AndroidBackupGateway(
