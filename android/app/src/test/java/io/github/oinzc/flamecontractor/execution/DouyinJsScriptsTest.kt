@@ -549,6 +549,78 @@ class DouyinJsScriptsTest {
         )
     }
 
+    @Test
+    fun imageUploadProbeAndDataTransferScriptsCoverTriggerInputsAndValueTracker() {
+        val bundle = SelectorBundle.defaults()
+        val probeJs = DouyinJsScripts.buildProbeImageUploadDomJs(bundle)
+        assertTrue(probeJs.contains(".semi-upload-add"))
+        assertTrue(probeJs.contains("input[type=\\\"file\\\"]"))
+        assertTrue(probeJs.contains("centerX"))
+        assertTrue(probeJs.contains("centerY"))
+        assertTrue(probeJs.contains("fileInputCount"))
+        assertTrue(probeJs.contains("hasUploadEntry"))
+
+        val injectJs = DouyinJsScripts.buildInjectImageDataTransferJs(
+            bundle = bundle,
+            imageBase64 = "AQID",
+            fileName = "sample.png",
+            mimeType = "image/png",
+        )
+        assertTrue(injectJs.contains("DataTransfer"))
+        assertTrue(injectJs.contains("new File("))
+        assertTrue(injectJs.contains("input.files"))
+        assertTrue(injectJs.contains("_valueTracker"))
+        assertTrue(injectJs.contains("setValue"))
+        assertTrue(injectJs.contains("new Event('input'"))
+        assertTrue(injectJs.contains("new Event('change'"))
+        assertTrue(injectJs.contains("AQID"))
+        assertTrue(injectJs.contains("sample.png"))
+        assertTrue(injectJs.contains("image/png"))
+    }
+
+    @Test
+    fun imageConfirmModalScriptsMaskHiddenModalsAndFallbackToSendCountRegex() {
+        val bundle = SelectorBundle.defaults()
+        val inspectJs = DouyinJsScripts.buildInspectImageConfirmModalJs(bundle)
+        val clickJs = DouyinJsScripts.buildClickImageModalSendJs(bundle)
+        val dismissJs = DouyinJsScripts.buildDismissImageModalJs()
+
+        for (script in listOf(inspectJs, clickJs)) {
+            assertTrue(script.contains(".semi-modal, [role=\"dialog\"]"))
+            assertTrue(script.contains("__flameIsModalTrulyVisible"))
+            assertTrue(script.contains("aria-hidden"))
+            assertTrue(script.contains("st.display === 'none'"))
+            assertTrue(script.contains("st.visibility === 'hidden'"))
+            assertTrue(script.contains("st.opacity === '0'"))
+            assertTrue(script.contains("__flameFindTopVisibleModal"))
+            assertTrue(script.contains("cand.z > best.z"))
+            assertTrue(script.contains("topModal.contains(c)"))
+            assertTrue(script.contains("topModal.querySelectorAll('button, [role=\"button\"]')"))
+            assertTrue(script.contains("""/^发送(?:\s*[（(]\d+[)）])?$/"""))
+        }
+
+        assertTrue(inspectJs.contains("hasImgPreview"))
+        assertTrue(inspectJs.contains("sendButtonFound"))
+        assertTrue(inspectJs.contains("sendButtonEnabled"))
+        assertTrue(clickJs.contains("__flameDispatchClick(sendHit.el)"))
+        assertTrue(clickJs.contains("send_button_disabled"))
+
+        assertTrue(dismissJs.contains("__flameFindTopVisibleModal"))
+        assertTrue(dismissJs.contains("'取消'"))
+        assertTrue(dismissJs.contains("Escape"))
+        assertFalse(dismissJs.contains("IMAGE_DIALOG_SEND"))
+        assertFalse(dismissJs.contains("""/^发送"""))
+
+        val sendBtnRegex = Regex("""^发送(?:\s*[（(]\d+[)）])?$""")
+        assertTrue(sendBtnRegex.matches("发送"))
+        assertTrue(sendBtnRegex.matches("发送（1）"))
+        assertTrue(sendBtnRegex.matches("发送(1)"))
+        assertTrue(sendBtnRegex.matches("发送 (12)"))
+        assertFalse(sendBtnRegex.matches("取消"))
+        assertFalse(sendBtnRegex.matches("发送给好友"))
+        assertFalse(sendBtnRegex.matches("重新发送"))
+    }
+
     private class InMemoryAccountDao : AccountDao {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 

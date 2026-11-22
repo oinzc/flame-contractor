@@ -147,7 +147,118 @@ object DouyinJsScripts {
               }
             } catch (_) {}
           }
-          return false;
+            return false;
+        }
+    """
+
+    private const val IMAGE_MODAL_DISCOVERY_HELPERS_JS = """
+        function __flameIsModalTrulyVisible(el) {
+          if (!__flameIsVisible(el)) return false;
+          var cur = el;
+          var depth = 0;
+          while (cur && cur !== document.documentElement && depth < 12) {
+            if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
+            var st = window.getComputedStyle ? window.getComputedStyle(cur) : null;
+            if (st && (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0')) return false;
+            cur = cur.parentElement;
+            depth++;
+          }
+          return true;
+        }
+        function __flameModalZIndex(el) {
+          var maxZ = 0;
+          var cur = el;
+          var depth = 0;
+          while (cur && cur !== document.body && cur !== document.documentElement && depth < 6) {
+            var st = window.getComputedStyle ? window.getComputedStyle(cur) : null;
+            if (st && st.zIndex && st.zIndex !== 'auto') {
+              var parsed = parseInt(st.zIndex, 10);
+              if (!isNaN(parsed) && parsed > maxZ) maxZ = parsed;
+            }
+            cur = cur.parentElement;
+            depth++;
+          }
+          return maxZ;
+        }
+        function __flameFindTopVisibleModal() {
+          var all = [];
+          try {
+            all = Array.from(document.querySelectorAll('.semi-modal, [role="dialog"]'));
+          } catch (_) {}
+          var visible = [];
+          for (var i = 0; i < all.length; i++) {
+            if (__flameIsModalTrulyVisible(all[i])) {
+              visible.push({ el: all[i], idx: i, z: __flameModalZIndex(all[i]) });
+            }
+          }
+          if (!visible.length) {
+            return { topModal: null, modalCount: all.length, visibleModalCount: 0 };
+          }
+          var best = visible[0];
+          for (var v = 1; v < visible.length; v++) {
+            var cand = visible[v];
+            if (cand.z > best.z || (cand.z === best.z && cand.idx >= best.idx)) {
+              best = cand;
+            }
+          }
+          return { topModal: best.el, modalCount: all.length, visibleModalCount: visible.length };
+        }
+        function __flameNormButtonText(el) {
+          return String((el && (el.innerText || el.textContent)) || '')
+            .replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ')
+            .trim();
+        }
+    """
+
+    private const val IMAGE_MODAL_SEND_HELPERS_JS = """
+        function __flameIsDisabledButton(btn) {
+          if (!btn) return true;
+          if (btn.disabled) return true;
+          if (btn.getAttribute && btn.getAttribute('aria-disabled') === 'true') return true;
+          var cls = String(btn.className || '');
+          return cls.indexOf('semi-button-disabled') !== -1;
+        }
+        function __flameFindImageModalSendButton(topModal, sendSelectors) {
+          if (!topModal) return null;
+          var sendRegex = /^发送(?:\s*[（(]\d+[)）])?$/;
+          for (var i = 0; i < sendSelectors.length; i++) {
+            var sel = sendSelectors[i];
+            try {
+              var candidates = document.querySelectorAll(sel);
+              for (var j = 0; j < candidates.length; j++) {
+                var c = candidates[j];
+                if (!topModal.contains(c) || !__flameIsVisible(c)) continue;
+                var txt = __flameNormButtonText(c);
+                if (txt === '取消') continue;
+                return {
+                  el: c,
+                  method: 'selector',
+                  selector: sel,
+                  text: txt,
+                  enabled: !__flameIsDisabledButton(c)
+                };
+              }
+            } catch (_) {}
+          }
+          var buttons = [];
+          try {
+            buttons = Array.from(topModal.querySelectorAll('button, [role="button"]'));
+          } catch (_) {}
+          for (var b = 0; b < buttons.length; b++) {
+            var btn = buttons[b];
+            if (!__flameIsVisible(btn)) continue;
+            var btnText = __flameNormButtonText(btn);
+            if (sendRegex.test(btnText)) {
+              return {
+                el: btn,
+                method: 'text_regex',
+                selector: null,
+                text: btnText,
+                enabled: !__flameIsDisabledButton(btn)
+              };
+            }
+          }
+          return null;
         }
     """
 
@@ -1413,4 +1524,321 @@ object DouyinJsScripts {
             })();
         """.trimIndent()
     }
+
+    fun buildProbeImageUploadDomJs(bundle: SelectorBundle): String {
+        val triggerLit = jsStringLiteral(bundle.imageUploadTrigger)
+        val imageInputsLit = jsStringArrayLiteral(bundle.imageInputs)
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              var triggerSel = $triggerLit;
+              var allTriggers = [];
+              try { allTriggers = Array.from(document.querySelectorAll(triggerSel)); } catch (_) {}
+              var triggerHit = __flameFirstVisible([triggerSel]);
+              var cx = null;
+              var cy = null;
+              var rw = null;
+              var rh = null;
+              if (triggerHit && triggerHit.el) {
+                try { triggerHit.el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+                try {
+                  var r = triggerHit.el.getBoundingClientRect();
+                  if (r && r.width > 0 && r.height > 0) {
+                    cx = r.left + r.width / 2;
+                    cy = r.top + r.height / 2;
+                    rw = r.width;
+                    rh = r.height;
+                  }
+                } catch (_) {}
+              }
+              var inputSels = $imageInputsLit;
+              var seen = [];
+              for (var s = 0; s < inputSels.length; s++) {
+                try {
+                  var nodes = document.querySelectorAll(inputSels[s]);
+                  for (var j = 0; j < nodes.length; j++) {
+                    if (seen.indexOf(nodes[j]) === -1) seen.push(nodes[j]);
+                  }
+                } catch (_) {}
+              }
+              return {
+                triggerSelector: triggerSel,
+                triggerFound: !!(triggerHit && triggerHit.el && cx !== null && cy !== null),
+                triggerCount: allTriggers.length,
+                centerX: cx,
+                centerY: cy,
+                rectWidth: rw,
+                rectHeight: rh,
+                viewportWidth: window.innerWidth || 0,
+                viewportHeight: window.innerHeight || 0,
+                devicePixelRatio: window.devicePixelRatio || 1,
+                fileInputCount: seen.length,
+                hasUploadEntry: (!!(triggerHit && triggerHit.el) || allTriggers.length > 0 || seen.length > 0)
+              };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildClickImageUploadTriggerJs(bundle: SelectorBundle): String {
+        val triggerLit = jsStringLiteral(bundle.imageUploadTrigger)
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              var triggerSel = $triggerLit;
+              var hit = __flameFirstVisible([triggerSel]);
+              var el = (hit && hit.el) ? hit.el : null;
+              if (!el) {
+                try { el = document.querySelector(triggerSel); } catch (_) {}
+              }
+              if (!el) return { clicked: false, reason: 'upload_trigger_not_found' };
+              try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) {}
+              var invoked = false;
+              try {
+                if (typeof el.click === 'function') {
+                  el.click();
+                  invoked = true;
+                }
+              } catch (_) {}
+              if (!invoked) {
+                __flameDispatchClick(el);
+              }
+              return { clicked: true, selector: triggerSel };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildClickImageFileInputJs(bundle: SelectorBundle): String {
+        val imageInputsLit = jsStringArrayLiteral(bundle.imageInputs)
+        return """
+            (function () {
+              var selectors = $imageInputsLit;
+              var target = null;
+              var matchedSelector = null;
+              for (var i = 0; i < selectors.length; i++) {
+                try {
+                  var list = document.querySelectorAll(selectors[i]);
+                  if (list && list.length > 0) {
+                    for (var j = 0; j < list.length; j++) {
+                      if (!list[j].disabled) {
+                        target = list[j];
+                        matchedSelector = selectors[i];
+                        break;
+                      }
+                    }
+                    if (!target) {
+                      target = list[0];
+                      matchedSelector = selectors[i];
+                    }
+                    break;
+                  }
+                } catch (_) {}
+              }
+              if (!target) return { clicked: false, reason: 'file_input_not_found' };
+              try {
+                if (typeof target.click === 'function') {
+                  target.click();
+                  return { clicked: true, selector: matchedSelector };
+                }
+              } catch (_) {}
+              return { clicked: false, reason: 'file_input_click_failed' };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildInjectImageDataTransferJs(
+        bundle: SelectorBundle,
+        imageBase64: String,
+        fileName: String,
+        mimeType: String,
+    ): String {
+        val imageInputsLit = jsStringArrayLiteral(bundle.imageInputs)
+        val b64Lit = jsStringLiteral(imageBase64)
+        val fileNameLit = jsStringLiteral(fileName)
+        val mimeLit = jsStringLiteral(mimeType)
+        return """
+            (function () {
+              var selectors = $imageInputsLit;
+              var input = null;
+              var matchedSelector = null;
+              for (var s = 0; s < selectors.length; s++) {
+                try {
+                  var els = document.querySelectorAll(selectors[s]);
+                  if (els && els.length > 0) {
+                    for (var j = 0; j < els.length; j++) {
+                      if (!els[j].disabled) {
+                        input = els[j];
+                        matchedSelector = selectors[s];
+                        break;
+                      }
+                    }
+                    if (!input) {
+                      input = els[0];
+                      matchedSelector = selectors[s];
+                    }
+                    break;
+                  }
+                } catch (_) {}
+              }
+              if (!input) {
+                return { ok: false, injected: false, reason: 'file_input_not_found' };
+              }
+              var cleanB64 = String($b64Lit || '').replace(/\s+/g, '');
+              if (!cleanB64) {
+                return { ok: false, injected: false, reason: 'empty_base64' };
+              }
+              try {
+                var binary = atob(cleanB64);
+                var len = binary.length;
+                var bytes = new Uint8Array(len);
+                for (var i = 0; i < len; i++) {
+                  bytes[i] = binary.charCodeAt(i);
+                }
+                var file = new File([bytes], $fileNameLit, { type: $mimeLit || 'image/jpeg' });
+                var dt = new DataTransfer();
+                dt.items.add(file);
+                try {
+                  input.files = dt.files;
+                } catch (_) {
+                  Object.defineProperty(input, 'files', { value: dt.files, configurable: true });
+                }
+                try {
+                  var tracker = input._valueTracker;
+                  if (tracker && typeof tracker.setValue === 'function') {
+                    var curVal = '';
+                    try { curVal = String(input.value || ''); } catch (_) {}
+                    tracker.setValue(curVal ? '' : '__flame_reset__');
+                  }
+                } catch (_) {}
+                input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                return {
+                  ok: true,
+                  injected: true,
+                  selector: matchedSelector,
+                  filesLength: input.files ? input.files.length : 0
+                };
+              } catch (err) {
+                return {
+                  ok: false,
+                  injected: false,
+                  reason: String((err && err.message) || err || 'datatransfer_error')
+                };
+              }
+            })();
+        """.trimIndent()
+    }
+
+    fun buildInspectImageConfirmModalJs(bundle: SelectorBundle): String {
+        val sendSelectorsLit = jsStringArrayLiteral(bundle.imageDialogSend)
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              $IMAGE_MODAL_DISCOVERY_HELPERS_JS
+              $IMAGE_MODAL_SEND_HELPERS_JS
+              var modalState = __flameFindTopVisibleModal();
+              var topModal = modalState.topModal;
+              if (!topModal) {
+                return {
+                  modalVisible: false,
+                  modalCount: modalState.modalCount,
+                  visibleModalCount: 0,
+                  hasImgPreview: false,
+                  imgCount: 0,
+                  sendButtonFound: false,
+                  sendButtonEnabled: false,
+                  sendButtonText: null,
+                  sendMatchMethod: null
+                };
+              }
+              var imgs = topModal.querySelectorAll('img');
+              var imgCount = 0;
+              for (var i = 0; i < imgs.length; i++) {
+                var img = imgs[i];
+                var st = window.getComputedStyle ? window.getComputedStyle(img) : null;
+                if (st && (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0')) continue;
+                var src = String(img.getAttribute('src') || img.currentSrc || img.src || '').trim();
+                var rect = img.getBoundingClientRect ? img.getBoundingClientRect() : null;
+                if (src.length > 0 || (rect && rect.width > 0 && rect.height > 0)) {
+                  imgCount++;
+                }
+              }
+              var sendHit = __flameFindImageModalSendButton(topModal, $sendSelectorsLit);
+              return {
+                modalVisible: true,
+                modalCount: modalState.modalCount,
+                visibleModalCount: modalState.visibleModalCount,
+                hasImgPreview: imgCount > 0,
+                imgCount: imgCount,
+                sendButtonFound: !!sendHit,
+                sendButtonEnabled: !!(sendHit && sendHit.enabled),
+                sendButtonText: sendHit ? sendHit.text : null,
+                sendMatchMethod: sendHit ? sendHit.method : null
+              };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildClickImageModalSendJs(bundle: SelectorBundle): String {
+        val sendSelectorsLit = jsStringArrayLiteral(bundle.imageDialogSend)
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              $IMAGE_MODAL_DISCOVERY_HELPERS_JS
+              $IMAGE_MODAL_SEND_HELPERS_JS
+              var modalState = __flameFindTopVisibleModal();
+              var topModal = modalState.topModal;
+              if (!topModal) {
+                return { clicked: false, reason: 'modal_not_visible' };
+              }
+              var sendHit = __flameFindImageModalSendButton(topModal, $sendSelectorsLit);
+              if (!sendHit || !sendHit.el) {
+                return { clicked: false, reason: 'send_button_not_found' };
+              }
+              if (!sendHit.enabled) {
+                return { clicked: false, reason: 'send_button_disabled', buttonText: sendHit.text };
+              }
+              __flameDispatchClick(sendHit.el);
+              return {
+                clicked: true,
+                method: sendHit.method,
+                selector: sendHit.selector,
+                buttonText: sendHit.text
+              };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildDismissImageModalJs(): String = """
+        (function () {
+          $DOM_HELPERS_JS
+          $IMAGE_MODAL_DISCOVERY_HELPERS_JS
+          var modalState = __flameFindTopVisibleModal();
+          var topModal = modalState.topModal;
+          if (!topModal) {
+            return { dismissed: false, modalWasVisible: false };
+          }
+          var buttons = [];
+          try { buttons = Array.from(topModal.querySelectorAll('button, [role="button"]')); } catch (_) {}
+          for (var i = 0; i < buttons.length; i++) {
+            var btn = buttons[i];
+            if (!__flameIsVisible(btn)) continue;
+            if (__flameNormButtonText(btn) === '取消') {
+              __flameDispatchClick(btn);
+              return { dismissed: true, modalWasVisible: true, method: 'cancel_button' };
+            }
+          }
+          var closeHit = topModal.querySelector('.semi-modal-close, [aria-label="close"], [aria-label="关闭"], button[aria-label*="关闭"]');
+          if (closeHit && __flameIsVisible(closeHit)) {
+            __flameDispatchClick(closeHit);
+            return { dismissed: true, modalWasVisible: true, method: 'close_icon' };
+          }
+          var escOpts = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+          try {
+            topModal.dispatchEvent(new KeyboardEvent('keydown', escOpts));
+            document.dispatchEvent(new KeyboardEvent('keydown', escOpts));
+            document.dispatchEvent(new KeyboardEvent('keyup', escOpts));
+          } catch (_) {}
+          return { dismissed: true, modalWasVisible: true, method: 'escape_key' };
+        })();
+    """.trimIndent()
 }

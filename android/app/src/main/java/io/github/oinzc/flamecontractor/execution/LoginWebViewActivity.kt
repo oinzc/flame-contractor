@@ -8,7 +8,6 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.widget.Button
@@ -20,6 +19,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.room.withTransaction
+import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
@@ -53,6 +53,7 @@ class LoginWebViewActivity : AppCompatActivity() {
 
     private lateinit var loginMode: LoginMode
     private lateinit var accountId: String
+    private lateinit var profileName: String
     private lateinit var database: FlameDatabase
     private lateinit var selectorStore: SelectorBundleStore
 
@@ -70,6 +71,7 @@ class LoginWebViewActivity : AppCompatActivity() {
         loginMode = parseLoginMode(intent?.getStringExtra(EXTRA_LOGIN_MODE))
         accountId = intent?.getStringExtra(EXTRA_ACCOUNT_ID)?.takeIf { it.isNotBlank() }
             ?: DEFAULT_ACCOUNT_ID
+        profileName = WebViewProfileRegistry.profileNameForAccount(accountId)
 
         val appCtx = applicationContext ?: this
         database = ServiceDatabaseHolder.getInstance(appCtx)
@@ -86,6 +88,7 @@ class LoginWebViewActivity : AppCompatActivity() {
                 }
             },
             documentStartScript = DouyinJsScripts.buildIdentityCaptureDocumentStartJs(),
+            profileName = profileName,
         )
 
         lifecycleScope.launch {
@@ -121,7 +124,7 @@ class LoginWebViewActivity : AppCompatActivity() {
 
     override fun onPause() {
         try {
-            CookieManager.getInstance().flush()
+            WebViewProfileRegistry.cookieManagerForProfileName(profileName).flush()
         } catch (_: Throwable) {
         }
         super.onPause()
@@ -386,7 +389,10 @@ class LoginWebViewActivity : AppCompatActivity() {
             ScheduleCoordinator(this@LoginWebViewActivity, database).rescheduleAll()
         }
 
-        CookieManager.getInstance().flush()
+        try {
+            WebViewProfileRegistry.cookieManagerForProfileName(profileName).flush()
+        } catch (_: Throwable) {
+        }
         ExecutionRuntimeBus.update {
             it.copy(
                 needsLoginChoicePrompt = false,
@@ -474,7 +480,10 @@ class LoginWebViewActivity : AppCompatActivity() {
                 }
             }
 
-            CookieManager.getInstance().flush()
+            try {
+                WebViewProfileRegistry.cookieManagerForProfileName(profileName).flush()
+            } catch (_: Throwable) {
+            }
             ExecutionRuntimeBus.update {
                 it.copy(
                     needsLoginChoicePrompt = false,
@@ -501,18 +510,37 @@ class LoginWebViewActivity : AppCompatActivity() {
     }
 
     private fun clearCookiesAndWebStorage(onCleared: () -> Unit) {
-        val cm = CookieManager.getInstance()
-        cm.removeAllCookies {
-            cm.removeSessionCookies {
-                cm.flush()
+        lifecycleScope.launch {
+            val accountCount = withContext(Dispatchers.IO) {
                 try {
-                    WebStorage.getInstance().deleteAllData()
+                    database.accountDao().listAll().size
                 } catch (_: Throwable) {
+                    Int.MAX_VALUE
                 }
-                webView.clearCache(true)
-                webView.clearFormData()
-                webView.clearHistory()
-                onCleared()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            val allowDeleteWebStorage = shouldDeleteGlobalWebStorage(
+                multiProfileSupported = WebViewProfileRegistry.isMultiProfileSupported(),
+                accountCount = accountCount,
+                accountId = accountId,
+            )
+            WebViewProfileRegistry.clearAccountCookies(accountId) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (allowDeleteWebStorage) {
+                        try {
+                            WebStorage.getInstance().deleteAllData()
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    try {
+                        webView.clearCache(true)
+                        webView.clearFormData()
+                        webView.clearHistory()
+                    } catch (_: Throwable) {
+                    }
+                    onCleared()
+                }
             }
         }
     }
@@ -544,6 +572,12 @@ class LoginWebViewActivity : AppCompatActivity() {
         const val EXTRA_ACCOUNT_ID = "extra_account_id"
         private const val MUTEX_OWNER = "login_webview"
         private const val POLL_INTERVAL_MS = 1_500L
+
+        internal fun shouldDeleteGlobalWebStorage(
+            multiProfileSupported: Boolean,
+            accountCount: Int,
+            accountId: String,
+        ): Boolean = !multiProfileSupported || (accountCount <= 1 && accountId == DEFAULT_ACCOUNT_ID)
 
         fun createIntent(
             context: Context,

@@ -5,7 +5,7 @@ import android.content.Context
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -14,6 +14,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 
 data class WebViewConfigResult(
     val activeUa: String,
@@ -48,7 +49,17 @@ object DesktopWebViewFactory {
         onMainFrameError: ((Int, String) -> Unit)? = null,
         documentStartScript: String = DOCUMENT_START_SCRIPT,
         onReceivedHttpError: ((Int, String) -> Unit)? = null,
+        profileName: String = WebViewProfileRegistry.DEFAULT_PROFILE_NAME,
+        webChromeClient: WebChromeClient? = null,
     ): WebViewConfigResult {
+        val resolvedProfileName = profileName.trim().ifEmpty { WebViewProfileRegistry.DEFAULT_PROFILE_NAME }
+        if (resolvedProfileName != WebViewProfileRegistry.DEFAULT_PROFILE_NAME &&
+            WebViewProfileRegistry.isMultiProfileSupported() &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
+        ) {
+            WebViewCompat.setProfile(webView, resolvedProfileName)
+        }
+
         val defaultUa = WebSettings.getDefaultUserAgent(webView.context)
         val activeUa = buildDesktopUserAgent(defaultUa)
 
@@ -64,7 +75,7 @@ object DesktopWebViewFactory {
             mediaPlaybackRequiresUserGesture = true
         }
 
-        val cookieManager = CookieManager.getInstance()
+        val cookieManager = WebViewProfileRegistry.cookieManagerForProfileName(resolvedProfileName)
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
@@ -76,6 +87,10 @@ object DesktopWebViewFactory {
                 documentStartScript,
                 setOf("https://www.douyin.com", "https://*.douyin.com"),
             )
+        }
+
+        if (webChromeClient != null) {
+            webView.webChromeClient = webChromeClient
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -94,7 +109,10 @@ object DesktopWebViewFactory {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                CookieManager.getInstance().flush()
+                try {
+                    cookieManager.flush()
+                } catch (_: Throwable) {
+                }
                 onPageFinished?.invoke(safeOriginPath(url))
             }
 
@@ -145,6 +163,8 @@ object DesktopWebViewFactory {
         onMainFrameError: ((Int, String) -> Unit)? = null,
         documentStartScript: String = DOCUMENT_START_SCRIPT,
         onReceivedHttpError: ((Int, String) -> Unit)? = null,
+        profileName: String = WebViewProfileRegistry.DEFAULT_PROFILE_NAME,
+        webChromeClient: WebChromeClient? = null,
     ): Pair<WebView, WebViewConfigResult> {
         val webView = WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(widthPx, heightPx)
@@ -161,6 +181,8 @@ object DesktopWebViewFactory {
             onMainFrameError = onMainFrameError,
             documentStartScript = documentStartScript,
             onReceivedHttpError = onReceivedHttpError,
+            profileName = profileName,
+            webChromeClient = webChromeClient,
         )
         return webView to config
     }

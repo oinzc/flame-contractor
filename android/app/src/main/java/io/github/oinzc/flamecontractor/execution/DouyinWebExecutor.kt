@@ -2,13 +2,17 @@ package io.github.oinzc.flamecontractor.execution
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.Uri
 import android.os.SystemClock
 import android.util.Base64
+import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
-import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.webkit.WebViewCompat
+import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.identity.ConversationMatch
 import io.github.oinzc.flamecontractor.core.identity.ConversationRecord
 import io.github.oinzc.flamecontractor.core.identity.DouyinProtobufParser
@@ -18,11 +22,15 @@ import io.github.oinzc.flamecontractor.core.identity.IdentityRecord
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundle
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStoreUtils
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.domain.AuthProbeOutcome
 import io.github.oinzc.flamecontractor.execution.webview.DesktopWebViewFactory
+import java.io.File
+import java.io.FileInputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -112,10 +120,88 @@ class DouyinWebExecutor(
         internal val documentStartSupported: Boolean,
         internal val webViewVersion: String,
         internal val pageFinished: AtomicBoolean = AtomicBoolean(false),
+        val accountId: String = DEFAULT_ACCOUNT_ID,
+        val profileName: String = WebViewProfileRegistry.DEFAULT_PROFILE_NAME,
+        internal val fileChooserSlot: PendingFileChooserSlot<Uri> = PendingFileChooserSlot(),
     ) {
         internal var warmedUp: Boolean = false
         internal var cachedIdentitiesLoaded: Boolean = false
         internal var fallbackHookInjected: Boolean = false
+    }
+
+    /**
+     * 离屏 WebView 文件选择器一次性回调槽：
+     * - 未武装、已超时或已消费后到来的 `onShowFileChooser` 一律回传 `null` 并返回 `true`，
+     *   避免 Chromium 等待 `ValueCallback` 导致后续 `<input type="file">` 永久挂死。
+     */
+    internal class PendingFileChooserSlot<T : Any> {
+        private val lock = Any()
+        private var currentRequest: Request<T>? = null
+
+        class Request<T : Any>(
+            val id: String = UUID.randomUUID().toString(),
+            val payload: T,
+            val triggered: CompletableDeferred<Boolean> = CompletableDeferred(),
+        )
+
+        fun arm(payload: T): Request<T> {
+            val req = Request(payload = payload)
+            val prev = synchronized(lock) {
+                currentRequest.also { currentRequest = req }
+            }
+            if (prev != null && !prev.triggered.isCompleted) {
+                prev.triggered.complete(false)
+            }
+            return req
+        }
+
+        fun disarm(request: Request<T>) {
+            synchronized(lock) {
+                if (currentRequest?.id == request.id) {
+                    currentRequest = null
+                }
+            }
+            if (!request.triggered.isCompleted) {
+                request.triggered.complete(false)
+            }
+        }
+
+        fun clear() {
+            val prev = synchronized(lock) {
+                currentRequest.also { currentRequest = null }
+            }
+            if (prev != null && !prev.triggered.isCompleted) {
+                prev.triggered.complete(false)
+            }
+        }
+
+        fun handleShowFileChooser(deliverResult: (Array<T>?) -> Unit): Boolean {
+            val req = synchronized(lock) {
+                currentRequest.also { currentRequest = null }
+            }
+            if (req == null) {
+                try {
+                    deliverResult(null)
+                } catch (_: Throwable) {
+                }
+                return true
+            }
+            val delivered = try {
+                @Suppress("UNCHECKED_CAST")
+                val arr = java.lang.reflect.Array.newInstance(req.payload.javaClass, 1) as Array<T>
+                arr[0] = req.payload
+                deliverResult(arr)
+                true
+            } catch (_: Throwable) {
+                try {
+                    deliverResult(null)
+                } catch (_: Throwable) {
+                }
+                false
+            }
+            req.triggered.complete(delivered)
+            return true
+        }
     }
 
     internal class IdentityStore {
@@ -310,8 +396,13 @@ class DouyinWebExecutor(
         }
     }
 
-    suspend fun <T> withOffscreenSession(block: suspend (SessionHandle) -> T): T {
+    suspend fun <T> withOffscreenSession(
+        accountId: String = DEFAULT_ACCOUNT_ID,
+        block: suspend (SessionHandle) -> T,
+    ): T {
         val bundle = selectorBundleStore.current()
+        val profileName = WebViewProfileRegistry.profileNameForAccount(accountId)
+        val fileChooserSlot = PendingFileChooserSlot<Uri>()
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val identityStore = IdentityStore()
         val bridge = FlameBridge(identityStore, bridgeScope)
@@ -323,6 +414,18 @@ class DouyinWebExecutor(
         return try {
             val session = withContext(Dispatchers.Main) {
                 val docStartJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+                val webChromeClient = object : WebChromeClient() {
+                    override fun onShowFileChooser(
+                        webView: WebView?,
+                        filePathCallback: ValueCallback<Array<Uri>>?,
+                        fileChooserParams: FileChooserParams?,
+                    ): Boolean {
+                        if (filePathCallback == null) return false
+                        return fileChooserSlot.handleShowFileChooser { uris ->
+                            filePathCallback.onReceiveValue(uris)
+                        }
+                    }
+                }
                 val (createdWebView, config) = DesktopWebViewFactory.createOffscreenWebView(
                     context = appContext,
                     widthPx = 1440,
@@ -339,6 +442,8 @@ class DouyinWebExecutor(
                     onReceivedHttpError = { code, _ ->
                         httpError.compareAndSet(null, code to "http_error")
                     },
+                    profileName = profileName,
+                    webChromeClient = webChromeClient,
                 )
                 createdWebView.addJavascriptInterface(bridge, DouyinJsScripts.DEFAULT_BRIDGE_NAME)
                 webViewRef.set(createdWebView)
@@ -353,16 +458,20 @@ class DouyinWebExecutor(
                     documentStartSupported = config.documentStartSupported,
                     webViewVersion = webViewPkgVersion,
                     pageFinished = pageFinished,
+                    accountId = accountId,
+                    profileName = profileName,
+                    fileChooserSlot = fileChooserSlot,
                 )
             }
             block(session)
         } finally {
             withContext(NonCancellable) {
+                fileChooserSlot.clear()
                 bridge.clearAll()
                 bridgeScope.coroutineContext[Job]?.cancel()
                 withContext(Dispatchers.Main) {
                     try {
-                        CookieManager.getInstance().flush()
+                        WebViewProfileRegistry.cookieManagerForProfileName(profileName).flush()
                     } catch (_: Throwable) {
                     }
                     webViewRef.get()?.let { wv ->
@@ -381,11 +490,12 @@ class DouyinWebExecutor(
     suspend fun checkAuthAndIdentity(
         session: SessionHandle? = null,
         timeoutMs: Long = AUTH_WAIT_TIMEOUT_MS,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): AuthCheckResult {
         if (session != null) {
             return checkAuthInSession(session, timeoutMs)
         }
-        return withOffscreenSession { created ->
+        return withOffscreenSession(accountId = accountId) { created ->
             checkAuthInSession(created, timeoutMs)
         }
     }
@@ -395,9 +505,10 @@ class DouyinWebExecutor(
         scanRunId: String = UUID.randomUUID().toString(),
         onProgress: (suspend (discoveredCount: Int) -> Unit)? = null,
         session: SessionHandle? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): ScanExecutionResult {
         if (session == null) {
-            return withOffscreenSession { created ->
+            return withOffscreenSession(accountId = accountId) { created ->
                 scanAllChatsInSession(created, existingTargets, scanRunId, onProgress)
             }
         }
@@ -408,6 +519,7 @@ class DouyinWebExecutor(
         sampleTarget: ContractTargetEntity? = null,
         session: SessionHandle? = null,
         existingWebView: WebView? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): StructureProbeReport {
         if (session != null) {
             return probeStructureInSession(session, sampleTarget)
@@ -424,6 +536,8 @@ class DouyinWebExecutor(
                 httpError = AtomicReference(null),
                 documentStartSupported = true,
                 webViewVersion = WebViewCompat.getCurrentWebViewPackage(appContext)?.versionName.orEmpty(),
+                accountId = accountId,
+                profileName = WebViewProfileRegistry.profileNameForAccount(accountId),
             )
             return try {
                 probeStructureInSession(tempSession, sampleTarget)
@@ -432,7 +546,7 @@ class DouyinWebExecutor(
                 bridgeScope.coroutineContext[Job]?.cancel()
             }
         }
-        return withOffscreenSession { created ->
+        return withOffscreenSession(accountId = accountId) { created ->
             probeStructureInSession(created, sampleTarget)
         }
     }
@@ -444,9 +558,10 @@ class DouyinWebExecutor(
         session: SessionHandle? = null,
         onStageSending: (suspend () -> Unit)? = null,
         onStageConfirming: (suspend () -> Unit)? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): SendExecutionResult {
         if (session == null) {
-            return withOffscreenSession { created ->
+            return withOffscreenSession(accountId = accountId) { created ->
                 val auth = checkAuthInSession(created, AUTH_WAIT_TIMEOUT_MS)
                 if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
                     return@withOffscreenSession SendExecutionResult(
@@ -485,9 +600,10 @@ class DouyinWebExecutor(
         session: SessionHandle? = null,
         onStageSending: (suspend () -> Unit)? = null,
         onStageConfirming: (suspend () -> Unit)? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): SendExecutionResult {
         if (session == null) {
-            return withOffscreenSession { created ->
+            return withOffscreenSession(accountId = accountId) { created ->
                 val auth = checkAuthInSession(created, AUTH_WAIT_TIMEOUT_MS)
                 if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
                     return@withOffscreenSession SendExecutionResult(
@@ -519,6 +635,69 @@ class DouyinWebExecutor(
             onStageSending = onStageSending,
             onStageConfirming = onStageConfirming,
         )
+    }
+
+    suspend fun sendImage(
+        session: SessionHandle? = null,
+        target: ContractTargetEntity,
+        imageFile: File?,
+        imageContentUri: Uri?,
+        onStageSending: (suspend () -> Unit)? = null,
+        onStageConfirming: (suspend () -> Unit)? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): SendExecutionResult {
+        if (!isValidImageFile(imageFile)) {
+            return missingImageTerminalResult()
+        }
+        if (session == null) {
+            return withOffscreenSession(accountId = accountId) { created ->
+                val auth = checkAuthInSession(created, AUTH_WAIT_TIMEOUT_MS)
+                if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
+                    return@withOffscreenSession SendExecutionResult(
+                        jobStatus = JobStatus.FAILED_RETRYABLE,
+                        failureClass = authOutcomeToFailureClass(auth.outcome),
+                        coreSkeletonBroken = auth.skeletonMissingDespiteSession,
+                        summaryDetail = auth.detail ?: "登录态或网络检查未通过",
+                    )
+                }
+                sendImageInSession(
+                    session = created,
+                    target = target,
+                    imageFile = imageFile,
+                    imageContentUri = imageContentUri,
+                    onStageSending = onStageSending,
+                    onStageConfirming = onStageConfirming,
+                )
+            }
+        }
+        return sendImageInSession(
+            session = session,
+            target = target,
+            imageFile = imageFile,
+            imageContentUri = imageContentUri,
+            onStageSending = onStageSending,
+            onStageConfirming = onStageConfirming,
+        )
+    }
+
+    suspend fun repairTargetIdentity(
+        target: ContractTargetEntity,
+        session: SessionHandle? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): IdentityRepairResult {
+        if (session != null) {
+            return repairTargetIdentityInSession(session, target)
+        }
+        return withOffscreenSession(accountId = accountId) { created ->
+            val auth = checkAuthInSession(created, AUTH_WAIT_TIMEOUT_MS)
+            if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
+                return@withOffscreenSession IdentityRepairResult(
+                    repaired = false,
+                    detail = auth.detail ?: "当前未登录，无法补采身份",
+                )
+            }
+            repairTargetIdentityInSession(created, target)
+        }
     }
 
     internal suspend fun repairTargetIdentityInSession(
@@ -947,6 +1126,93 @@ class DouyinWebExecutor(
                 observedPlatformHandle = opened.observedPlatformHandle,
                 observedPlatformConversationId = opened.observedPlatformConversationId,
                 observedConversationType = opened.observedConversationType,
+            )
+        } finally {
+            withContext(NonCancellable) {
+                evalObject(session.webView, DouyinJsScripts.buildResetInputFocusJs(bundle))
+            }
+        }
+    }
+
+    internal suspend fun sendImageInSession(
+        session: SessionHandle,
+        target: ContractTargetEntity,
+        imageFile: File?,
+        imageContentUri: Uri?,
+        onStageSending: (suspend () -> Unit)? = null,
+        onStageConfirming: (suspend () -> Unit)? = null,
+    ): SendExecutionResult {
+        if (!isValidImageFile(imageFile)) {
+            return missingImageTerminalResult()
+        }
+        val bundle = selectorBundleStore.current()
+        val transport = object : ImageSendTransport {
+            override suspend fun openTargetConversation(
+                bundle: SelectorBundle,
+                target: ContractTargetEntity,
+            ): OpenConversationResult = openConversation(
+                session = session,
+                bundle = bundle,
+                targetName = target.nicknameSnapshot,
+                expectedUserId = target.platformUserId,
+                expectedConversationId = target.platformConversationId,
+            )
+
+            override suspend fun waitForEditorReady(bundle: SelectorBundle, timeoutMs: Long): Boolean =
+                this@DouyinWebExecutor.waitForEditorReady(session, bundle, timeoutMs)
+
+            override suspend fun waitForMessageListSettled(bundle: SelectorBundle) {
+                this@DouyinWebExecutor.waitForMessageListSettled(session, bundle)
+            }
+
+            override suspend fun evalJsObject(script: String): Map<String, Any?>? =
+                evalObject(session.webView, script)
+
+            override suspend fun dispatchMotionTap(
+                cssX: Float,
+                cssY: Float,
+                viewportWidth: Int,
+                viewportHeight: Int,
+            ): Boolean = dispatchNativeTapOnWebView(
+                webView = session.webView,
+                cssX = cssX,
+                cssY = cssY,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+            )
+
+            override suspend fun runWithFileChooserArmed(
+                triggerActions: suspend (awaitTriggered: suspend (Long) -> Boolean) -> Boolean,
+            ): Boolean {
+                val uri = imageContentUri ?: return false
+                val request = session.fileChooserSlot.arm(uri)
+                return try {
+                    triggerActions { timeoutMs ->
+                        withTimeoutOrNull(timeoutMs) { request.triggered.await() } == true
+                    }
+                } finally {
+                    session.fileChooserSlot.disarm(request)
+                }
+            }
+
+            override fun encodeImageForDataTransfer(imageFile: File): EncodedImagePayload? =
+                encodeImageFileToPayload(imageFile)
+
+            override fun clockMs(): Long = SystemClock.elapsedRealtime()
+
+            override suspend fun delayMs(ms: Long) {
+                delay(ms)
+            }
+        }
+        return try {
+            executeImageSend(
+                bundle = bundle,
+                target = target,
+                imageFile = imageFile,
+                hasContentUri = imageContentUri != null,
+                transport = transport,
+                onStageSending = onStageSending,
+                onStageConfirming = onStageConfirming,
             )
         } finally {
             withContext(NonCancellable) {
@@ -1406,7 +1672,7 @@ class DouyinWebExecutor(
         )
     }
 
-    private data class OpenConversationResult(
+    internal data class OpenConversationResult(
         val opened: Boolean,
         val exact: Boolean,
         val ambiguous: Boolean = false,
@@ -1415,6 +1681,42 @@ class DouyinWebExecutor(
         val observedPlatformConversationId: String? = null,
         val observedConversationType: String? = null,
     )
+
+    internal data class EncodedImagePayload(
+        val base64: String,
+        val fileName: String,
+        val mimeType: String,
+    )
+
+    internal interface ImageSendTransport {
+        suspend fun openTargetConversation(
+            bundle: SelectorBundle,
+            target: ContractTargetEntity,
+        ): OpenConversationResult
+
+        suspend fun waitForEditorReady(bundle: SelectorBundle, timeoutMs: Long): Boolean
+
+        suspend fun waitForMessageListSettled(bundle: SelectorBundle)
+
+        suspend fun evalJsObject(script: String): Map<String, Any?>?
+
+        suspend fun dispatchMotionTap(
+            cssX: Float,
+            cssY: Float,
+            viewportWidth: Int,
+            viewportHeight: Int,
+        ): Boolean
+
+        suspend fun runWithFileChooserArmed(
+            triggerActions: suspend (awaitTriggered: suspend (Long) -> Boolean) -> Boolean,
+        ): Boolean
+
+        fun encodeImageForDataTransfer(imageFile: File): EncodedImagePayload?
+
+        fun clockMs(): Long
+
+        suspend fun delayMs(ms: Long)
+    }
 
     private suspend fun openConversation(
         session: SessionHandle,
@@ -1777,6 +2079,45 @@ class DouyinWebExecutor(
         }
     }
 
+    private suspend fun dispatchNativeTapOnWebView(
+        webView: WebView,
+        cssX: Float,
+        cssY: Float,
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ): Boolean = withContext(Dispatchers.Main) {
+        try {
+            val viewW = webView.width
+            val viewH = webView.height
+            val scaleX = if (viewportWidth > 0 && viewW > 0) viewW.toFloat() / viewportWidth.toFloat() else 1f
+            val scaleY = if (viewportHeight > 0 && viewH > 0) viewH.toFloat() / viewportHeight.toFloat() else scaleX
+            val rawX = cssX * scaleX
+            val rawY = cssY * scaleY
+            val x = if (viewW > 0) rawX.coerceIn(0f, (viewW - 1).toFloat()) else rawX
+            val y = if (viewH > 0) rawY.coerceIn(0f, (viewH - 1).toFloat()) else rawY
+
+            val downTime = SystemClock.uptimeMillis()
+            val downEvent = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
+            val downHandled = try {
+                webView.requestFocus()
+                webView.dispatchTouchEvent(downEvent)
+            } finally {
+                downEvent.recycle()
+            }
+            delay(40L)
+            val upTime = SystemClock.uptimeMillis()
+            val upEvent = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, x, y, 0)
+            val upHandled = try {
+                webView.dispatchTouchEvent(upEvent)
+            } finally {
+                upEvent.recycle()
+            }
+            downHandled || upHandled
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private suspend fun tryAndroidImeCommit(webView: WebView, text: String): Boolean =
         withContext(Dispatchers.Main) {
             try {
@@ -1983,6 +2324,10 @@ class DouyinWebExecutor(
         private const val EDITOR_READY_TIMEOUT_MS = 8_000L
         private const val STICKER_PANEL_TIMEOUT_MS = 5_000L
         private const val STICKER_POST_CLICK_SETTLE_MS = 800L
+        private const val FILE_CHOOSER_TRIGGER_TIMEOUT_MS = 1_500L
+        private const val FILE_CHOOSER_FALLBACK_TIMEOUT_MS = 1_000L
+        private const val IMAGE_CONFIRM_MODAL_TIMEOUT_MS = 6_000L
+        private const val IMAGE_MODAL_POLL_INTERVAL_MS = 300L
         private const val MESSAGE_LIST_POLL_INTERVAL_MS = 350L
         private const val MESSAGE_LIST_MIN_SETTLE_MS = 700L
         private const val MESSAGE_LIST_MAX_SETTLE_MS = 2_500L
@@ -1993,6 +2338,302 @@ class DouyinWebExecutor(
         private const val SCAN_MAX_ROUNDS = 15
         private const val SCAN_IDLE_ROUNDS = 3
         private const val SCAN_SCROLL_STEP_PX = 900
+        private val SAFE_UPLOAD_NAME_REGEX = Regex("""^[A-Za-z0-9._-]{1,64}$""")
+
+        internal fun isValidImageFile(imageFile: File?): Boolean =
+            imageFile != null && imageFile.isFile && imageFile.canRead() && imageFile.length() > 0L
+
+        internal fun missingImageTerminalResult(): SendExecutionResult = SendExecutionResult(
+            jobStatus = JobStatus.FAILED_TERMINAL,
+            failureClass = FailureClass.OTHER,
+            inputMethodUsed = "image_upload",
+            summaryDetail = "图片模板缺少有效的本地图片文件，请前往「模板」页重新选择",
+        )
+
+        internal fun encodeImageFileToPayload(imageFile: File): EncodedImagePayload? {
+            if (!isValidImageFile(imageFile)) return null
+            return try {
+                val bytes = FileInputStream(imageFile).use { input ->
+                    TemplateImageStoreUtils.readBoundedBytes(
+                        input = input,
+                        maxBytes = TemplateImageStoreUtils.MAX_IMPORT_INPUT_BYTES,
+                    )
+                }
+                val (mimeType, ext) = detectImageMimeAndExt(bytes, imageFile.name)
+                val safeName = sanitizeUploadFileName(imageFile.name, ext)
+                val base64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                EncodedImagePayload(
+                    base64 = base64,
+                    fileName = safeName,
+                    mimeType = mimeType,
+                )
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+        private fun detectImageMimeAndExt(bytes: ByteArray, fileName: String): Pair<String, String> {
+            if (TemplateImageStoreUtils.isGifHeader(bytes)) {
+                return "image/gif" to "gif"
+            }
+            if (bytes.size >= 4 &&
+                bytes[0] == 0x89.toByte() &&
+                bytes[1] == 0x50.toByte() &&
+                bytes[2] == 0x4E.toByte() &&
+                bytes[3] == 0x47.toByte()
+            ) {
+                return "image/png" to "png"
+            }
+            if (bytes.size >= 12 &&
+                bytes[0] == 'R'.code.toByte() &&
+                bytes[1] == 'I'.code.toByte() &&
+                bytes[2] == 'F'.code.toByte() &&
+                bytes[3] == 'F'.code.toByte() &&
+                bytes[8] == 'W'.code.toByte() &&
+                bytes[9] == 'E'.code.toByte() &&
+                bytes[10] == 'B'.code.toByte() &&
+                bytes[11] == 'P'.code.toByte()
+            ) {
+                return "image/webp" to "webp"
+            }
+            if (bytes.size >= 3 &&
+                bytes[0] == 0xFF.toByte() &&
+                bytes[1] == 0xD8.toByte() &&
+                bytes[2] == 0xFF.toByte()
+            ) {
+                return "image/jpeg" to "jpg"
+            }
+            val lower = fileName.lowercase()
+            return when {
+                lower.endsWith(".png") -> "image/png" to "png"
+                lower.endsWith(".webp") -> "image/webp" to "webp"
+                lower.endsWith(".gif") -> "image/gif" to "gif"
+                else -> "image/jpeg" to "jpg"
+            }
+        }
+
+        private fun sanitizeUploadFileName(rawName: String, ext: String): String {
+            val trimmed = rawName.trim()
+            return if (SAFE_UPLOAD_NAME_REGEX.matches(trimmed)) trimmed else "image.$ext"
+        }
+
+        internal suspend fun executeImageSend(
+            bundle: SelectorBundle,
+            target: ContractTargetEntity,
+            imageFile: File?,
+            hasContentUri: Boolean,
+            transport: ImageSendTransport,
+            onStageSending: (suspend () -> Unit)? = null,
+            onStageConfirming: (suspend () -> Unit)? = null,
+        ): SendExecutionResult {
+            if (!isValidImageFile(imageFile) || imageFile == null) {
+                return missingImageTerminalResult()
+            }
+
+            val opened = transport.openTargetConversation(bundle, target)
+            if (!opened.opened || !opened.exact) {
+                val detail = when {
+                    !opened.opened -> "未能在会话列表中定位目标会话"
+                    opened.ambiguous -> "同名存在多个候选账号或群聊，已拒绝发送"
+                    else -> "右侧会话标题或稳定身份与目标不一致，已拒绝发送"
+                }
+                return SendExecutionResult(
+                    jobStatus = JobStatus.FAILED_TERMINAL,
+                    failureClass = FailureClass.TARGET_UNCERTAIN,
+                    summaryDetail = detail,
+                )
+            }
+
+            onStageSending?.invoke()
+
+            if (!transport.waitForEditorReady(bundle, EDITOR_READY_TIMEOUT_MS)) {
+                return SendExecutionResult(
+                    jobStatus = JobStatus.FAILED_TERMINAL,
+                    failureClass = FailureClass.DOM_CHANGED,
+                    coreSkeletonBroken = true,
+                    summaryDetail = "核心页面结构缺失：未找到可见聊天输入框",
+                )
+            }
+
+            transport.waitForMessageListSettled(bundle)
+
+            val probeObj = transport.evalJsObject(DouyinJsScripts.buildProbeImageUploadDomJs(bundle))
+            val triggerFound = probeObj?.boolOrDefault("triggerFound", false) == true
+            val triggerCount = probeObj?.intOrNull("triggerCount") ?: 0
+            val fileInputCount = probeObj?.intOrNull("fileInputCount") ?: 0
+            val centerX = (probeObj?.get("centerX") as? Number)?.toFloat()
+            val centerY = (probeObj?.get("centerY") as? Number)?.toFloat()
+            val viewportW = probeObj?.intOrNull("viewportWidth") ?: 0
+            val viewportH = probeObj?.intOrNull("viewportHeight") ?: 0
+
+            if (probeObj == null || (!triggerFound && triggerCount == 0 && fileInputCount == 0)) {
+                return SendExecutionResult(
+                    jobStatus = JobStatus.FAILED_TERMINAL,
+                    failureClass = FailureClass.DOM_CHANGED,
+                    coreSkeletonBroken = true,
+                    inputMethodUsed = "image_upload",
+                    summaryDetail = "核心页面结构缺失：未找到图片上传入口",
+                )
+            }
+
+            var uploadMethod: String? = null
+
+            // 方案 A：原生 MotionEvent 点 .semi-upload-add -> onShowFileChooser 回传 content:// URI，依次兜底 JS .click()
+            if (hasContentUri) {
+                val chooserTriggered = transport.runWithFileChooserArmed { awaitTriggered ->
+                    var triggered = false
+                    if (triggerFound && centerX != null && centerY != null) {
+                        transport.dispatchMotionTap(centerX, centerY, viewportW, viewportH)
+                        triggered = awaitTriggered(FILE_CHOOSER_TRIGGER_TIMEOUT_MS)
+                    }
+                    if (!triggered && (triggerFound || triggerCount > 0)) {
+                        transport.evalJsObject(DouyinJsScripts.buildClickImageUploadTriggerJs(bundle))
+                        triggered = awaitTriggered(FILE_CHOOSER_FALLBACK_TIMEOUT_MS)
+                    }
+                    if (!triggered && fileInputCount > 0) {
+                        transport.evalJsObject(DouyinJsScripts.buildClickImageFileInputJs(bundle))
+                        triggered = awaitTriggered(FILE_CHOOSER_FALLBACK_TIMEOUT_MS)
+                    }
+                    triggered
+                }
+
+                if (chooserTriggered && waitForImageConfirmModalReady(bundle, transport)) {
+                    uploadMethod = "image_chooser"
+                } else {
+                    val dismissed = transport.evalJsObject(DouyinJsScripts.buildDismissImageModalJs())
+                    if (dismissed?.boolOrDefault("dismissed", false) == true) {
+                        transport.delayMs(250L)
+                    }
+                }
+            }
+
+            // 方案 B：方案 A 未拉起确认弹窗时降级为 JS DataTransfer 注入 File 到 input[type="file"]
+            if (uploadMethod == null && fileInputCount > 0) {
+                val payload = transport.encodeImageForDataTransfer(imageFile)
+                if (payload != null) {
+                    val injectRes = transport.evalJsObject(
+                        DouyinJsScripts.buildInjectImageDataTransferJs(
+                            bundle = bundle,
+                            imageBase64 = payload.base64,
+                            fileName = payload.fileName,
+                            mimeType = payload.mimeType,
+                        ),
+                    )
+                    if (injectRes?.boolOrDefault("injected", false) == true &&
+                        waitForImageConfirmModalReady(bundle, transport)
+                    ) {
+                        uploadMethod = "image_datatransfer"
+                    } else {
+                        val dismissed = transport.evalJsObject(DouyinJsScripts.buildDismissImageModalJs())
+                        if (dismissed?.boolOrDefault("dismissed", false) == true) {
+                            transport.delayMs(250L)
+                        }
+                    }
+                }
+            }
+
+            if (uploadMethod == null) {
+                return SendExecutionResult(
+                    jobStatus = JobStatus.FAILED_RETRYABLE,
+                    failureClass = FailureClass.OTHER,
+                    inputMethodUsed = "image_upload",
+                    summaryDetail = "图片上传后未弹出确认发送弹窗，未触发发送",
+                )
+            }
+
+            // 必须在确认弹窗就绪后、点击发送前一刻采样发送前媒体基线
+            val beforeMediaObj = transport.evalJsObject(
+                DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
+            )
+            val beforeMultiset = SendConfirmer.toMultiset(
+                beforeMediaObj?.stringListOrEmpty("signatures").orEmpty(),
+            )
+
+            // 不可逆边界：先落 CONFIRMING 再点确认发送按钮
+            onStageConfirming?.invoke()
+
+            val clickRes = transport.evalJsObject(DouyinJsScripts.buildClickImageModalSendJs(bundle))
+            val outcome = SendConfirmer.confirmStickerAfterClick(
+                clickResult = clickRes,
+                beforeMultiset = beforeMultiset,
+                postClickSettleMs = 0L,
+                timeoutMs = SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS,
+                pollIntervalMs = SendConfirmer.DEFAULT_POLL_INTERVAL_MS,
+                clockMs = { transport.clockMs() },
+                delayFn = { ms -> transport.delayMs(ms) },
+            ) {
+                val sampleObj = transport.evalJsObject(
+                    DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
+                )
+                StickerPollSample(
+                    failureMarkerHit = sampleObj?.boolOrDefault("failureMarkerHit", false) == true,
+                    afterMultiset = SendConfirmer.toMultiset(
+                        sampleObj?.stringListOrEmpty("signatures").orEmpty(),
+                    ),
+                )
+            }
+
+            return when (outcome) {
+                ConfirmOutcome.SUCCEEDED -> SendExecutionResult(
+                    jobStatus = JobStatus.SUCCEEDED,
+                    inputMethodUsed = uploadMethod,
+                    summaryDetail = "图片发送已通过新增非头像媒体签名确认",
+                    observedPlatformUserId = opened.observedPlatformUserId,
+                    observedPlatformHandle = opened.observedPlatformHandle,
+                    observedPlatformConversationId = opened.observedPlatformConversationId,
+                    observedConversationType = opened.observedConversationType,
+                )
+                ConfirmOutcome.RETRYABLE_FAILURE -> {
+                    val clickAborted = SendConfirmer.classifyIrreversibleClickResult(clickRes) ==
+                        ClickDispatchOutcome.ABORT_RETRYABLE
+                    if (clickAborted) {
+                        transport.evalJsObject(DouyinJsScripts.buildDismissImageModalJs())
+                    }
+                    SendExecutionResult(
+                        jobStatus = JobStatus.FAILED_RETRYABLE,
+                        failureClass = FailureClass.OTHER,
+                        inputMethodUsed = uploadMethod,
+                        summaryDetail = if (clickAborted) {
+                            "未能点击图片发送确认按钮"
+                        } else {
+                            "页面出现明确发送失败提示，可按退避规则重试"
+                        },
+                    )
+                }
+                ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW,
+                ConfirmOutcome.CONFIRMING_PENDING,
+                -> SendExecutionResult(
+                    jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    failureClass = FailureClass.UNKNOWN_OUTCOME,
+                    inputMethodUsed = uploadMethod,
+                    summaryDetail = "已点击图片发送按钮（发送前媒体数 ${beforeMultiset.values.sum()}）但未检测到新增媒体气泡，已阻止自动重发，请人工核对",
+                    observedPlatformUserId = opened.observedPlatformUserId,
+                    observedPlatformHandle = opened.observedPlatformHandle,
+                    observedPlatformConversationId = opened.observedPlatformConversationId,
+                    observedConversationType = opened.observedConversationType,
+                )
+            }
+        }
+
+        private suspend fun waitForImageConfirmModalReady(
+            bundle: SelectorBundle,
+            transport: ImageSendTransport,
+            timeoutMs: Long = IMAGE_CONFIRM_MODAL_TIMEOUT_MS,
+        ): Boolean {
+            val deadline = transport.clockMs() + timeoutMs
+            val inspectJs = DouyinJsScripts.buildInspectImageConfirmModalJs(bundle)
+            while (true) {
+                val modal = transport.evalJsObject(inspectJs)
+                val ready = modal != null &&
+                    modal.boolOrDefault("modalVisible", false) &&
+                    modal.boolOrDefault("hasImgPreview", false) &&
+                    modal.boolOrDefault("sendButtonFound", false) &&
+                    modal.boolOrDefault("sendButtonEnabled", false)
+                if (ready) return true
+                if (transport.clockMs() >= deadline) return false
+                transport.delayMs(IMAGE_MODAL_POLL_INTERVAL_MS)
+            }
+        }
 
         internal fun isMessageListSettled(
             previous: MediaSettleSample?,
