@@ -364,6 +364,10 @@ class TodayViewModel(
                             }
                         }
                     }
+
+                    UrgentCategory.SPARK_DETERIORATING -> {
+                        controlFlow.update { it.copy(pendingUrgentCategory = null) }
+                    }
                 }
             }
         }

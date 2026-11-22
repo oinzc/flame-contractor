@@ -44,6 +44,7 @@ internal data class ScheduleReadSnapshot(
     val accountStatus: AccountStatus,
     val crashInProgressCount: Int,
     val evaluation: ScheduleEvaluation,
+    val autoScanEvaluation: AutoScanEvaluation? = null,
 )
 
 /**
@@ -117,12 +118,25 @@ class ScheduleCoordinator private constructor(
             networkDeferCountToday = networkDeferCountToday,
         )
 
+        val scanRunDao = db.scanRunDao()
+        val latestCompletedScan = scanRunDao.getLatestCompletedScanRun(account.id)
+        val latestAnyScan = scanRunDao.getLatestScanRun(account.id)
+        val autoScanEvaluation = AutoScanPlanner.evaluate(
+            now = now,
+            account = account,
+            enabledTargets = targets,
+            latestCompletedScan = latestCompletedScan,
+            latestAnyScan = latestAnyScan,
+            zoneId = zoneId,
+        )
+
         return ScheduleReadSnapshot(
             accountId = account.id,
             accountEnabled = account.enabled,
             accountStatus = account.status,
             crashInProgressCount = crashInProgressCount,
             evaluation = evaluation,
+            autoScanEvaluation = autoScanEvaluation,
         )
     }
 
@@ -141,10 +155,18 @@ class ScheduleCoordinator private constructor(
                 accountId = snapshot.accountId,
                 evaluation = snapshot.evaluation,
                 triggerSource = triggerSource,
+                autoScanEvaluation = snapshot.autoScanEvaluation,
             )
         }
         rescheduleAll(now)
         return snapshot
+    }
+
+    suspend fun inspectNextAutoScanAt(now: Instant = Instant.now()): Instant? {
+        val snapshot = evaluateCurrentSchedule(now = now, staleCrashRecoveryMillis = null)
+            ?: return null
+        val autoScanEval = snapshot.autoScanEvaluation ?: return null
+        return if (autoScanEval.eligible) autoScanEval.nextAutoScanAt else null
     }
 
     suspend fun rescheduleAll(now: Instant = Instant.now()): Instant? {
@@ -157,6 +179,20 @@ class ScheduleCoordinator private constructor(
         ensureSafetyNetPeriodicWork()
         cancelAlarm(REQUEST_CODE_AUTH_RECHECK, KIND_AUTH_RECHECK)
         cancelAlarm(REQUEST_CODE_RETRY_BACKOFF, KIND_RETRY_BACKOFF)
+
+        val autoScanEval = snapshot.autoScanEvaluation
+        val nextAutoScanAt = autoScanEval?.nextAutoScanAt
+        if (autoScanEval?.eligible == true && nextAutoScanAt != null) {
+            val autoScanIntent = createAlarmPendingIntent(
+                requestCode = REQUEST_CODE_AUTO_SCAN,
+                kind = KIND_AUTO_SCAN,
+            )
+            if (autoScanIntent != null) {
+                scheduleAlarmAt(nextAutoScanAt.toEpochMilli(), autoScanIntent)
+            }
+        } else {
+            cancelAlarm(REQUEST_CODE_AUTO_SCAN, KIND_AUTO_SCAN)
+        }
 
         val nextWakeAt = snapshot.evaluation.nextWakeAt
         if (nextWakeAt == null) {
@@ -212,6 +248,7 @@ class ScheduleCoordinator private constructor(
         cancelAlarm(REQUEST_CODE_MAIN_WAKE, KIND_SCHEDULED_WAKE)
         cancelAlarm(REQUEST_CODE_AUTH_RECHECK, KIND_AUTH_RECHECK)
         cancelAlarm(REQUEST_CODE_RETRY_BACKOFF, KIND_RETRY_BACKOFF)
+        cancelAlarm(REQUEST_CODE_AUTO_SCAN, KIND_AUTO_SCAN)
     }
 
     fun ensureSafetyNetPeriodicWork() {
@@ -313,9 +350,11 @@ class ScheduleCoordinator private constructor(
         const val KIND_SCHEDULED_WAKE = "scheduled_wake"
         const val KIND_AUTH_RECHECK = "auth_recheck"
         const val KIND_RETRY_BACKOFF = "retry_backoff"
+        const val KIND_AUTO_SCAN = "auto_scan"
 
         private const val REQUEST_CODE_MAIN_WAKE = 4101
         private const val REQUEST_CODE_AUTH_RECHECK = 4102
         private const val REQUEST_CODE_RETRY_BACKOFF = 4103
+        const val REQUEST_CODE_AUTO_SCAN = 4104
     }
 }

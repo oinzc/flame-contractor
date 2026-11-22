@@ -18,6 +18,7 @@ object ExecutionDispatchContract {
     const val EXECUTION_SERVICE_CLASS = "io.github.oinzc.flamecontractor.execution.ExecutionForegroundService"
     const val ACTION_RUN_SCHEDULED = "io.github.oinzc.flamecontractor.action.RUN_SCHEDULED"
     const val ACTION_AUTH_RECHECK = "io.github.oinzc.flamecontractor.action.AUTH_RECHECK"
+    const val ACTION_RUN_AUTO_SCAN = "io.github.oinzc.flamecontractor.action.RUN_AUTO_SCAN"
     const val EXTRA_TRIGGER_REASON = "trigger_reason"
     const val EXTRA_ACCOUNT_ID = "account_id"
 
@@ -61,26 +62,35 @@ object ExecutionDispatchContract {
         }
     }
 
+    fun decideAction(
+        evaluation: ScheduleEvaluation,
+        autoScanEvaluation: AutoScanEvaluation? = null,
+    ): String? = when {
+        evaluation.shouldTriggerAuthRecheck -> ACTION_AUTH_RECHECK
+        evaluation.dueTargets.isNotEmpty() -> ACTION_RUN_SCHEDULED
+        autoScanEvaluation?.shouldTriggerNow == true -> ACTION_RUN_AUTO_SCAN
+        else -> null
+    }
+
     fun dispatchEvaluationIfNeeded(
         context: Context,
         accountId: String,
         evaluation: ScheduleEvaluation,
         triggerSource: String,
-    ): Boolean = when {
-        evaluation.shouldTriggerAuthRecheck -> startExecutionForegroundService(
+        autoScanEvaluation: AutoScanEvaluation? = null,
+    ): Boolean {
+        val action = decideAction(evaluation, autoScanEvaluation) ?: return false
+        val reasonSuffix = when (action) {
+            ACTION_AUTH_RECHECK -> "auth_recheck"
+            ACTION_RUN_SCHEDULED -> "scheduled"
+            ACTION_RUN_AUTO_SCAN -> "auto_scan"
+            else -> "unknown"
+        }
+        return startExecutionForegroundService(
             context = context,
-            action = ACTION_AUTH_RECHECK,
+            action = action,
             accountId = accountId,
-            triggerReason = "${triggerSource}_auth_recheck",
+            triggerReason = "${triggerSource}_$reasonSuffix",
         )
-
-        evaluation.dueTargets.isNotEmpty() -> startExecutionForegroundService(
-            context = context,
-            action = ACTION_RUN_SCHEDULED,
-            accountId = accountId,
-            triggerReason = "${triggerSource}_scheduled",
-        )
-
-        else -> false
     }
 }

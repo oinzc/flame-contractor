@@ -1035,6 +1035,7 @@ class TargetsViewModel(
                     val nowMs = nowInstant().toEpochMilli()
                     for (item in existingCandidates) {
                         val candidate = item.candidate
+                        if (candidate.matchStatus == MatchStatus.AMBIGUOUS) continue
                         val isBound = candidate.matchStatus == MatchStatus.BOUND
                         val pUserId = if (isBound) candidate.platformUserId?.trim()?.takeIf { it.isNotEmpty() } else null
                         val pHandle = if (isBound) candidate.platformHandle?.trim()?.takeIf { it.isNotEmpty() } else null
@@ -1071,8 +1072,16 @@ class TargetsViewModel(
                                 sparkLabel = candidate.sparkLabel,
                                 scannedAt = nowMs,
                             )
-                            syncedCount++
+                        } else {
+                            repository.updateOfficialSparkSnapshot(
+                                id = target.id,
+                                sparkDays = null,
+                                sparkKind = null,
+                                sparkLabel = "无火花",
+                                scannedAt = nowMs,
+                            )
                         }
+                        syncedCount++
                     }
                     scheduleGateway.rescheduleAll(nowInstant())
                 }

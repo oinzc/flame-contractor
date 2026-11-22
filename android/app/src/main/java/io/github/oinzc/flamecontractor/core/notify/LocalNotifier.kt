@@ -19,6 +19,7 @@ enum class UrgentCategory {
     DOM_BROKEN,
     COOLDOWN,
     UNKNOWN_REQUIRES_REVIEW,
+    SPARK_DETERIORATING,
 }
 
 class LocalNotifier(context: Context) {
@@ -135,18 +136,19 @@ class LocalNotifier(context: Context) {
         )
     }
 
-    private fun notificationIdFor(category: UrgentCategory): Int = when (category) {
-        UrgentCategory.AUTH_EXPIRED -> 3101
-        UrgentCategory.VERIFICATION_REQUIRED -> 3102
-        UrgentCategory.DOM_BROKEN -> 3103
-        UrgentCategory.COOLDOWN -> 3104
-        UrgentCategory.UNKNOWN_REQUIRES_REVIEW -> 3105
-    }
-
     companion object {
         const val CHANNEL_DAILY_SUMMARY = "daily_summary"
         const val CHANNEL_ALERTS_URGENT = "alerts_urgent"
         const val EXTRA_URGENT_CATEGORY = "extra_urgent_category"
         const val NOTIFICATION_ID_DAILY_SUMMARY = 3001
+
+        internal fun notificationIdFor(category: UrgentCategory): Int = when (category) {
+            UrgentCategory.AUTH_EXPIRED -> 3101
+            UrgentCategory.VERIFICATION_REQUIRED -> 3102
+            UrgentCategory.DOM_BROKEN -> 3103
+            UrgentCategory.COOLDOWN -> 3104
+            UrgentCategory.UNKNOWN_REQUIRES_REVIEW -> 3105
+            UrgentCategory.SPARK_DETERIORATING -> 3106
+        }
     }
 }

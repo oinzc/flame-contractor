@@ -42,6 +42,8 @@ import io.github.oinzc.flamecontractor.domain.AuthProbeOutcome
 import io.github.oinzc.flamecontractor.domain.BatchTargetOutcome
 import io.github.oinzc.flamecontractor.domain.ManualSendDecision
 import io.github.oinzc.flamecontractor.domain.SendGuard
+import io.github.oinzc.flamecontractor.domain.SparkDeteriorationAlert
+import io.github.oinzc.flamecontractor.domain.SparkDeteriorationDetector
 import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ExecutionDispatchContract
@@ -241,6 +243,9 @@ class ExecutionForegroundService : Service() {
 
                 ACTION_RUN_MANUAL_SCAN ->
                     runManualScanCommand(accountId = accountId)
+
+                ExecutionDispatchContract.ACTION_RUN_AUTO_SCAN ->
+                    runAutoScanCommand(accountId = accountId)
 
                 ACTION_REPAIR_IDENTITY -> {
                     val targetId = intent.getStringExtra(EXTRA_TARGET_ID).orEmpty()
@@ -1026,6 +1031,237 @@ class ExecutionForegroundService : Service() {
                     currentTask = null,
                     lastMessage = "当前有其他 WebView 任务正在运行，请稍后再试",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
+                )
+            }
+        }
+    }
+
+    private suspend fun runAutoScanCommand(accountId: String) {
+        val acquired = ExecutionMutex.tryWithLock("auto_scan", SCHEDULED_LOCK_WAIT_MS) {
+            val account = database.accountDao().getAccount(accountId) ?: return@tryWithLock
+            if (!account.enabled ||
+                !account.autoScanEnabled ||
+                account.status != AccountStatus.HEALTHY ||
+                account.authFailCount != 0
+            ) {
+                return@tryWithLock
+            }
+            val activeTargets = database.targetDao().listActiveTargets(accountId)
+            if (activeTargets.none { it.enabled }) {
+                return@tryWithLock
+            }
+
+            val startedAt = System.currentTimeMillis()
+            database.accountDao().updateLastAutoScanAttemptAt(
+                accountId = accountId,
+                attemptAt = startedAt,
+                updatedAt = startedAt,
+            )
+
+            val scanId = UUID.randomUUID().toString()
+            val scanEntity = ScanRunEntity(
+                id = scanId,
+                accountId = accountId,
+                source = "automatic",
+                status = ScanRunStatus.RUNNING,
+                startedAt = startedAt,
+            )
+            database.scanRunDao().insert(scanEntity)
+
+            promoteForeground("正在自动同步抖音会话与官方火花…")
+            ExecutionRuntimeBus.update {
+                it.copy(
+                    running = true,
+                    currentTask = "正在自动同步抖音会话…",
+                    scanDiscoveredCount = 0,
+                    lastUpdatedAtEpochMs = startedAt,
+                )
+            }
+
+            val result = try {
+                executor.scanAllChats(
+                    existingTargets = activeTargets,
+                    scanRunId = scanId,
+                    onProgress = { count ->
+                        promoteForeground("自动同步已发现 $count 条会话…")
+                        ExecutionRuntimeBus.update {
+                            it.copy(
+                                scanDiscoveredCount = count,
+                                lastUpdatedAtEpochMs = System.currentTimeMillis(),
+                            )
+                        }
+                    },
+                )
+            } catch (ce: CancellationException) {
+                withContext(NonCancellable) {
+                    database.scanRunDao().update(
+                        scanEntity.copy(
+                            status = ScanRunStatus.INTERRUPTED,
+                            finishedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                throw ce
+            } catch (ex: Throwable) {
+                val failedAt = System.currentTimeMillis()
+                database.scanRunDao().update(
+                    scanEntity.copy(
+                        status = ScanRunStatus.FAILED,
+                        finishedAt = failedAt,
+                    ),
+                )
+                ExecutionRuntimeBus.update {
+                    it.copy(
+                        running = false,
+                        currentTask = null,
+                        lastMessage = "自动同步失败（${ex.javaClass.simpleName}）",
+                        lastUpdatedAtEpochMs = failedAt,
+                    )
+                }
+                return@tryWithLock
+            }
+
+            val finishedAt = System.currentTimeMillis()
+            when (result) {
+                is ScanExecutionResult.Success -> {
+                    val sparkEvaluation = SparkDeteriorationDetector.evaluate(
+                        existingTargets = activeTargets,
+                        candidates = result.snapshot.candidates,
+                        scannedAtEpochMs = finishedAt,
+                    )
+                    for (update in sparkEvaluation.updates) {
+                        database.targetDao().updateOfficialSparkSnapshot(
+                            id = update.targetId,
+                            sparkDays = update.sparkDays,
+                            sparkKind = update.sparkKind,
+                            sparkLabel = update.sparkLabel,
+                            scannedAt = update.scannedAtEpochMs,
+                        )
+                    }
+
+                    val alertSummary = ExecutionServiceStoreOps.formatSparkDeteriorationAlertSummary(
+                        sparkEvaluation.alerts,
+                    )
+                    val encoded = ScanReconciliationCodec.encode(result.snapshot)
+                    database.scanRunDao().update(
+                        scanEntity.copy(
+                            status = ScanRunStatus.COMPLETED,
+                            discoveredCount = result.snapshot.discoveredCount,
+                            sparkCount = result.snapshot.sparkCount,
+                            reconciliationJson = encoded,
+                            finishedAt = finishedAt,
+                            alertSummary = alertSummary,
+                        ),
+                    )
+
+                    database.accountDao().getAccount(accountId)?.let { acc ->
+                        val authTransition = AccountHealthReducer.onAuthProbeResult(
+                            acc,
+                            AuthProbeOutcome.AUTHENTICATED,
+                            finishedAt,
+                        )
+                        database.accountDao().update(authTransition.account)
+                        if (result.selfUid != null || result.douyinNickname != null) {
+                            database.accountDao().updateLoginIdentity(
+                                accountId = accountId,
+                                selfUid = result.selfUid ?: acc.selfUid,
+                                douyinNickname = result.douyinNickname ?: acc.douyinNickname,
+                                verifiedAt = finishedAt,
+                            )
+                        }
+                    }
+
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            currentTask = null,
+                            scanDiscoveredCount = result.snapshot.discoveredCount,
+                            latestScanSnapshot = result.snapshot,
+                            lastMessage = if (sparkEvaluation.alerts.isNotEmpty()) {
+                                "自动同步完成：发现 ${sparkEvaluation.alerts.size} 位好友火花告急"
+                            } else {
+                                "自动同步完成：共 ${result.snapshot.discoveredCount} 条会话，含官方火花 ${result.snapshot.sparkCount} 条"
+                            },
+                            lastUpdatedAtEpochMs = finishedAt,
+                        )
+                    }
+
+                    if (sparkEvaluation.alerts.isNotEmpty()) {
+                        val body = ExecutionServiceStoreOps.formatSparkDeteriorationAlertBody(
+                            sparkEvaluation.alerts,
+                        )
+                        sendUrgentBoth(
+                            category = UrgentCategory.SPARK_DETERIORATING,
+                            title = "好友火花告急",
+                            body = body,
+                        )
+                    }
+                }
+
+                is ScanExecutionResult.AuthOrGateFailure -> {
+                    database.scanRunDao().update(
+                        scanEntity.copy(
+                            status = ScanRunStatus.FAILED,
+                            finishedAt = finishedAt,
+                        ),
+                    )
+                    database.accountDao().getAccount(accountId)?.let { acc ->
+                        val transition = AccountHealthReducer.onAuthProbeResult(
+                            acc,
+                            result.outcome,
+                            finishedAt,
+                        )
+                        database.accountDao().update(transition.account)
+                        if (transition.shouldNotifyUrgent) {
+                            val cat = if (result.outcome == AuthProbeOutcome.VERIFICATION_REQUIRED) {
+                                UrgentCategory.VERIFICATION_REQUIRED
+                            } else {
+                                UrgentCategory.AUTH_EXPIRED
+                            }
+                            val title = if (cat == UrgentCategory.VERIFICATION_REQUIRED) {
+                                "抖音触发身份验证"
+                            } else {
+                                "抖音登录态已失效"
+                            }
+                            sendUrgentBoth(cat, title, result.detail)
+                        }
+                    }
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            currentTask = null,
+                            lastMessage = result.detail,
+                            lastUpdatedAtEpochMs = finishedAt,
+                        )
+                    }
+                }
+
+                is ScanExecutionResult.Error -> {
+                    database.scanRunDao().update(
+                        scanEntity.copy(
+                            status = ScanRunStatus.FAILED,
+                            finishedAt = finishedAt,
+                        ),
+                    )
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            currentTask = null,
+                            lastMessage = result.detail,
+                            lastUpdatedAtEpochMs = finishedAt,
+                        )
+                    }
+                }
+            }
+        }
+        if (acquired == null) {
+            Log.i(TAG, "Auto scan skipped due to ExecutionMutex busy")
+            val nowMs = System.currentTimeMillis()
+            if (database.accountDao().getAccount(accountId) != null) {
+                database.accountDao().updateLastAutoScanAttemptAt(
+                    accountId = accountId,
+                    attemptAt = nowMs,
+                    updatedAt = nowMs,
                 )
             }
         }
@@ -1986,6 +2222,27 @@ internal object ExecutionServiceStoreOps {
         )
         accountDao.update(finalized)
         return finalized
+    }
+
+    private const val AUTO_SCAN_NOTIFY_NAME_LIMIT = 3
+
+    fun formatSparkDeteriorationAlertSummary(alerts: List<SparkDeteriorationAlert>): String? =
+        if (alerts.isEmpty()) {
+            null
+        } else {
+            "发现 ${alerts.size} 位好友火花告急"
+        }
+
+    fun formatSparkDeteriorationAlertBody(alerts: List<SparkDeteriorationAlert>): String {
+        val shown = alerts.take(AUTO_SCAN_NOTIFY_NAME_LIMIT)
+            .joinToString("、") { "${it.displayName}（${it.summary}）" }
+        val suffix = if (alerts.size > AUTO_SCAN_NOTIFY_NAME_LIMIT) {
+            " 等 ${alerts.size} 位好友"
+        } else {
+            ""
+        }
+        return "自动同步发现火花状态告急：$shown$suffix。" +
+            "可能对方尚未回复消息，请留意提醒（仅只读预警，不会自动重发）。"
     }
 }
 

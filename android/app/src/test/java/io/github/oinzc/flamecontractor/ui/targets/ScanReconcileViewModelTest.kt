@@ -737,4 +737,116 @@ class ScanReconcileViewModelTest {
             vmScope.cancel()
         }
     }
+
+    @Test
+    fun syncExistingTargetsWritesNoSparkMarkerWhenObservedWithoutSpark() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository()
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val fixedNow = Instant.parse("2026-11-22T12:00:00Z")
+
+            val observedNoSpark = ContractTargetEntity(
+                id = "t-active",
+                nicknameSnapshot = "老好友",
+                platformUserId = "sec_old_friend",
+                conversationType = "friend",
+                sparkDays = 10,
+                sparkKind = "normal",
+                sparkLabel = "10天",
+                streakDays = 14,
+                createdAt = 100L,
+            )
+            val unseenTarget = ContractTargetEntity(
+                id = "t-unseen",
+                nicknameSnapshot = "未扫到好友",
+                platformUserId = "sec_unseen",
+                conversationType = "friend",
+                sparkDays = 20,
+                sparkKind = "normal",
+                sparkLabel = "20天",
+                streakDays = 7,
+                createdAt = 200L,
+            )
+            val ambiguousTarget = ContractTargetEntity(
+                id = "t-ambig",
+                nicknameSnapshot = "重名冲突",
+                platformUserId = null,
+                conversationType = "friend",
+                sparkDays = 30,
+                sparkKind = "normal",
+                sparkLabel = "30天",
+                streakDays = 5,
+                createdAt = 300L,
+            )
+            repo.targetsState.value = listOf(observedNoSpark, unseenTarget, ambiguousTarget)
+
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                nowInstant = { fixedNow },
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-no-spark",
+                    scannedAtEpochMs = 20_000L,
+                    discoveredCount = 2,
+                    sparkCount = 0,
+                    candidates = listOf(
+                        candidate(
+                            name = "老好友",
+                            type = "friend",
+                            sparkDays = null,
+                            sparkKind = null,
+                            sparkLabel = null,
+                            matchStatus = MatchStatus.BOUND,
+                            userId = "sec_old_friend",
+                            alreadyImported = true,
+                        ),
+                        candidate(
+                            name = "重名冲突",
+                            type = "friend",
+                            sparkDays = null,
+                            sparkKind = null,
+                            sparkLabel = null,
+                            matchStatus = MatchStatus.AMBIGUOUS,
+                            alreadyImported = true,
+                        ),
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            vm.syncExistingOfficialSparks()
+            advanceUntilIdle()
+
+            val updatedObserved = repo.targetsState.value.first { it.id == "t-active" }
+            assertNull(updatedObserved.sparkDays)
+            assertNull(updatedObserved.sparkKind)
+            assertEquals("无火花", updatedObserved.sparkLabel)
+            assertEquals(fixedNow.toEpochMilli(), updatedObserved.sparkScannedAt)
+            assertEquals(14, updatedObserved.streakDays)
+
+            val untouchedUnseen = repo.targetsState.value.first { it.id == "t-unseen" }
+            assertEquals(20, untouchedUnseen.sparkDays)
+            assertEquals("normal", untouchedUnseen.sparkKind)
+            assertEquals("20天", untouchedUnseen.sparkLabel)
+            assertNull(untouchedUnseen.sparkScannedAt)
+
+            val untouchedAmbiguous = repo.targetsState.value.first { it.id == "t-ambig" }
+            assertEquals(30, untouchedAmbiguous.sparkDays)
+            assertEquals("30天", untouchedAmbiguous.sparkLabel)
+
+            assertEquals(1, repo.sparkSnapshotUpdateCalls)
+            assertTrue(vm.uiState.value.feedbackMessage?.contains("1 位") == true)
+        } finally {
+            vmScope.cancel()
+        }
+    }
 }
