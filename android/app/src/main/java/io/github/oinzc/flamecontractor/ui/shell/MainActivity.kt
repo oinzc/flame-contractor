@@ -174,7 +174,6 @@ class MainActivity : AppCompatActivity() {
                         )
                     },
                     settingsContent = {
-                        // TODO(integrator): pass accountId = activeAccountId to SettingsRoute
                         SettingsRoute(
                             database = container.database,
                             selectorBundleStore = container.selectorBundleStore,
@@ -182,6 +181,7 @@ class MainActivity : AppCompatActivity() {
                             barkNotifier = container.barkNotifier,
                             scheduleCoordinator = container.scheduleCoordinator,
                             backupManager = container.backupManager,
+                            accountId = activeAccountId,
                         )
                     },
                 )

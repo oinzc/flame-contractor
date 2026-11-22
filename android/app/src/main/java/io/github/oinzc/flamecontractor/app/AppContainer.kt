@@ -67,6 +67,7 @@ class AppContainer(context: Context) {
     val backupManager: BackupManager = BackupManager(
         store = RoomBackupStore(database),
         onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
+        imageExists = { path -> templateImageStore.isImageAvailable(path) },
     )
     val webExecutor: DouyinWebExecutor = DouyinWebExecutor(appContext, selectorBundleStore)
 

@@ -401,9 +401,8 @@ class ExecutionForegroundService : Service() {
         var unknownCount = 0
         var abortedByAuth = false
 
-        // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
-        executor.withOffscreenSession { session ->
-            val authResult = executor.checkAuthAndIdentity(session = session)
+        executor.withOffscreenSession(accountId = accountId) { session ->
+            val authResult = executor.checkAuthAndIdentity(session = session, accountId = accountId)
             val authTransition = AccountHealthReducer.onAuthProbeResult(
                 account = account,
                 outcome = authResult.outcome,
@@ -739,8 +738,7 @@ class ExecutionForegroundService : Service() {
             promoteForeground("正在复判抖音登录状态…")
             updateProgressState("正在复判登录态…", 0, 1, accountId)
 
-            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
-            val authResult = executor.checkAuthAndIdentity()
+            val authResult = executor.checkAuthAndIdentity(accountId = accountId)
             val now = Instant.now()
             val nowMs = now.toEpochMilli()
             val transition = AccountHealthReducer.onAuthProbeResult(
@@ -873,9 +871,8 @@ class ExecutionForegroundService : Service() {
             promoteForeground("正在执行单发测试…")
             updateProgressState("正在执行单发测试…", 0, 1, accountId)
 
-            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
-            executor.withOffscreenSession { session ->
-                val auth = executor.checkAuthAndIdentity(session = session)
+            executor.withOffscreenSession(accountId = accountId) { session ->
+                val auth = executor.checkAuthAndIdentity(session = session, accountId = accountId)
                 val transition = AccountHealthReducer.onAuthProbeResult(
                     account = account,
                     outcome = auth.outcome,
@@ -1002,7 +999,6 @@ class ExecutionForegroundService : Service() {
             }
 
             val allTargets = database.targetDao().listActiveTargets(accountId)
-            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             val result = executor.scanAllChats(
                 existingTargets = allTargets,
                 scanRunId = scanId,
@@ -1016,6 +1012,7 @@ class ExecutionForegroundService : Service() {
                         )
                     }
                 },
+                accountId = accountId,
             )
 
             val finishedAt = System.currentTimeMillis()
@@ -1173,7 +1170,6 @@ class ExecutionForegroundService : Service() {
             }
 
             val result = try {
-                // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
                 executor.scanAllChats(
                     existingTargets = activeTargets,
                     scanRunId = scanId,
@@ -1187,6 +1183,7 @@ class ExecutionForegroundService : Service() {
                             )
                         }
                     },
+                    accountId = accountId,
                 )
             } catch (ce: CancellationException) {
                 withContext(NonCancellable) {
@@ -1397,9 +1394,8 @@ class ExecutionForegroundService : Service() {
             promoteForeground("正在补采目标唯一身份…")
             updateProgressState("正在补采目标身份…", 0, 1, accountId)
 
-            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
-            executor.withOffscreenSession { session ->
-                val auth = executor.checkAuthAndIdentity(session = session)
+            executor.withOffscreenSession(accountId = accountId) { session ->
+                val auth = executor.checkAuthAndIdentity(session = session, accountId = accountId)
                 if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
                     ExecutionRuntimeBus.update {
                         it.copy(
@@ -1462,8 +1458,7 @@ class ExecutionForegroundService : Service() {
             promoteForeground("正在执行只读网页结构体检…")
             updateProgressState("正在执行网页结构体检…", 0, 1, accountId)
             val sampleTarget = database.targetDao().listEnabledTargets(accountId).firstOrNull()
-            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
-            val report = executor.probeStructure(sampleTarget = sampleTarget)
+            val report = executor.probeStructure(sampleTarget = sampleTarget, accountId = accountId)
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
@@ -1588,21 +1583,14 @@ class ExecutionForegroundService : Service() {
                     if (imageFile == null || !imageFile.isFile || imageFile.length() <= 0L) {
                         ExecutionServiceStoreOps.missingTemplateImageResult()
                     } else {
-                        // TODO(integrator): wire executor.sendImage & accountId session
-                        // Replace fallback below once Track 1 is integrated:
-                        // executor.sendImage(
-                        //     session = session,
-                        //     target = freshTarget,
-                        //     imageFile = imageFile,
-                        //     imageContentUri = imageContentUri,
-                        //     onStageSending = markStageSending,
-                        //     onStageConfirming = { markStageConfirming("image_upload") },
-                        // )
-                        SendExecutionResult(
-                            jobStatus = JobStatus.FAILED_TERMINAL,
-                            failureClass = FailureClass.OTHER,
-                            inputMethodUsed = "image_upload",
-                            summaryDetail = "当前构建尚未整合图片发送引擎（contentUriReady=${imageContentUri != null}）",
+                        executor.sendImage(
+                            session = session,
+                            target = freshTarget,
+                            imageFile = imageFile,
+                            imageContentUri = imageContentUri,
+                            onStageSending = markStageSending,
+                            onStageConfirming = { markStageConfirming("image_upload") },
+                            accountId = account.id,
                         )
                     }
                 }
