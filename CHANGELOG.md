@@ -2,6 +2,16 @@
 
 本文件记录 Flame Contractor 的主要版本变更。
 
+## [v0.4.0] - 2026-11-22
+
+### 新增
+- **独立 Android 客户端（手机 / 平板免电脑运行）**：基于 Kotlin + Jetpack Compose + Material 3 + Room 构建自适应原生界面（支持手机底部栏与平板左侧导航栏），内置桌面模式 Chromium `WebView` 离屏执行引擎，复用 `selectors_bundle.json` 定位器契约并支持本地热覆写（锁死 `CHAT_URL`）。
+- **零打扰定时调度与安全状态机**：基于 `AlarmManager` 精确闹钟与 `WorkManager` 30 分钟纯 SQLite 兜底拉起短时离屏 `dataSync` 前台服务；继承 `UNKNOWN_REQUIRES_REVIEW` 全路径永不自动重发、`platform_user_id` / `platform_conversation_id` 唯一身份消歧、连续鉴权容忍、换号保护与官方火花快照不覆写本地 `streak_days` 等核心安全不变量。
+- **模板、双通道提醒与保活体检**：内置固定文案、星期轮换 LRU 文案池与「比心 / 早上好 / 续火花」三套默认抖音原生表情模板；支持 Android 本机通知与 Keystore 加密存储的 Bark 推送（含 `curl` 示例自动解析与脱敏）；内置小米 / HyperOS 后台稳定性体检与脱敏诊断导出。
+
+### 构建与发布
+- **Android 自动化 CI 与签名发版**：新增 `Android CI`（定位器同步校验、单元测试、Lint 与 Debug APK）及 `Build Android Standalone APK` 流水线，支持通过仓库 Secrets 签名通用 Release APK 并自动挂载至 GitHub Release。
+
 ## [v0.3.0] - 2026-11-21
 
 ### 新增与改进
