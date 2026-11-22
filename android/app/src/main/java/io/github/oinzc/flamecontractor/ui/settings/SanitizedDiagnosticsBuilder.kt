@@ -38,6 +38,7 @@ data class RawDiagnosticsContext(
     val latestProbeReport: StructureProbeReport? = null,
     val extraRawStrings: List<String> = emptyList(),
     val latestAutoScan: ScanRunEntity? = null,
+    val totalAccountCount: Int = 1,
 )
 
 data class SanitizedSurvivalSummary(
@@ -70,6 +71,7 @@ data class SanitizedDiagnosticsReport(
     val webViewVersion: String,
     val selectorDigest: String,
     val hasSelectorOverrides: Boolean,
+    val totalAccountCount: Int = 1,
     val accountStatus: String,
     val accountEnabled: Boolean,
     val authFailCount: Int,
@@ -126,6 +128,8 @@ object SanitizedDiagnosticsBuilder {
     private val DOUYIN_SEC_UID_REGEX = Regex("""\bMS4wLjAB[A-Za-z0-9_-]{8,}""")
     private val LONG_DIGIT_ID_REGEX = Regex("""\b\d{14,}\b""")
     private val LONG_OPAQUE_TOKEN_REGEX = Regex("""\b[A-Za-z0-9_-]{24,}\b""")
+    private val TEMPLATE_IMAGE_PATH_REGEX =
+        Regex("""(?:file://[^\s"'`<>\\]+|[^\s"'`<>\\]*template_images[/\\][^\s"'`<>\\]+)""", RegexOption.IGNORE_CASE)
     private val ALREADY_MASKED_BARK_URL_REGEX =
         Regex("""^https?://[^/?#\s]+/(?:[^/?#\s]+/)*\*{4}[A-Za-z0-9_-]{0,4}(?:/push)?$""", RegexOption.IGNORE_CASE)
 
@@ -143,7 +147,7 @@ object SanitizedDiagnosticsBuilder {
     )
 
     private val SENSITIVE_WORD_REGEX =
-        Regex("""(cookie|session|ttwid|sid_tt|odin|csrf|device_key|secret|token|bearer|sec_uid|password)""", RegexOption.IGNORE_CASE)
+        Regex("""(cookie|session|ttwid|sid_tt|odin|csrf|device_key|secret|token|bearer|sec_uid|password|image_path|template_images)""", RegexOption.IGNORE_CASE)
 
     fun build(input: RawDiagnosticsContext): SanitizedDiagnosticsReport {
         val sensitiveTokens = collectSensitiveTokens(input)
@@ -153,6 +157,10 @@ object SanitizedDiagnosticsBuilder {
         val safeWebViewVersion = sanitizeVersionString(input.webViewVersion, sensitiveTokens)
         val safeSelectorDigest = sanitizeDigest(input.selectorDigest, sensitiveTokens)
 
+        val totalAccountCount = maxOf(
+            if (input.account != null) 1 else 0,
+            input.totalAccountCount.coerceAtLeast(0),
+        )
         val accountStatus = (input.account?.status ?: AccountStatus.PENDING_LOGIN).wireValue
         val accountEnabled = input.account?.enabled ?: false
         val authFailCount = input.account?.authFailCount ?: 0
@@ -235,6 +243,7 @@ object SanitizedDiagnosticsBuilder {
             webViewVersion = safeWebViewVersion,
             selectorDigest = safeSelectorDigest,
             hasSelectorOverrides = input.hasSelectorOverrides,
+            totalAccountCount = totalAccountCount,
             accountStatus = accountStatus,
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
@@ -265,6 +274,7 @@ object SanitizedDiagnosticsBuilder {
             webViewVersion = safeWebViewVersion,
             selectorDigest = safeSelectorDigest,
             hasSelectorOverrides = input.hasSelectorOverrides,
+            totalAccountCount = totalAccountCount,
             accountStatus = accountStatus,
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
@@ -298,6 +308,7 @@ object SanitizedDiagnosticsBuilder {
             webViewVersion = safeWebViewVersion,
             selectorDigest = safeSelectorDigest,
             hasSelectorOverrides = input.hasSelectorOverrides,
+            totalAccountCount = totalAccountCount,
             accountStatus = accountStatus,
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
@@ -338,7 +349,8 @@ object SanitizedDiagnosticsBuilder {
             }
         }
 
-        // 2. 脱敏 HTTP/HTTPS URL 中未打码的密钥路径或查询参数
+        // 2. 脱敏 HTTP/HTTPS URL 与本地私有图片路径
+        text = TEMPLATE_IMAGE_PATH_REGEX.replace(text, "[REDACTED_PATH]")
         text = URL_WITH_PATH_REGEX.replace(text) { match ->
             redactUrlMatch(match.value)
         }
@@ -535,6 +547,7 @@ object SanitizedDiagnosticsBuilder {
         webViewVersion: String,
         selectorDigest: String,
         hasSelectorOverrides: Boolean,
+        totalAccountCount: Int,
         accountStatus: String,
         accountEnabled: Boolean,
         authFailCount: Int,
@@ -563,7 +576,7 @@ object SanitizedDiagnosticsBuilder {
         appendLine("定位器摘要: $selectorDigest (本地覆写: ${if (hasSelectorOverrides) "是" else "否"})")
         appendLine()
         appendLine("[账号状态（已脱敏）]")
-        appendLine("状态: $accountStatus | 总开关: ${if (accountEnabled) "开启" else "关闭"}")
+        appendLine("账号总数: $totalAccountCount | 状态: $accountStatus | 总开关: ${if (accountEnabled) "开启" else "关闭"}")
         appendLine("连续鉴权失败次数: $authFailCount | 连续批处理终态失败次数: $failureStreak")
         appendLine("官方火花自动同步: ${if (autoScanEnabled) "开启" else "关闭"} | 周期: ${autoScanIntervalHours}小时")
         appendLine(
@@ -618,6 +631,7 @@ object SanitizedDiagnosticsBuilder {
         webViewVersion: String,
         selectorDigest: String,
         hasSelectorOverrides: Boolean,
+        totalAccountCount: Int,
         accountStatus: String,
         accountEnabled: Boolean,
         authFailCount: Int,
@@ -648,6 +662,7 @@ object SanitizedDiagnosticsBuilder {
         appendField(sb, 1, "webViewVersion", webViewVersion, comma = true)
         appendField(sb, 1, "selectorDigest", selectorDigest, comma = true)
         appendBoolField(sb, 1, "hasSelectorOverrides", hasSelectorOverrides, comma = true)
+        appendNumberField(sb, 1, "totalAccountCount", totalAccountCount, comma = true)
         appendField(sb, 1, "accountStatus", accountStatus, comma = true)
         appendBoolField(sb, 1, "accountEnabled", accountEnabled, comma = true)
         appendNumberField(sb, 1, "authFailCount", authFailCount, comma = true)

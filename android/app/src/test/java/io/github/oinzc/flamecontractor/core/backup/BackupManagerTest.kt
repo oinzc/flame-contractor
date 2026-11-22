@@ -15,6 +15,7 @@ import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecJson
+import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,9 +24,14 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class BackupManagerTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     @Test
     fun importSingleAndMultiAccountSelectionAndPreservesLocalAuthState() = runTest {
@@ -183,7 +189,7 @@ class BackupManagerTest {
     }
 
     @Test
-    fun importSkipsImageTemplatesWithoutClearingExistingTargetTemplate() = runTest {
+    fun importPreservesImageTemplatesAndTargetBindingsWhileCountingMissingImages() = runTest {
         val localTpl = MessageTemplateEntity(
             id = "tpl-local",
             accountId = DEFAULT_ACCOUNT_ID,
@@ -267,25 +273,239 @@ class BackupManagerTest {
         """.trimIndent()
 
         val inspection = manager.inspectJson(backupJson)
-        assertEquals(1, inspection.templateCount)
-        assertEquals(1, inspection.skippedImageTemplateCount)
+        assertEquals(2, inspection.templateCount)
+        assertEquals(1, inspection.missingImageTemplateCount)
 
         val report = manager.importBackup(inspection.parsed, "pc-acc")
-        assertEquals(1, report.skippedImageTemplates)
-        assertEquals(1, report.templatesInserted)
+        assertEquals(1, report.missingImageTemplateCount)
+        assertEquals(2, report.templatesInserted)
         assertEquals(1, report.targetsUpdated)
         assertEquals(1, report.targetsInserted)
-        assertTrue(report.warnings.any { it.contains("图片模板") })
+        assertTrue(report.warnings.any { it.contains("1 个图片模板") && it.contains("模板") })
 
         val templates = store.listTemplates(DEFAULT_ACCOUNT_ID)
-        assertNull(templates.firstOrNull { it.id == "tpl-img" })
+        val importedImg = templates.firstOrNull { it.id == "tpl-img" }
+        assertNotNull(importedImg)
+        assertEquals(TemplateType.IMAGE, importedImg!!.type)
+        assertNull(importedImg.imagePath)
         assertNotNull(templates.firstOrNull { it.id == "tpl-txt" })
 
         val targets = store.listAllTargetsIncludingDeleted(DEFAULT_ACCOUNT_ID)
         val mergedA = targets.first { it.platformUserId == "puid-a" }
         val insertedB = targets.first { it.platformUserId == "puid-b" }
-        assertEquals("tpl-local", mergedA.templateId)
-        assertNull(insertedB.templateId)
+        assertEquals("tpl-img", mergedA.templateId)
+        assertEquals("tpl-img", insertedB.templateId)
+    }
+
+    @Test
+    fun importRetainsValidLocalImagePathAndClearsMissingLocalImagePath() = runTest {
+        val validImgById = File(tempFolder.root, "valid_by_id.jpg").apply {
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+        val validImgByName = File(tempFolder.root, "valid_by_name.png").apply {
+            writeBytes(byteArrayOf(5, 6, 7, 8))
+        }
+        val deletedImgFile = File(tempFolder.root, "deleted_missing.jpg")
+
+        val store = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            templates = listOf(
+                MessageTemplateEntity(
+                    id = "tpl-img-valid",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "早安有效图",
+                    type = TemplateType.IMAGE,
+                    content = "",
+                    imagePath = validImgById.absolutePath,
+                ),
+                MessageTemplateEntity(
+                    id = "tpl-img-broken",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "失效图片",
+                    type = TemplateType.IMAGE,
+                    content = "",
+                    imagePath = deletedImgFile.absolutePath,
+                ),
+                MessageTemplateEntity(
+                    id = "local-img-name-id",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "晚安同名图",
+                    type = TemplateType.IMAGE,
+                    content = "",
+                    imagePath = validImgByName.absolutePath,
+                ),
+            ),
+        )
+        // 使用默认 imageExists 真实文件判定逻辑
+        val manager = BackupManager(store = store, clockMillis = { 55_000L })
+
+        val backupJson = """
+            {
+              "app": "flame-contractor",
+              "schemaVersion": 1,
+              "exportedAt": "2026-11-23T08:00:00Z",
+              "data": {
+                "accounts": [{"id":"pc-acc","display_name":"桌面号","status":"pending_login"}],
+                "templates": [
+                  {
+                    "id": "tpl-img-valid",
+                    "name": "早安有效图",
+                    "type": "image",
+                    "image_path": "C:/desktop/should_not_overwrite.jpg",
+                    "enabled": true
+                  },
+                  {
+                    "id": "tpl-img-broken",
+                    "name": "失效图片",
+                    "type": "image",
+                    "enabled": true
+                  },
+                  {
+                    "id": "pc-img-name-id",
+                    "name": "晚安同名图",
+                    "type": "image",
+                    "enabled": true
+                  },
+                  {
+                    "id": "tpl-img-new",
+                    "name": "全新图片",
+                    "type": "image",
+                    "enabled": true
+                  }
+                ],
+                "poolItems": [],
+                "targets": [
+                  {
+                    "id": "pc-tgt-img",
+                    "account_id": "pc-acc",
+                    "platform_user_id": "puid-img",
+                    "nickname_snapshot": "图片好友",
+                    "conversation_type": "user",
+                    "template_id": "pc-img-name-id"
+                  }
+                ],
+                "jobs": [],
+                "attempts": []
+              }
+            }
+        """.trimIndent()
+
+        val inspection = manager.inspectJson(backupJson)
+        assertEquals(4, inspection.templateCount)
+        assertEquals(4, inspection.missingImageTemplateCount)
+
+        val report = manager.importBackup(inspection.parsed, "pc-acc")
+        assertEquals(1, report.templatesInserted)
+        assertEquals(3, report.templatesUpdated)
+        // 仅 tpl-img-broken 与 tpl-img-new 缺图，其余 2 个本地有效图片均保留
+        assertEquals(2, report.missingImageTemplateCount)
+        assertTrue(report.warnings.any { it.contains("已保留 2 个图片模板及好友绑定") })
+
+        val templatesById = store.listTemplates(DEFAULT_ACCOUNT_ID).associateBy { it.id }
+        assertEquals(validImgById.absolutePath, templatesById.getValue("tpl-img-valid").imagePath)
+        assertEquals(validImgByName.absolutePath, templatesById.getValue("local-img-name-id").imagePath)
+        assertNull(templatesById.getValue("tpl-img-broken").imagePath)
+        assertNull(templatesById.getValue("tpl-img-new").imagePath)
+
+        val boundTarget = store.listAllTargetsIncludingDeleted(DEFAULT_ACCOUNT_ID).single()
+        assertEquals("local-img-name-id", boundTarget.templateId)
+
+        // 再导出一份 JSON：必须包含 type="image" 且严格省略 "image_path" 键
+        val reExported = manager.exportJson(DEFAULT_ACCOUNT_ID)
+        assertFalse(reExported.contains("image_path"))
+        assertFalse(reExported.contains(validImgById.name))
+        assertFalse(reExported.contains(validImgByName.name))
+    }
+
+    @Test
+    fun importIntoSecondaryAccountIsolatesPrimaryKeysAndData() = runTest {
+        val acc1 = AccountEntity(
+            id = DEFAULT_ACCOUNT_ID,
+            displayName = "主号",
+            status = AccountStatus.HEALTHY,
+            sendWindowStart = "20:00",
+            sendWindowEnd = "22:00",
+        )
+        val acc2 = AccountEntity(
+            id = "acc-2",
+            displayName = "二号",
+            status = AccountStatus.PENDING_LOGIN,
+            sendWindowStart = "19:00",
+            sendWindowEnd = "21:00",
+        )
+        val store = FakeBackupStore(
+            accounts = listOf(acc1, acc2),
+            templates = listOf(
+                MessageTemplateEntity(
+                    id = "tpl-shared-id",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "主号模板",
+                    type = TemplateType.TEXT,
+                    content = "主号内容",
+                ),
+                MessageTemplateEntity(
+                    id = "tpl-shared-img",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "主号图",
+                    type = TemplateType.IMAGE,
+                    imagePath = null,
+                ),
+            ),
+            targets = listOf(
+                ContractTargetEntity(
+                    id = "tgt-shared-id",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    nicknameSnapshot = "主号好友",
+                    platformUserId = "puid-shared",
+                    conversationType = "friend",
+                    templateId = "tpl-shared-img",
+                ),
+            ),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "job-shared-id",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-shared-id",
+                    templateId = "tpl-shared-img",
+                    businessDate = "2026-11-23",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.SUCCEEDED,
+                ),
+            ),
+        )
+        val manager = BackupManager(store = store, clockMillis = { 70_000L })
+        val acc1ExportJson = manager.exportJson(DEFAULT_ACCOUNT_ID)
+
+        val report = manager.importBackup(
+            parsed = manager.inspectJson(acc1ExportJson).parsed,
+            selectedSourceAccountId = DEFAULT_ACCOUNT_ID,
+            includeHistory = true,
+            targetAccountId = "acc-2",
+        )
+        assertEquals(2, report.templatesInserted)
+        assertEquals(1, report.targetsInserted)
+        assertEquals(1, report.jobsInserted)
+        assertEquals(1, report.missingImageTemplateCount)
+
+        // 主号数据纹丝不动
+        val acc1Templates = store.listTemplates(DEFAULT_ACCOUNT_ID)
+        assertEquals(2, acc1Templates.size)
+        assertEquals("主号模板", acc1Templates.first { it.id == "tpl-shared-id" }.name)
+        assertEquals(1, store.listAllTargetsIncludingDeleted(DEFAULT_ACCOUNT_ID).size)
+        assertEquals(1, store.listAllJobs(DEFAULT_ACCOUNT_ID).size)
+
+        // 二号获得全新独立主键，避免覆写主号行
+        val acc2Templates = store.listTemplates("acc-2")
+        assertEquals(2, acc2Templates.size)
+        assertTrue(acc2Templates.none { it.id == "tpl-shared-id" || it.id == "tpl-shared-img" })
+        val acc2ImgTpl = acc2Templates.first { it.type == TemplateType.IMAGE }
+        val acc2Target = store.listAllTargetsIncludingDeleted("acc-2").single()
+        assertNotEquals("tgt-shared-id", acc2Target.id)
+        assertEquals(acc2ImgTpl.id, acc2Target.templateId)
+        val acc2Job = store.listAllJobs("acc-2").single()
+        assertNotEquals("job-shared-id", acc2Job.id)
+        assertEquals(acc2Target.id, acc2Job.targetId)
+        assertEquals(acc2ImgTpl.id, acc2Job.templateId)
     }
 
     @Test
@@ -1474,6 +1694,7 @@ class BackupManagerTest {
 
     private class FakeBackupStore(
         account: AccountEntity? = null,
+        accounts: List<AccountEntity> = emptyList(),
         templates: List<MessageTemplateEntity> = emptyList(),
         poolItems: List<TemplatePoolItemEntity> = emptyList(),
         targets: List<ContractTargetEntity> = emptyList(),
@@ -1482,6 +1703,7 @@ class BackupManagerTest {
     ) : BackupStore {
         private val accounts = linkedMapOf<String, AccountEntity>().apply {
             if (account != null) put(account.id, account)
+            accounts.forEach { put(it.id, it) }
         }
         private val templatesMap = linkedMapOf<String, MessageTemplateEntity>().apply {
             templates.forEach { put(it.id, it) }
@@ -1516,6 +1738,9 @@ class BackupManagerTest {
         override suspend fun listTemplates(accountId: String): List<MessageTemplateEntity> =
             templatesMap.values.filter { it.accountId == accountId }
 
+        override suspend fun templateIdExistsGlobally(templateId: String): Boolean =
+            templatesMap.containsKey(templateId)
+
         override suspend fun upsertTemplate(template: MessageTemplateEntity) {
             val conflict = templatesMap.values.firstOrNull {
                 it.id != template.id &&
@@ -1531,12 +1756,18 @@ class BackupManagerTest {
         override suspend fun listPoolItems(templateId: String): List<TemplatePoolItemEntity> =
             poolItemsMap.values.filter { it.templateId == templateId }
 
+        override suspend fun poolItemIdExistsGlobally(poolItemId: String): Boolean =
+            poolItemsMap.containsKey(poolItemId)
+
         override suspend fun upsertPoolItem(item: TemplatePoolItemEntity) {
             poolItemsMap[item.id] = item
         }
 
         override suspend fun listAllTargetsIncludingDeleted(accountId: String): List<ContractTargetEntity> =
             targetsMap.values.filter { it.accountId == accountId }
+
+        override suspend fun targetIdExistsGlobally(targetId: String): Boolean =
+            targetsMap.containsKey(targetId)
 
         override suspend fun upsertTarget(target: ContractTargetEntity) {
             val nickConflict = targetsMap.values.firstOrNull {
@@ -1573,6 +1804,9 @@ class BackupManagerTest {
         override suspend fun listAllJobs(accountId: String): List<SendJobEntity> =
             jobsMap.values.filter { it.accountId == accountId }
 
+        override suspend fun jobIdExistsGlobally(jobId: String): Boolean =
+            jobsMap.containsKey(jobId)
+
         override suspend fun upsertJob(job: SendJobEntity) {
             val slotConflict = jobsMap.values.firstOrNull {
                 it.id != job.id &&
@@ -1591,6 +1825,9 @@ class BackupManagerTest {
             val accountJobIds = jobsMap.values.filter { it.accountId == accountId }.map { it.id }.toSet()
             return attemptsMap.values.filter { it.jobId in accountJobIds }
         }
+
+        override suspend fun attemptIdExistsGlobally(attemptId: String): Boolean =
+            attemptsMap.containsKey(attemptId)
 
         override suspend fun upsertAttempt(attempt: SendAttemptEntity) {
             val nkConflict = attemptsMap.values.firstOrNull {

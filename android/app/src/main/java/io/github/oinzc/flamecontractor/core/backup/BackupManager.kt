@@ -15,6 +15,7 @@ import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
@@ -26,18 +27,23 @@ interface BackupStore {
     suspend fun upsertAccount(account: AccountEntity)
 
     suspend fun listTemplates(accountId: String): List<MessageTemplateEntity>
+    suspend fun templateIdExistsGlobally(templateId: String): Boolean = false
     suspend fun upsertTemplate(template: MessageTemplateEntity)
 
     suspend fun listPoolItems(templateId: String): List<TemplatePoolItemEntity>
+    suspend fun poolItemIdExistsGlobally(poolItemId: String): Boolean = false
     suspend fun upsertPoolItem(item: TemplatePoolItemEntity)
 
     suspend fun listAllTargetsIncludingDeleted(accountId: String): List<ContractTargetEntity>
+    suspend fun targetIdExistsGlobally(targetId: String): Boolean = false
     suspend fun upsertTarget(target: ContractTargetEntity)
 
     suspend fun listAllJobs(accountId: String): List<SendJobEntity>
+    suspend fun jobIdExistsGlobally(jobId: String): Boolean = false
     suspend fun upsertJob(job: SendJobEntity)
 
     suspend fun listAllAttemptsForAccount(accountId: String): List<SendAttemptEntity>
+    suspend fun attemptIdExistsGlobally(attemptId: String): Boolean = false
     suspend fun upsertAttempt(attempt: SendAttemptEntity)
 }
 
@@ -56,12 +62,22 @@ class RoomBackupStore(private val database: FlameDatabase) : BackupStore {
     override suspend fun listTemplates(accountId: String): List<MessageTemplateEntity> =
         database.templateDao().listTemplates(accountId)
 
+    override suspend fun templateIdExistsGlobally(templateId: String): Boolean =
+        database.templateDao().getTemplateById(templateId) != null
+
     override suspend fun upsertTemplate(template: MessageTemplateEntity) {
         database.templateDao().upsertTemplate(template)
     }
 
     override suspend fun listPoolItems(templateId: String): List<TemplatePoolItemEntity> =
         database.templateDao().listPoolItems(templateId)
+
+    override suspend fun poolItemIdExistsGlobally(poolItemId: String): Boolean =
+        database.accountDao().listAll().any { acc ->
+            database.templateDao().listTemplates(acc.id).any { tpl ->
+                database.templateDao().listPoolItems(tpl.id).any { it.id == poolItemId }
+            }
+        }
 
     override suspend fun upsertPoolItem(item: TemplatePoolItemEntity) {
         database.templateDao().upsertPoolItem(item)
@@ -70,6 +86,9 @@ class RoomBackupStore(private val database: FlameDatabase) : BackupStore {
     override suspend fun listAllTargetsIncludingDeleted(accountId: String): List<ContractTargetEntity> =
         database.targetDao().listAllTargetsIncludingDeleted(accountId)
 
+    override suspend fun targetIdExistsGlobally(targetId: String): Boolean =
+        database.targetDao().getById(targetId) != null
+
     override suspend fun upsertTarget(target: ContractTargetEntity) {
         database.targetDao().upsert(target)
     }
@@ -77,12 +96,20 @@ class RoomBackupStore(private val database: FlameDatabase) : BackupStore {
     override suspend fun listAllJobs(accountId: String): List<SendJobEntity> =
         database.sendJobDao().listAllJobs(accountId)
 
+    override suspend fun jobIdExistsGlobally(jobId: String): Boolean =
+        database.sendJobDao().getJobById(jobId) != null
+
     override suspend fun upsertJob(job: SendJobEntity) {
         database.sendJobDao().upsertJob(job)
     }
 
     override suspend fun listAllAttemptsForAccount(accountId: String): List<SendAttemptEntity> =
         database.sendJobDao().listAllAttemptsForAccount(accountId)
+
+    override suspend fun attemptIdExistsGlobally(attemptId: String): Boolean =
+        database.accountDao().listAll().any { acc ->
+            database.sendJobDao().listAllAttemptsForAccount(acc.id).any { it.id == attemptId }
+        }
 
     override suspend fun upsertAttempt(attempt: SendAttemptEntity) {
         database.sendJobDao().upsertAttempt(attempt)
@@ -96,6 +123,10 @@ class BackupManager(
     private val store: BackupStore,
     private val onScheduleChanged: suspend () -> Unit = {},
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
+    private val imageExists: (String?) -> Boolean = { path ->
+        val cleaned = path?.trim()?.takeIf { it.isNotEmpty() }
+        cleaned != null && File(cleaned).let { it.isFile && it.length() > 0L }
+    },
 ) {
 
     suspend fun exportJson(accountId: String = DEFAULT_ACCOUNT_ID): String {
@@ -189,7 +220,7 @@ class BackupManager(
                 targetsSkipped = targetMerge.skipped,
                 jobsInserted = historyMerge.jobsInserted,
                 jobsUpdated = historyMerge.jobsUpdated,
-                skippedImageTemplates = templateMerge.skippedImageCount,
+                missingImageTemplateCount = templateMerge.missingImageCount,
                 skippedProtectedJobs = historyMerge.skippedProtectedJobs,
                 warnings = warnings,
             )
@@ -283,7 +314,6 @@ class BackupManager(
         val byId = existingTemplates.associateBy { it.id }.toMutableMap()
         val byName = existingTemplates.associateBy { it.name }.toMutableMap()
         val templateIdRemap = linkedMapOf<String, String>()
-        val skippedImageTemplateIds = linkedSetOf<String>()
         val keptPoolTemplateIds = linkedSetOf<String>()
         val allKnownPoolTemplateIds = existingTemplates
             .filter { it.type == TemplateType.POOL }
@@ -291,17 +321,11 @@ class BackupManager(
 
         var inserted = 0
         var updated = 0
-        var skippedImageCount = 0
+        var missingImageCount = 0
 
         for (tpl in importedTemplates) {
-            if (tpl.isImageTemplate || tpl.type == null) {
-                skippedImageCount++
-                skippedImageTemplateIds += tpl.sourceId
-                warnings += "已跳过暂不支持的图片模板「${tpl.name}」"
-                continue
-            }
-
             val importedType = tpl.type
+            val isImage = importedType == TemplateType.IMAGE
             val matched = byId[tpl.sourceId] ?: byName[tpl.name]
 
             if (matched != null && matched.type == importedType) {
@@ -319,13 +343,27 @@ class BackupManager(
                 if (finalName != matched.name) {
                     byName.remove(matched.name)
                 }
+
+                val resolvedImagePath = if (isImage) {
+                    val localPath = matched.imagePath?.trim()?.takeIf { it.isNotEmpty() }
+                    if (localPath != null && imageExists(localPath)) {
+                        localPath
+                    } else {
+                        missingImageCount++
+                        null
+                    }
+                } else {
+                    null
+                }
+
                 val next = matched.copy(
                     name = finalName,
-                    content = tpl.content,
-                    stickerName = tpl.stickerName,
-                    stickerLabel = tpl.stickerLabel,
-                    stickerCategory = tpl.stickerCategory,
-                    stickerFallbackIndex = tpl.stickerFallbackIndex,
+                    content = if (isImage) "" else tpl.content,
+                    stickerName = if (isImage) null else tpl.stickerName,
+                    stickerLabel = if (isImage) null else tpl.stickerLabel,
+                    stickerCategory = if (isImage) null else tpl.stickerCategory,
+                    stickerFallbackIndex = if (isImage) null else tpl.stickerFallbackIndex,
+                    imagePath = resolvedImagePath,
                     enabled = tpl.enabled,
                     updatedAt = nowMs,
                 )
@@ -356,11 +394,16 @@ class BackupManager(
             val newId = if (
                 matched == null &&
                 tpl.sourceId.isNotBlank() &&
-                !byId.containsKey(tpl.sourceId)
+                !byId.containsKey(tpl.sourceId) &&
+                !store.templateIdExistsGlobally(tpl.sourceId)
             ) {
                 tpl.sourceId
             } else {
                 UUID.randomUUID().toString()
+            }
+
+            if (isImage) {
+                missingImageCount++
             }
 
             val created = MessageTemplateEntity(
@@ -368,14 +411,15 @@ class BackupManager(
                 accountId = targetAccountId,
                 name = finalName,
                 type = importedType,
-                content = tpl.content,
-                stickerName = tpl.stickerName,
-                stickerLabel = tpl.stickerLabel,
-                stickerCategory = tpl.stickerCategory,
-                stickerFallbackIndex = tpl.stickerFallbackIndex,
+                content = if (isImage) "" else tpl.content,
+                stickerName = if (isImage) null else tpl.stickerName,
+                stickerLabel = if (isImage) null else tpl.stickerLabel,
+                stickerCategory = if (isImage) null else tpl.stickerCategory,
+                stickerFallbackIndex = if (isImage) null else tpl.stickerFallbackIndex,
                 enabled = tpl.enabled,
                 createdAt = tpl.createdAtEpochMs.takeIf { it > 0L } ?: nowMs,
                 updatedAt = nowMs,
+                imagePath = null,
             )
             store.upsertTemplate(created)
             byId[created.id] = created
@@ -388,12 +432,15 @@ class BackupManager(
             inserted++
         }
 
+        if (missingImageCount > 0) {
+            warnings += "已保留 $missingImageCount 个图片模板及好友绑定，请前往「模板」页重新选择本地图片"
+        }
+
         return TemplateMergeResult(
             inserted = inserted,
             updated = updated,
-            skippedImageCount = skippedImageCount,
+            missingImageCount = missingImageCount,
             templateIdRemap = templateIdRemap,
-            skippedImageTemplateIds = skippedImageTemplateIds,
             keptPoolTemplateIds = keptPoolTemplateIds,
             allPoolTemplateIds = allKnownPoolTemplateIds,
         )
@@ -440,7 +487,11 @@ class BackupManager(
                 continue
             }
 
-            val newId = if (item.sourceId.isNotBlank() && !byId.containsKey(item.sourceId)) {
+            val newId = if (
+                item.sourceId.isNotBlank() &&
+                !byId.containsKey(item.sourceId) &&
+                !store.poolItemIdExistsGlobally(item.sourceId)
+            ) {
                 item.sourceId
             } else {
                 UUID.randomUUID().toString()
@@ -503,8 +554,6 @@ class BackupManager(
                 ?: byNick[nick]
 
             val rawTplId = imported.templateId
-            val isSkippedImageTpl =
-                rawTplId != null && rawTplId in templateMerge.skippedImageTemplateIds
             val remappedTplId = rawTplId?.let { templateMerge.templateIdRemap[it] }
 
             if (existing != null) {
@@ -544,9 +593,7 @@ class BackupManager(
                 val finalTemplateId = resolveTargetTemplateId(
                     nick = nick,
                     rawTplId = rawTplId,
-                    isSkippedImageTpl = isSkippedImageTpl,
                     remappedTplId = remappedTplId,
-                    existingTemplateId = existing.templateId,
                     isExistingTarget = true,
                     warnings = warnings,
                 )
@@ -615,9 +662,7 @@ class BackupManager(
             val finalTemplateId = resolveTargetTemplateId(
                 nick = nick,
                 rawTplId = rawTplId,
-                isSkippedImageTpl = isSkippedImageTpl,
                 remappedTplId = remappedTplId,
-                existingTemplateId = null,
                 isExistingTarget = false,
                 warnings = warnings,
             )
@@ -631,7 +676,8 @@ class BackupManager(
 
             val newId = if (
                 imported.sourceId.isNotBlank() &&
-                !byId.containsKey(imported.sourceId)
+                !byId.containsKey(imported.sourceId) &&
+                !store.targetIdExistsGlobally(imported.sourceId)
             ) {
                 imported.sourceId
             } else {
@@ -832,7 +878,11 @@ class BackupManager(
 
             val finalFailureClass = resolveImportedFailureClass(job, item.normalizedStatus)
 
-            val newId = if (job.sourceId.isNotBlank() && !jobById.containsKey(job.sourceId)) {
+            val newId = if (
+                job.sourceId.isNotBlank() &&
+                !jobById.containsKey(job.sourceId) &&
+                !store.jobIdExistsGlobally(job.sourceId)
+            ) {
                 job.sourceId
             } else {
                 UUID.randomUUID().toString()
@@ -918,7 +968,11 @@ class BackupManager(
                 continue
             }
 
-            val newId = if (attempt.sourceId.isNotBlank() && !byId.containsKey(attempt.sourceId)) {
+            val newId = if (
+                attempt.sourceId.isNotBlank() &&
+                !byId.containsKey(attempt.sourceId) &&
+                !store.attemptIdExistsGlobally(attempt.sourceId)
+            ) {
                 attempt.sourceId
             } else {
                 UUID.randomUUID().toString()
@@ -1102,20 +1156,10 @@ class BackupManager(
     private fun resolveTargetTemplateId(
         nick: String,
         rawTplId: String?,
-        isSkippedImageTpl: Boolean,
         remappedTplId: String?,
-        existingTemplateId: String?,
         isExistingTarget: Boolean,
         warnings: MutableList<String>,
     ): String? = when {
-        isSkippedImageTpl -> {
-            warnings += if (isExistingTarget) {
-                "好友「$nick」在备份中绑定了暂不支持的图片模板，已保留本地原模板"
-            } else {
-                "新导入好友「$nick」原绑定的图片模板暂不支持，已置为空模板"
-            }
-            existingTemplateId
-        }
         rawTplId == null -> null
         remappedTplId != null -> remappedTplId
         else -> {
@@ -1206,9 +1250,8 @@ class BackupManager(
     private data class TemplateMergeResult(
         val inserted: Int,
         val updated: Int,
-        val skippedImageCount: Int,
+        val missingImageCount: Int,
         val templateIdRemap: Map<String, String>,
-        val skippedImageTemplateIds: Set<String>,
         val keptPoolTemplateIds: Set<String>,
         val allPoolTemplateIds: Set<String>,
     )

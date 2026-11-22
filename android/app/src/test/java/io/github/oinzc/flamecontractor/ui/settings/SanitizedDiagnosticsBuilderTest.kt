@@ -236,6 +236,7 @@ class SanitizedDiagnosticsBuilderTest {
         val parsedJson = ExecJson.parseObject(report.jsonReport)
         assertEquals("0.4.0-dev", parsedJson["appVersionName"])
         assertEquals("dom_broken", parsedJson["accountStatus"])
+        assertEquals(1, (parsedJson["totalAccountCount"] as Number).toInt())
         @Suppress("UNCHECKED_CAST")
         val survivalMap = parsedJson["survivalChecks"] as Map<String, Any?>
         assertEquals(true, survivalMap["batteryOptimizationIgnored"])
@@ -351,5 +352,109 @@ class SanitizedDiagnosticsBuilderTest {
         assertEquals(48, (disabledJson["autoScanIntervalHours"] as Number).toInt())
         assertEquals(null, disabledJson["latestAutoScanStatus"])
         assertEquals(null, disabledJson["latestAutoScanAtIso"])
+    }
+
+    @Test
+    fun includesTotalAccountCountAndNeverLeaksShortImagePathNicknameOrUid() {
+        val shortAlias = "小号B"
+        val shortDouyinNick = "短昵称"
+        val shortUid = "MS4wLjAB_uid1"
+        val shortTargetNick = "密友Z"
+        val shortImagePath = "template_images/a1.jpg"
+        val shortImageFileUri = "file:///data/x.png"
+        assertTrue(shortImagePath.length < 24)
+        assertTrue(shortUid.length < 24)
+
+        val report = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.4.0-dev",
+                appVersionCode = 1L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                webViewVersion = "157.0.8103.50",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                account = AccountEntity(
+                    id = "acc-2",
+                    displayName = shortAlias,
+                    status = AccountStatus.HEALTHY,
+                    selfUid = shortUid,
+                    douyinNickname = shortDouyinNick,
+                ),
+                targets = listOf(
+                    ContractTargetEntity(
+                        id = "t-short",
+                        accountId = "acc-2",
+                        nicknameSnapshot = shortTargetNick,
+                        platformUserId = shortUid,
+                    ),
+                ),
+                todayJobs = listOf(
+                    SendJobEntity(
+                        id = "job-img",
+                        accountId = "acc-2",
+                        targetId = "t-short",
+                        businessDate = "2026-11-23",
+                        messageSlotId = "daily",
+                        status = JobStatus.FAILED_TERMINAL,
+                        summaryDetail = "缺少图片：$shortImagePath",
+                    ),
+                ),
+                recentAttempts = listOf(
+                    SendAttemptEntity(
+                        id = "att-img",
+                        jobId = "job-img",
+                        attemptNo = 1,
+                        stage = "sending",
+                        status = AttemptStatus.FAILED,
+                        failureClass = FailureClass.OTHER,
+                        errorCode = "err_template_images/b2.png",
+                    ),
+                ),
+                latestProbeReport = StructureProbeReport(
+                    checkedAtEpochMs = 1_763_740_000_000L,
+                    loggedIn = true,
+                    coreSkeletonOk = true,
+                    bundleDigest = "60dbb6a6f9e1",
+                    webViewVersion = "157.0.8103.50",
+                    items = listOf(
+                        StructureProbeItem(
+                            key = "IMAGE_UPLOAD",
+                            label = "图片上传",
+                            hit = true,
+                            matchedCount = 1,
+                            detail = shortImagePath,
+                        ),
+                    ),
+                    summary = "包含 $shortAlias $shortImagePath",
+                ),
+                extraRawStrings = listOf(shortImagePath),
+                totalAccountCount = 4,
+            ),
+        )
+
+        assertEquals(4, report.totalAccountCount)
+        val parsedJson = ExecJson.parseObject(report.jsonReport)
+        assertEquals(4, (parsedJson["totalAccountCount"] as Number).toInt())
+        assertTrue(report.textReport.contains("账号总数: 4"))
+
+        for (output in listOf(report.textReport, report.jsonReport)) {
+            assertFalse("Key totalAccountCount must stay under <24 chars and unredacted", output.contains("[REDACTED_TOKEN]"))
+            assertFalse(output.contains(shortAlias))
+            assertFalse(output.contains(shortDouyinNick))
+            assertFalse(output.contains(shortUid))
+            assertFalse(output.contains(shortTargetNick))
+            assertFalse(output.contains(shortImagePath))
+            assertFalse(output.contains("a1.jpg"))
+            assertFalse(output.contains("b2.png"))
+        }
+
+        val redactedDirect = SanitizedDiagnosticsBuilder.redactSensitiveText(
+            "err $shortImagePath and $shortImageFileUri",
+        )
+        assertFalse(redactedDirect.contains("template_images"))
+        assertFalse(redactedDirect.contains("a1.jpg"))
+        assertFalse(redactedDirect.contains("x.png"))
     }
 }

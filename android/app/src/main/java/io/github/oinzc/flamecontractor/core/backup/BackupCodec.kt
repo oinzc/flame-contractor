@@ -53,16 +53,17 @@ object BackupCodec {
         )
 
         val templatesList = snapshot.templates.map { tpl ->
+            val isImage = tpl.type == TemplateType.IMAGE
+            // 刻意省略 "image_path" 键（不输出本地路径，也不写入 null），防止回导桌面端时覆写原路径
             linkedMapOf<String, Any?>(
                 "id" to tpl.id,
                 "name" to tpl.name,
                 "type" to tpl.type.wireValue,
-                "content" to tpl.content,
-                "image_path" to null,
-                "sticker_name" to tpl.stickerName,
-                "sticker_label" to tpl.stickerLabel,
-                "sticker_category" to tpl.stickerCategory,
-                "sticker_fallback_index" to tpl.stickerFallbackIndex,
+                "content" to if (isImage) "" else tpl.content,
+                "sticker_name" to if (isImage) null else tpl.stickerName,
+                "sticker_label" to if (isImage) null else tpl.stickerLabel,
+                "sticker_category" to if (isImage) null else tpl.stickerCategory,
+                "sticker_fallback_index" to if (isImage) null else tpl.stickerFallbackIndex,
                 "version" to 1,
                 "enabled" to tpl.enabled,
                 "created_at" to formatIso(tpl.createdAt),
@@ -294,12 +295,12 @@ object BackupCodec {
             attemptMeta = attemptMeta,
         )
 
-        val skippedImageTemplateCount = templates.count { it.isImageTemplate }
+        val missingImageTemplateCount = templates.count { it.isImageTemplate }
         return BackupInspection(
             parsed = parsed,
             accounts = accounts,
-            templateCount = templates.size - skippedImageTemplateCount,
-            skippedImageTemplateCount = skippedImageTemplateCount,
+            templateCount = templates.size,
+            missingImageTemplateCount = missingImageTemplateCount,
             targetCount = targets.size,
             jobCount = jobs.size,
             attemptCount = attempts.size,
@@ -430,16 +431,12 @@ object BackupCodec {
                 ?: throw IllegalArgumentException("模板 $id 缺少 name")
             val rawType = (row.stringAlias("type") ?: TemplateType.TEXT.wireValue)
                 .lowercase(Locale.ROOT)
-            val isImage = rawType == "image"
-            val parsedType = if (isImage) {
-                null
-            } else {
-                try {
-                    TemplateType.fromWireValue(rawType)
-                } catch (e: IllegalArgumentException) {
-                    throw IllegalArgumentException("模板「$name」类型不受支持：$rawType", e)
-                }
+            val parsedType = try {
+                TemplateType.fromWireValue(rawType)
+            } catch (e: IllegalArgumentException) {
+                throw IllegalArgumentException("模板「$name」类型不受支持：$rawType", e)
             }
+            val isImage = parsedType == TemplateType.IMAGE
             val createdAt = row.timestampAlias(fallbackTimestampMs, "created_at", "createdAt")
             val updatedAt = row.timestampAlias(createdAt, "updated_at", "updatedAt")
             BackupParsedTemplate(
@@ -448,11 +445,11 @@ object BackupCodec {
                 rawType = rawType,
                 type = parsedType,
                 isImageTemplate = isImage,
-                content = row.rawStringAlias("content") ?: "",
-                stickerName = row.stringAlias("sticker_name", "stickerName"),
-                stickerLabel = row.stringAlias("sticker_label", "stickerLabel"),
-                stickerCategory = row.stringAlias("sticker_category", "stickerCategory"),
-                stickerFallbackIndex = row.intAlias("sticker_fallback_index", "stickerFallbackIndex"),
+                content = if (isImage) "" else (row.rawStringAlias("content") ?: ""),
+                stickerName = if (isImage) null else row.stringAlias("sticker_name", "stickerName"),
+                stickerLabel = if (isImage) null else row.stringAlias("sticker_label", "stickerLabel"),
+                stickerCategory = if (isImage) null else row.stringAlias("sticker_category", "stickerCategory"),
+                stickerFallbackIndex = if (isImage) null else row.intAlias("sticker_fallback_index", "stickerFallbackIndex"),
                 enabled = row.boolAlias("enabled", default = true),
                 createdAtEpochMs = createdAt,
                 updatedAtEpochMs = updatedAt,

@@ -400,11 +400,13 @@ class BackupCodecTest {
 
         val camelInspection = BackupCodec.inspect(camelJson)
         assertEquals(expectedMillis, camelInspection.parsed.exportedAtEpochMs)
-        assertEquals(1, camelInspection.templateCount)
-        assertEquals(1, camelInspection.skippedImageTemplateCount)
+        assertEquals(2, camelInspection.templateCount)
+        assertEquals(1, camelInspection.missingImageTemplateCount)
         assertEquals(1, camelInspection.parsed.poolItems.size)
         assertEquals(expectedMillis, camelInspection.parsed.poolItems[0].lastUsedAtEpochMs)
-        assertTrue(camelInspection.parsed.templates.first { it.sourceId == "tpl-img" }.isImageTemplate)
+        val parsedImg = camelInspection.parsed.templates.first { it.sourceId == "tpl-img" }
+        assertTrue(parsedImg.isImageTemplate)
+        assertEquals(TemplateType.IMAGE, parsedImg.type)
 
         val snakeJson = """
             {
@@ -448,7 +450,7 @@ class BackupCodecTest {
         val snakeInspection = BackupCodec.inspect(snakeJson)
         assertEquals(expectedMillis, snakeInspection.parsed.exportedAtEpochMs)
         assertEquals(1, snakeInspection.templateCount)
-        assertEquals(0, snakeInspection.skippedImageTemplateCount)
+        assertEquals(0, snakeInspection.missingImageTemplateCount)
         assertEquals(1, snakeInspection.parsed.poolItems.size)
     }
 
@@ -623,5 +625,79 @@ class BackupCodecTest {
             BackupCodec.inspect(twentyOneHalfMb)
         }
         assertTrue(halfMbEx.message.orEmpty().contains("21.50 MB"))
+    }
+
+    @Test
+    fun encodeAndInspectImageTemplateRoundtripOmitsImagePathKey() {
+        val now = Instant.parse("2026-11-23T08:00:00Z").toEpochMilli()
+        val secretLocalImagePath = "/data/user/0/io.github.oinzc.flamecontractor/files/template_images/secret-photo-uuid.png"
+        val rawJson = BackupCodec.encode(
+            snapshot = BackupExportSnapshot(
+                account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+                templates = listOf(
+                    MessageTemplateEntity(
+                        id = "tpl-image-1",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        name = "每日图片",
+                        type = TemplateType.IMAGE,
+                        content = "应被清空的文本",
+                        imagePath = secretLocalImagePath,
+                        enabled = true,
+                        createdAt = now - 1_000L,
+                        updatedAt = now,
+                    ),
+                    MessageTemplateEntity(
+                        id = "tpl-text-1",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        name = "文本",
+                        type = TemplateType.TEXT,
+                        content = "早安",
+                        createdAt = now - 1_000L,
+                        updatedAt = now,
+                    ),
+                ),
+                poolItems = emptyList(),
+                targets = listOf(
+                    ContractTargetEntity(
+                        id = "tgt-img-1",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        nicknameSnapshot = "好友图",
+                        platformUserId = "puid-img-1",
+                        conversationType = "friend",
+                        templateId = "tpl-image-1",
+                    ),
+                ),
+                jobs = emptyList(),
+                attempts = emptyList(),
+            ),
+            exportedAtEpochMs = now,
+        )
+
+        // 严格验证 JSON 文本与模板对象均不含 "image_path" 键（不可写入 null，以免覆盖桌面端路径）与本地路径
+        assertFalse(rawJson.contains("image_path"))
+        assertFalse(rawJson.contains("imagePath"))
+        assertFalse(rawJson.contains("secret-photo-uuid.png"))
+        assertFalse(rawJson.contains("template_images"))
+
+        val root = ExecJson.parseObject(rawJson)
+        @Suppress("UNCHECKED_CAST")
+        val data = root["data"] as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val exportedTemplates = data["templates"] as List<Map<String, Any?>>
+        assertEquals(2, exportedTemplates.size)
+        val exportedImageTpl = exportedTemplates.first { it["id"] == "tpl-image-1" }
+        assertEquals("image", exportedImageTpl["type"])
+        assertEquals("", exportedImageTpl["content"])
+        assertFalse(exportedImageTpl.containsKey("image_path"))
+        assertFalse(exportedTemplates.first { it["id"] == "tpl-text-1" }.containsKey("image_path"))
+
+        val inspection = BackupCodec.inspect(rawJson)
+        assertEquals(2, inspection.templateCount)
+        assertEquals(1, inspection.missingImageTemplateCount)
+        val parsedImageTpl = inspection.parsed.templates.first { it.sourceId == "tpl-image-1" }
+        assertEquals(TemplateType.IMAGE, parsedImageTpl.type)
+        assertTrue(parsedImageTpl.isImageTemplate)
+        assertEquals("", parsedImageTpl.content)
+        assertEquals("tpl-image-1", inspection.parsed.targets.single().templateId)
     }
 }

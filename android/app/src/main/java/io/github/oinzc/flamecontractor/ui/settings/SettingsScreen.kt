@@ -106,6 +106,7 @@ import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
@@ -133,8 +134,10 @@ fun SettingsRoute(
         store = RoomBackupStore(database),
         onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
     ),
+    accountId: String = DEFAULT_ACCOUNT_ID,
 ) {
     val context = LocalContext.current
+    val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
     val factory = remember(
         context,
         database,
@@ -143,6 +146,7 @@ fun SettingsRoute(
         barkNotifier,
         scheduleCoordinator,
         backupManager,
+        resolvedAccountId,
     ) {
         SettingsViewModel.factory(
             context = context,
@@ -152,12 +156,16 @@ fun SettingsRoute(
             barkNotifier = barkNotifier,
             scheduleCoordinator = scheduleCoordinator,
             backupManager = backupManager,
+            accountId = resolvedAccountId,
         )
     }
-    val viewModel: SettingsViewModel = viewModel(factory = factory)
+    val viewModel: SettingsViewModel = viewModel(
+        key = "settings_$resolvedAccountId",
+        factory = factory,
+    )
     val uiState by viewModel.uiState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
-    var isSafIoBusy by remember { mutableStateOf(false) }
+    var isSafIoBusy by remember(resolvedAccountId) { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, viewModel) {
@@ -593,7 +601,12 @@ private fun SettingsPageHeader(uiState: SettingsUiState) {
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "同日调度、双通道推送、HyperOS 保活与只读诊断",
+                text = buildString {
+                    if (uiState.accountDisplayName.isNotBlank()) {
+                        append("当前账号：${uiState.accountDisplayName} · ")
+                    }
+                    append("同日调度、双通道推送、HyperOS 保活与只读诊断")
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1012,11 +1025,11 @@ private fun BackupImportReportCard(report: BackupImportReport) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (report.skippedImageTemplates > 0) {
+            if (report.missingImageTemplateCount > 0) {
                 Text(
-                    text = "已跳过 ${report.skippedImageTemplates} 个图片（image）模板",
+                    text = "待补选图片：已保留 ${report.missingImageTemplateCount} 个图片模板及好友绑定，请前往「模板」页重新选择本地图片",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             if (report.skippedProtectedJobs > 0) {
@@ -1098,11 +1111,11 @@ private fun BackupImportPreviewDialog(
                             text = "历史任务：${inspection.jobCount} 条（尝试日志 ${inspection.attemptCount} 条）",
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        if (inspection.skippedImageTemplateCount > 0) {
+                        if (inspection.missingImageTemplateCount > 0) {
                             Text(
-                                text = "注意：备份含 ${inspection.skippedImageTemplateCount} 个图片（image）模板，当前版本暂不支持并将跳过（已有好友保留原模板绑定）。",
+                                text = "提示：备份含 ${inspection.missingImageTemplateCount} 个图片（image）模板，导入将保留模板定义与好友绑定；若本地尚无对应图片文件，导入后需前往「模板」页补选本地图片。",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
@@ -1117,7 +1130,7 @@ private fun BackupImportPreviewDialog(
                     )
                 } else {
                     Text(
-                        text = "检测到 ${inspection.accounts.size} 个源账号，请选择要导入到本地主账号的一组：",
+                        text = "检测到 ${inspection.accounts.size} 个源账号，请选择要导入到当前账号的一组：",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Medium,
                     )

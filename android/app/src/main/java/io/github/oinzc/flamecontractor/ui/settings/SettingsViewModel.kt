@@ -65,11 +65,12 @@ interface SettingsAccountRepository {
     suspend fun listRecentAttempts(accountId: String, limit: Int = 50): List<SendAttemptEntity>
     suspend fun getLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity? = null
     fun observeLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): Flow<ScanRunEntity?> = flowOf(null)
+    suspend fun countAccounts(): Int = 1
 }
 
 interface SettingsScheduleGateway {
     suspend fun rescheduleAll(): Instant?
-    suspend fun inspectNextAutoScanAt(): Instant? = null
+    suspend fun inspectNextAutoScanAt(accountId: String = DEFAULT_ACCOUNT_ID): Instant? = null
 }
 
 interface SettingsBackupGateway {
@@ -126,6 +127,7 @@ interface SettingsDiagnosticsEnvProvider {
 
 data class SettingsUiState(
     val isLoading: Boolean = true,
+    val accountDisplayName: String = "",
     val accountStatus: AccountStatus = AccountStatus.PENDING_LOGIN,
     val accountTimezone: String = java.time.ZoneId.systemDefault().id,
     val enabledInput: Boolean = true,
@@ -277,12 +279,13 @@ class SettingsViewModel(
             accountRepo.observeAccount(accountId).collect { account ->
                 if (account == null) return@collect
                 val nextAutoScan = withContext(ioDispatcher) {
-                    scheduleGateway.inspectNextAutoScanAt()
+                    scheduleGateway.inspectNextAutoScanAt(accountId)
                 }
                 val nextAutoScanText = nextAutoScan?.let { formatInstantHhmm(it, account.timezone) }
                 _uiState.update { state ->
                     var nextState = state.copy(
                         isLoading = false,
+                        accountDisplayName = account.displayName,
                         accountStatus = account.status,
                         accountTimezone = account.timezone,
                         nextAutoScanTimeText = nextAutoScanText,
@@ -316,7 +319,7 @@ class SettingsViewModel(
         scope.launch {
             accountRepo.observeLatestAutoScanRun(accountId).collect { scanRun ->
                 val nextAutoScan = withContext(ioDispatcher) {
-                    scheduleGateway.inspectNextAutoScanAt()
+                    scheduleGateway.inspectNextAutoScanAt(accountId)
                 }
                 _uiState.update { state ->
                     state.copy(
@@ -545,7 +548,7 @@ class SettingsViewModel(
                     )
                     accountRepo.updateAccount(nextAccount)
                     val wakeAt = scheduleGateway.rescheduleAll()
-                    val autoScanAt = scheduleGateway.inspectNextAutoScanAt()
+                    val autoScanAt = scheduleGateway.inspectNextAutoScanAt(accountId)
                     Triple(nextAccount, wakeAt, autoScanAt)
                 }
 
@@ -560,6 +563,7 @@ class SettingsViewModel(
                 _uiState.update {
                     it.copy(
                         isSavingSchedule = false,
+                        accountDisplayName = updated.displayName,
                         accountStatus = updated.status,
                         accountTimezone = updated.timezone,
                         enabledInput = updated.enabled,
@@ -669,7 +673,7 @@ class SettingsViewModel(
                     )
                     accountRepo.updateAccount(nextAccount)
                     scheduleGateway.rescheduleAll()
-                    val nextScanAt = scheduleGateway.inspectNextAutoScanAt()
+                    val nextScanAt = scheduleGateway.inspectNextAutoScanAt(accountId)
                     nextAccount to nextScanAt
                 }
 
@@ -857,7 +861,7 @@ class SettingsViewModel(
                         includeHistory = includeHistory,
                     )
                     val latestAcc = accountRepo.getAccount(accountId)
-                    val nextScan = scheduleGateway.inspectNextAutoScanAt()
+                    val nextScan = scheduleGateway.inspectNextAutoScanAt(accountId)
                     Triple(importReport, latestAcc, nextScan)
                 }
 
@@ -880,6 +884,7 @@ class SettingsViewModel(
                     )
                     if (refreshedAccount != null) {
                         updated = updated.copy(
+                            accountDisplayName = refreshedAccount.displayName,
                             accountStatus = refreshedAccount.status,
                             accountTimezone = refreshedAccount.timezone,
                             enabledInput = refreshedAccount.enabled,
@@ -928,8 +933,8 @@ class SettingsViewModel(
         append("模板 +${report.templatesInserted}/更新${report.templatesUpdated}，")
         append("好友 +${report.targetsInserted}/更新${report.targetsUpdated}，")
         append("任务 +${report.jobsInserted}/更新${report.jobsUpdated}")
-        if (report.skippedImageTemplates > 0) {
-            append("；已跳过 ${report.skippedImageTemplates} 个图片模板")
+        if (report.missingImageTemplateCount > 0) {
+            append("；已保留 ${report.missingImageTemplateCount} 个图片模板及好友绑定，请前往「模板」页补选本地图片")
         }
         if (report.skippedProtectedJobs > 0) {
             append("；保留 ${report.skippedProtectedJobs} 条受保护本地任务")
@@ -1267,6 +1272,7 @@ class SettingsViewModel(
             try {
                 val report = withContext(ioDispatcher) {
                     val account = accountRepo.getAccount(accountId)
+                    val totalAccountCount = accountRepo.countAccounts().coerceAtLeast(if (account != null) 1 else 0)
                     val targets = accountRepo.listActiveTargets(accountId)
                     val nowMs = clockMillis()
                     val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
@@ -1300,6 +1306,7 @@ class SettingsViewModel(
                             rawBarkUrl = rawBark,
                             latestProbeReport = probeReport,
                             latestAutoScan = latestAutoScan,
+                            totalAccountCount = totalAccountCount,
                         ),
                     )
                 }
@@ -1409,8 +1416,10 @@ class SettingsViewModel(
                 store = RoomBackupStore(database),
                 onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
             ),
+            accountId: String = DEFAULT_ACCOUNT_ID,
         ): ViewModelProvider.Factory {
             val appContext = context.applicationContext ?: context
+            val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
             return object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -1420,10 +1429,11 @@ class SettingsViewModel(
                             scheduleGateway = AndroidScheduleGateway(scheduleCoordinator),
                             selectorGateway = StoreSettingsSelectorGateway(selectorBundleStore),
                             barkGateway = AndroidBarkGateway(secretStore, barkNotifier),
-                            probeGateway = RuntimeBusProbeGateway(appContext),
+                            probeGateway = RuntimeBusProbeGateway(appContext, resolvedAccountId),
                             survivalGateway = AndroidSurvivalGateway(appContext),
                             envProvider = AndroidDiagnosticsEnvProvider(appContext),
-                            backupGateway = AndroidBackupGateway(backupManager),
+                            backupGateway = AndroidBackupGateway(backupManager, resolvedAccountId),
+                            accountId = resolvedAccountId,
                         ) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
@@ -1493,6 +1503,9 @@ internal class RoomSettingsAccountRepository(
 
     override fun observeLatestAutoScanRun(accountId: String): Flow<ScanRunEntity?> =
         database.scanRunDao().observeLatestAutoScanRun(accountId)
+
+    override suspend fun countAccounts(): Int =
+        database.accountDao().listAll().size
 }
 
 internal class AndroidScheduleGateway(
@@ -1500,7 +1513,8 @@ internal class AndroidScheduleGateway(
 ) : SettingsScheduleGateway {
     override suspend fun rescheduleAll(): Instant? = coordinator.rescheduleAll()
 
-    override suspend fun inspectNextAutoScanAt(): Instant? = coordinator.inspectNextAutoScanAt()
+    override suspend fun inspectNextAutoScanAt(accountId: String): Instant? =
+        coordinator.inspectNextAutoScanAt(accountId = accountId)
 }
 
 internal class AndroidBackupGateway(
@@ -1568,19 +1582,34 @@ internal class AndroidBarkGateway(
 
 internal class RuntimeBusProbeGateway(
     private val appContext: Context,
+    private val accountId: String = DEFAULT_ACCOUNT_ID,
 ) : SettingsProbeGateway {
 
     override val probeReports: Flow<StructureProbeReport?> =
-        ExecutionRuntimeBus.state.map { it.latestProbeReport }.distinctUntilChanged()
+        ExecutionRuntimeBus.state.map { state ->
+            if (state.activeAccountId == null || state.activeAccountId == accountId) {
+                state.latestProbeReport
+            } else {
+                null
+            }
+        }.distinctUntilChanged()
 
     override val runtimeRunning: Flow<Boolean> =
-        ExecutionRuntimeBus.state.map { it.running }.distinctUntilChanged()
+        ExecutionRuntimeBus.state.map { state ->
+            state.running && (state.activeAccountId == null || state.activeAccountId == accountId)
+        }.distinctUntilChanged()
 
     override val runtimeMessage: Flow<String?> =
-        ExecutionRuntimeBus.state.map { it.lastMessage }.distinctUntilChanged()
+        ExecutionRuntimeBus.state.map { state ->
+            if (state.activeAccountId == null || state.activeAccountId == accountId) {
+                state.lastMessage
+            } else {
+                null
+            }
+        }.distinctUntilChanged()
 
     override fun triggerStructureProbe(): Boolean =
-        ExecutionForegroundService.enqueueStructureProbe(appContext)
+        ExecutionForegroundService.enqueueStructureProbe(appContext, accountId = accountId)
 
     override fun clearLatestProbeReport() {
         ExecutionRuntimeBus.clearProbeReport()
