@@ -1,6 +1,9 @@
 package io.github.oinzc.flamecontractor.ui.targets
 
+import android.net.Uri
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
+import io.github.oinzc.flamecontractor.core.storage.StoredTemplateImage
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -16,6 +19,8 @@ import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.ScanReconciliationCodec
 import io.github.oinzc.flamecontractor.execution.ScanReconciliationSnapshot
 import io.github.oinzc.flamecontractor.execution.ScannedChatCandidate
+import java.io.File
+import java.io.InputStream
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,6 +30,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -47,6 +53,7 @@ class ScanReconcileViewModelTest {
                 timezone = "Asia/Shanghai",
             ),
         )
+        val extraAccounts = MutableStateFlow<Map<String, AccountEntity>>(emptyMap())
         val targetsState = MutableStateFlow<List<ContractTargetEntity>>(emptyList())
         val templatesState = MutableStateFlow<List<MessageTemplateEntity>>(
             listOf(
@@ -66,7 +73,10 @@ class ScanReconcileViewModelTest {
         var reviveCalls = 0
             private set
 
-        override fun observeAccount(accountId: String): Flow<AccountEntity?> = accountState
+        override fun observeAccount(accountId: String): Flow<AccountEntity?> =
+            combine(accountState, extraAccounts) { primary, extras ->
+                extras[accountId] ?: primary?.takeIf { it.id == accountId }
+            }
 
         override fun observeActiveTargets(accountId: String): Flow<List<ContractTargetEntity>> =
             targetsState.map { list ->
@@ -90,7 +100,8 @@ class ScanReconcileViewModelTest {
                 list.filter { it.accountId == accountId }.maxByOrNull { it.startedAt }
             }
 
-        override suspend fun getAccount(accountId: String): AccountEntity? = accountState.value
+        override suspend fun getAccount(accountId: String): AccountEntity? =
+            extraAccounts.value[accountId] ?: accountState.value?.takeIf { it.id == accountId }
 
         override suspend fun listActiveTargets(accountId: String): List<ContractTargetEntity> =
             targetsState.value.filter { it.accountId == accountId && it.deletedAt == null }
@@ -205,11 +216,14 @@ class ScanReconcileViewModelTest {
         override val liveState: StateFlow<ExecutionLiveState> = mutableLiveState.asStateFlow()
 
         val singleSendRequests = mutableListOf<Pair<String, String?>>()
+        val singleSendAccountIds = mutableListOf<String>()
         var manualScanCount = 0
+        val manualScanAccountIds = mutableListOf<String>()
         val identityRepairRequests = mutableListOf<String>()
 
         override fun enqueueManualScan(accountId: String): Boolean {
             manualScanCount++
+            manualScanAccountIds.add(accountId)
             return true
         }
 
@@ -219,6 +233,7 @@ class ScanReconcileViewModelTest {
             accountId: String,
         ): Boolean {
             singleSendRequests.add(targetId to overrideText)
+            singleSendAccountIds.add(accountId)
             return true
         }
 
@@ -294,6 +309,7 @@ class ScanReconcileViewModelTest {
             )
 
             gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
                 latestScanSnapshot = ScanReconciliationSnapshot(
                     scanRunId = "scan-1",
                     scannedAtEpochMs = 1_000L,
@@ -391,6 +407,7 @@ class ScanReconcileViewModelTest {
             )
 
             gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
                 latestScanSnapshot = ScanReconciliationSnapshot(
                     scanRunId = "scan-ambig",
                     scannedAtEpochMs = 2_000L,
@@ -590,6 +607,7 @@ class ScanReconcileViewModelTest {
             )
 
             gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
                 latestScanSnapshot = ScanReconciliationSnapshot(
                     scanRunId = "scan-import",
                     scannedAtEpochMs = 9_000L,
@@ -630,6 +648,7 @@ class ScanReconcileViewModelTest {
 
             // 后续对 alreadyImported = true 的快照同步已有好友火花，同样绝不覆写本机 streakDays
             gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
                 latestScanSnapshot = ScanReconciliationSnapshot(
                     scanRunId = "scan-sync-existing",
                     scannedAtEpochMs = 15_000L,
@@ -793,6 +812,7 @@ class ScanReconcileViewModelTest {
             )
 
             gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
                 latestScanSnapshot = ScanReconciliationSnapshot(
                     scanRunId = "scan-no-spark",
                     scannedAtEpochMs = 20_000L,
@@ -848,5 +868,189 @@ class ScanReconcileViewModelTest {
         } finally {
             vmScope.cancel()
         }
+    }
+
+    @Test
+    fun ignoresForeignAccountScanSnapshotsAndRunningProgress() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository()
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                accountId = DEFAULT_ACCOUNT_ID,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                running = true,
+                activeAccountId = "acct-2",
+                currentTask = "正在扫描二号好友",
+                latestScanSnapshotAccountId = "acct-2",
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-foreign",
+                    scannedAtEpochMs = 30_000L,
+                    discoveredCount = 1,
+                    sparkCount = 1,
+                    candidates = listOf(candidate(name = "二号好友", sparkDays = 7, sparkLabel = "7天")),
+                ),
+            )
+            advanceUntilIdle()
+
+            val state = vm.uiState.value
+            assertFalse(state.scanRunning)
+            assertFalse(state.hasAvailableSnapshot)
+            assertTrue(state.reconcileState.allCandidates.isEmpty())
+
+            vm.startManualScan()
+            advanceUntilIdle()
+
+            // 其他账号完成扫描也不会替当前账号自动弹出对账弹窗
+            gateway.mutableLiveState.value = gateway.mutableLiveState.value.copy(
+                running = false,
+                activeAccountId = "acct-2",
+                lastUpdatedAtEpochMs = 40_000L,
+                latestScanSnapshotAccountId = "acct-2",
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-foreign-done",
+                    scannedAtEpochMs = 40_000L,
+                    discoveredCount = 1,
+                    sparkCount = 1,
+                    candidates = listOf(candidate(name = "二号好友", sparkDays = 7, sparkLabel = "7天")),
+                ),
+            )
+            advanceUntilIdle()
+            assertFalse(vm.uiState.value.isReconcileSheetOpen)
+            assertFalse(vm.uiState.value.hasAvailableSnapshot)
+            assertTrue(vm.uiState.value.reconcileState.allCandidates.isEmpty())
+
+            // 当前账号完成扫描后才会自动打开属于本号的对账弹窗
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                running = false,
+                activeAccountId = DEFAULT_ACCOUNT_ID,
+                lastUpdatedAtEpochMs = 50_000L,
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-own-done",
+                    scannedAtEpochMs = 50_000L,
+                    discoveredCount = 1,
+                    sparkCount = 1,
+                    candidates = listOf(candidate(name = "一号好友", sparkDays = 9, sparkLabel = "9天")),
+                ),
+            )
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.isReconcileSheetOpen)
+            assertTrue(vm.uiState.value.hasAvailableSnapshot)
+            assertEquals(
+                listOf("一号好友"),
+                vm.uiState.value.reconcileState.allCandidates.map { it.candidate.displayName },
+            )
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun isolatesTargetsByAccountMarksMissingImageTemplatesAndForwardsAccountId() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val acct2 = "acct-2"
+            val imageStore = FakeTargetsImageStorage(existingPaths = mutableSetOf("images/present.jpg"))
+            val repo = FakeTargetsRepository().apply {
+                extraAccounts.value = mapOf(
+                    acct2 to AccountEntity(
+                        id = acct2,
+                        displayName = "二号",
+                        status = AccountStatus.HEALTHY,
+                        timezone = "Asia/Shanghai",
+                    ),
+                )
+                templatesState.value = listOf(
+                    MessageTemplateEntity(
+                        id = "tpl-default",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        name = "默认文本",
+                        type = TemplateType.TEXT,
+                        content = "hello",
+                    ),
+                    MessageTemplateEntity(
+                        id = "tpl-img-missing",
+                        accountId = acct2,
+                        name = "缺图模板",
+                        type = TemplateType.IMAGE,
+                        imagePath = "images/gone.jpg",
+                    ),
+                )
+                val defaultTarget = ContractTargetEntity(
+                    id = "t-default",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    nicknameSnapshot = "默认好友",
+                    templateId = "tpl-default",
+                    platformUserId = "u-default",
+                )
+                val acct2Target = ContractTargetEntity(
+                    id = "t-acct2",
+                    accountId = acct2,
+                    nicknameSnapshot = "二号好友",
+                    templateId = "tpl-img-missing",
+                    platformUserId = "u-acct2",
+                )
+                targetsState.value = listOf(defaultTarget, acct2Target)
+            }
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                accountId = acct2,
+                imageStore = imageStore,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+            advanceUntilIdle()
+
+            val state = vm.uiState.value
+            assertEquals(1, state.items.size)
+            val item = state.items.single()
+            assertEquals("t-acct2", item.target.id)
+            assertEquals(TemplateType.IMAGE, item.templateType)
+            assertTrue(item.isTemplateMissingImage)
+            assertTrue("tpl-img-missing" in state.missingImageTemplateIds)
+
+            vm.requestSingleSend(item.target)
+            advanceUntilIdle()
+            val dlg = vm.uiState.value.singleSendDialog as SingleSendDialogState.ConfirmSend
+            assertEquals(TemplateType.IMAGE, dlg.templateType)
+            assertTrue(dlg.isTemplateMissingImage)
+
+            vm.confirmSingleSend()
+            vm.startManualScan()
+            advanceUntilIdle()
+            assertEquals(listOf(acct2), gateway.singleSendAccountIds)
+            assertEquals(listOf(acct2), gateway.manualScanAccountIds)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    private class FakeTargetsImageStorage(
+        private val existingPaths: MutableSet<String> = mutableSetOf(),
+    ) : TemplateImageStorage {
+        override fun resolveExistingFile(storedPath: String?): File? =
+            storedPath?.takeIf { it in existingPaths }?.let { File(it) }
+
+        override suspend fun importFromStream(input: InputStream, mimeTypeHint: String?): StoredTemplateImage =
+            StoredTemplateImage("images/fake.jpg", mimeTypeHint ?: "image/jpeg", 100L, 100, 100)
+
+        override fun deleteIfUnreferenced(storedPath: String?, referencedPaths: Set<String>): Boolean = false
+
+        override fun contentUriFor(file: File): Uri? = null
     }
 }

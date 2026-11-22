@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import io.github.oinzc.flamecontractor.app.AppContainer
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -50,6 +52,7 @@ import kotlinx.coroutines.withContext
 
 interface TodayRepository {
     fun observeAccount(accountId: String): Flow<AccountEntity?>
+    fun observeAllAccounts(): Flow<List<AccountEntity>> = flowOf(emptyList())
     fun observeActiveTargets(accountId: String): Flow<List<ContractTargetEntity>>
     fun observeJobsForDate(accountId: String, businessDate: String): Flow<List<SendJobEntity>>
     fun observeJobsByStatus(accountId: String, status: JobStatus): Flow<List<SendJobEntity>>
@@ -75,6 +78,9 @@ class RoomTodayRepository(
 
     override fun observeAccount(accountId: String): Flow<AccountEntity?> =
         database.accountDao().observeAccount(accountId)
+
+    override fun observeAllAccounts(): Flow<List<AccountEntity>> =
+        database.accountDao().observeAll()
 
     override fun observeActiveTargets(accountId: String): Flow<List<ContractTargetEntity>> =
         database.targetDao().observeActiveTargets(accountId)
@@ -176,6 +182,7 @@ data class UnknownJobReviewItem(
     val targetName: String,
     val templateLabel: String,
     val isDailySlot: Boolean,
+    val isImageMissing: Boolean = false,
 )
 
 data class RecentJobItem(
@@ -183,6 +190,7 @@ data class RecentJobItem(
     val targetName: String,
     val templateLabel: String,
     val isDailySlot: Boolean,
+    val isImageMissing: Boolean = false,
     val attempts: List<SendAttemptEntity> = emptyList(),
     val attemptsLoaded: Boolean = false,
     val expanded: Boolean = false,
@@ -232,6 +240,10 @@ data class TodayUiState(
     val recentJobs: List<RecentJobItem> = emptyList(),
     val cooldownFailureStats: List<SanitizedFailureStat> = emptyList(),
     val executionState: ExecutionLiveState = ExecutionLiveState(),
+    val otherRunningAccountName: String? = null,
+    val otherRunningTaskLabel: String? = null,
+    val missingImageTemplateCount: Int = 0,
+    val missingImageEnabledTargetCount: Int = 0,
     val showReloginChoiceDialog: Boolean = false,
     val activeUnknownReviewJob: UnknownJobReviewItem? = null,
     val showCooldownDetailDialog: Boolean = false,
@@ -249,6 +261,7 @@ class TodayViewModel(
     private val executionLauncher: TodayExecutionLauncher,
     executionStateFlow: StateFlow<ExecutionLiveState> = ExecutionRuntimeBus.state,
     private val accountId: String = DEFAULT_ACCOUNT_ID,
+    private val imageStore: TemplateImageStorage? = null,
     private val clock: Clock = Clock.systemDefaultZone(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     customScope: CoroutineScope? = null,
@@ -258,6 +271,7 @@ class TodayViewModel(
 
     private val businessDateFlow = MutableStateFlow(currentBusinessDate())
     private val controlFlow = MutableStateFlow(ControlState())
+    private val refreshTickFlow = MutableStateFlow(0L)
     private val resolvingJobIds = HashSet<String>()
     private var lastHandledUrgentNonce: Long = 0L
 
@@ -280,14 +294,33 @@ class TodayViewModel(
         )
     }
 
-    private val metaFlow: Flow<MetaSnapshot> = combine(
+    private val templatesWithMissingFlow: Flow<Pair<List<MessageTemplateEntity>, Set<String>>> = combine(
         repository.observeTemplates(accountId),
+        refreshTickFlow,
+    ) { templates, _ ->
+        val missingIds = withContext(ioDispatcher) {
+            templates.filter { tpl ->
+                tpl.type == TemplateType.IMAGE && if (imageStore != null) {
+                    !imageStore.isImageAvailable(tpl.imagePath)
+                } else {
+                    tpl.imagePath.isNullOrBlank()
+                }
+            }.mapTo(HashSet()) { it.id }
+        }
+        templates to missingIds
+    }
+
+    private val metaFlow: Flow<MetaSnapshot> = combine(
+        templatesWithMissingFlow,
+        repository.observeAllAccounts(),
         executionStateFlow,
         businessDateFlow,
         controlFlow,
-    ) { templates, execState, date, controls ->
+    ) { templatePair, allAccounts, execState, date, controls ->
         MetaSnapshot(
-            templates = templates,
+            templates = templatePair.first,
+            missingImageTemplateIds = templatePair.second,
+            allAccounts = allAccounts,
             executionState = execState,
             businessDate = date,
             controls = controls,
@@ -378,6 +411,7 @@ class TodayViewModel(
         if (businessDateFlow.value != current) {
             businessDateFlow.value = current
         }
+        refreshTickFlow.value += 1L
     }
 
     fun handleUrgentCategory(categoryName: String?, signalNonce: Long = 0L) {
@@ -808,12 +842,41 @@ class TodayViewModel(
             null
         }
 
+        val missingIds = meta.missingImageTemplateIds
+        val missingEnabledTargetCount = enabledTargets.count { it.templateId in missingIds }
+
+        val rawExec = meta.executionState
+        val execBelongsToCurrent = rawExec.activeAccountId == accountId ||
+            (rawExec.activeAccountId == null && accountId == DEFAULT_ACCOUNT_ID)
+        val scopedExecutionState = if (execBelongsToCurrent) {
+            rawExec
+        } else {
+            ExecutionLiveState(
+                running = false,
+                activeAccountId = rawExec.activeAccountId,
+            )
+        }
+        val otherRunningAccountName = if (rawExec.running &&
+            rawExec.activeAccountId != null &&
+            rawExec.activeAccountId != accountId
+        ) {
+            meta.allAccounts.firstOrNull { it.id == rawExec.activeAccountId }?.displayName ?: "其他账号"
+        } else {
+            null
+        }
+        val otherRunningTaskLabel = if (otherRunningAccountName != null) {
+            rawExec.currentTask
+        } else {
+            null
+        }
+
         val unknownItems = db.unknownJobs.map { job ->
             UnknownJobReviewItem(
                 job = job,
                 targetName = targetsById[job.targetId]?.nicknameSnapshot ?: "已归档好友",
-                templateLabel = resolveTemplateLabel(job, templatesById),
+                templateLabel = resolveTemplateLabel(job, templatesById, missingIds),
                 isDailySlot = job.messageSlotId == SendGuard.DAILY_SLOT_ID,
+                isImageMissing = job.templateId in missingIds,
             )
         }
 
@@ -822,8 +885,9 @@ class TodayViewModel(
             RecentJobItem(
                 job = job,
                 targetName = targetsById[job.targetId]?.nicknameSnapshot ?: "已归档好友",
-                templateLabel = resolveTemplateLabel(job, templatesById),
+                templateLabel = resolveTemplateLabel(job, templatesById, missingIds),
                 isDailySlot = job.messageSlotId == SendGuard.DAILY_SLOT_ID,
+                isImageMissing = job.templateId in missingIds,
                 attempts = attempts,
                 attemptsLoaded = job.id in meta.controls.loadedAttemptJobIds,
                 expanded = job.id in meta.controls.expandedJobIds,
@@ -856,7 +920,11 @@ class TodayViewModel(
             unknownReviewJobs = unknownItems,
             recentJobs = recentItems,
             cooldownFailureStats = failureStats,
-            executionState = meta.executionState,
+            executionState = scopedExecutionState,
+            otherRunningAccountName = otherRunningAccountName,
+            otherRunningTaskLabel = otherRunningTaskLabel,
+            missingImageTemplateCount = missingIds.size,
+            missingImageEnabledTargetCount = missingEnabledTargetCount,
             showReloginChoiceDialog = meta.controls.showReloginChoiceDialog,
             activeUnknownReviewJob = activeReview,
             showCooldownDetailDialog = meta.controls.showCooldownDetailDialog,
@@ -871,6 +939,7 @@ class TodayViewModel(
     private fun resolveTemplateLabel(
         job: SendJobEntity,
         templatesById: Map<String, MessageTemplateEntity>,
+        missingImageTemplateIds: Set<String>,
     ): String {
         val tpl = job.templateId?.let { templatesById[it] }
         if (tpl != null) {
@@ -878,7 +947,11 @@ class TodayViewModel(
                 TemplateType.STICKER -> "${tpl.name}（表情）"
                 TemplateType.POOL -> "${tpl.name}（文案池）"
                 TemplateType.TEXT -> "${tpl.name}（文本）"
-                TemplateType.IMAGE -> "${tpl.name}（图片）"
+                TemplateType.IMAGE -> if (tpl.id in missingImageTemplateIds) {
+                    "${tpl.name}（图片 · 待补图）"
+                } else {
+                    "${tpl.name}（图片）"
+                }
             }
         }
         return if (job.messageSlotId.startsWith(SendGuard.MANUAL_SLOT_PREFIX)) {
@@ -900,6 +973,8 @@ class TodayViewModel(
 
     private data class MetaSnapshot(
         val templates: List<MessageTemplateEntity>,
+        val missingImageTemplateIds: Set<String>,
+        val allAccounts: List<AccountEntity>,
         val executionState: ExecutionLiveState,
         val businessDate: String,
         val controls: ControlState,
@@ -922,7 +997,10 @@ class TodayViewModel(
     companion object {
         private const val RECENT_JOBS_LIMIT = 40
 
-        fun factory(container: AppContainer): ViewModelProvider.Factory =
+        fun factory(
+            container: AppContainer,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+        ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -937,6 +1015,8 @@ class TodayViewModel(
                                 io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
                                     .enqueueManualBatch(container.appContext, accountId)
                         },
+                        accountId = accountId,
+                        imageStore = container.templateImageStore,
                     ) as T
                 }
             }

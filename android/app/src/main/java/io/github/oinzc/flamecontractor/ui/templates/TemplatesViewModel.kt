@@ -1,8 +1,10 @@
 package io.github.oinzc.flamecontractor.ui.templates
 
+import android.graphics.BitmapFactory
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
@@ -10,11 +12,15 @@ import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
+import java.io.File
+import java.io.InputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +50,7 @@ interface TemplatesRepository {
     suspend fun getTemplateById(id: String): MessageTemplateEntity?
     suspend fun listPoolItems(templateId: String): List<TemplatePoolItemEntity>
     suspend fun countActiveTargetsByTemplate(templateId: String): Int
+    suspend fun listAllReferencedImagePaths(): List<String> = emptyList()
 
     suspend fun upsertTemplate(template: MessageTemplateEntity)
     suspend fun updateTemplate(template: MessageTemplateEntity)
@@ -81,6 +88,9 @@ class RoomTemplatesRepository(
 
     override suspend fun countActiveTargetsByTemplate(templateId: String): Int =
         targetDao.countActiveByTemplate(templateId)
+
+    override suspend fun listAllReferencedImagePaths(): List<String> =
+        templateDao.listAllReferencedImagePaths()
 
     override suspend fun upsertTemplate(template: MessageTemplateEntity) {
         templateDao.upsertTemplate(template)
@@ -126,6 +136,9 @@ data class TemplateCardUi(
     val nextPoolPreviewText: String?,
     val expanded: Boolean,
     val inlineInput: InlinePoolInputState = InlinePoolInputState(),
+    val imageFile: File? = null,
+    val imageAvailable: Boolean = false,
+    val imageSummary: String? = null,
 )
 
 data class PoolDraftItem(
@@ -148,6 +161,13 @@ data class TemplateEditorState(
     val stickerFallbackIndexInput: String,
     val enabled: Boolean,
     val poolDrafts: List<PoolDraftItem>,
+    val imagePath: String? = null,
+    val imageAvailable: Boolean = false,
+    val imageMimeType: String? = null,
+    val imageSizeBytes: Long? = null,
+    val imageWidthPx: Int? = null,
+    val imageHeightPx: Int? = null,
+    val isImportingImage: Boolean = false,
     val errorMessage: String? = null,
 )
 
@@ -170,6 +190,7 @@ data class TemplatesUiState(
     val textTemplates: List<TemplateCardUi> = emptyList(),
     val poolTemplates: List<TemplateCardUi> = emptyList(),
     val stickerTemplates: List<TemplateCardUi> = emptyList(),
+    val imageTemplates: List<TemplateCardUi> = emptyList(),
     val sampleTargets: List<ContractTargetEntity> = emptyList(),
     val selectedPreviewTargetId: String? = null,
     val editorState: TemplateEditorState? = null,
@@ -179,7 +200,7 @@ data class TemplatesUiState(
     val isBusy: Boolean = false,
 ) {
     val totalCount: Int
-        get() = textTemplates.size + poolTemplates.size + stickerTemplates.size
+        get() = textTemplates.size + poolTemplates.size + stickerTemplates.size + imageTemplates.size
 }
 
 private data class TemplatesLocalControls(
@@ -187,6 +208,7 @@ private data class TemplatesLocalControls(
     val inlineInputs: Map<String, InlinePoolInputState> = emptyMap(),
     val selectedPreviewTargetId: String? = null,
     val editorState: TemplateEditorState? = null,
+    val stagedImagePaths: Set<String> = emptySet(),
     val poolItemEditDialog: PoolItemEditDialogState? = null,
     val deleteConfirmState: DeleteTemplateConfirmState? = null,
     val feedbackMessage: String? = null,
@@ -197,6 +219,7 @@ private data class TemplatesLocalControls(
 class TemplatesViewModel(
     private val repository: TemplatesRepository,
     private val accountId: String = DEFAULT_ACCOUNT_ID,
+    private val imageStore: TemplateImageStorage? = null,
     private val nowInstant: () -> Instant = { Instant.now() },
     private val zoneIdProvider: () -> ZoneId = { ZoneId.systemDefault() },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -207,6 +230,7 @@ class TemplatesViewModel(
         get() = externalScope ?: viewModelScope
 
     private val localControls = MutableStateFlow(TemplatesLocalControls())
+    private val refreshTick = MutableStateFlow(0L)
 
     private val _uiState = MutableStateFlow(TemplatesUiState())
     val uiState: StateFlow<TemplatesUiState> = _uiState.asStateFlow()
@@ -233,12 +257,19 @@ class TemplatesViewModel(
                 poolMapFlow,
                 targetsFlow,
                 localControls,
-            ) { templates, poolMap, targets, controls ->
-                buildUiState(templates, poolMap, targets, controls)
+                refreshTick,
+            ) { templates, poolMap, targets, controls, _ ->
+                withContext(ioDispatcher) {
+                    buildUiState(templates, poolMap, targets, controls)
+                }
             }.collect { state ->
                 _uiState.value = state
             }
         }
+    }
+
+    fun refreshImageStates() {
+        refreshTick.value += 1L
     }
 
     private fun buildUiState(
@@ -271,6 +302,30 @@ class TemplatesViewModel(
             } else {
                 null
             }
+            val resolvedFile = if (template.type == TemplateType.IMAGE) {
+                imageStore?.resolveExistingFile(template.imagePath)
+            } else {
+                null
+            }
+            val imageAvailable = if (template.type == TemplateType.IMAGE) {
+                if (imageStore != null) {
+                    resolvedFile != null
+                } else {
+                    !template.imagePath.isNullOrBlank()
+                }
+            } else {
+                false
+            }
+            val imageSummary = if (template.type == TemplateType.IMAGE && resolvedFile != null) {
+                formatImageSummary(
+                    mimeType = mimeFromExtension(resolvedFile.extension),
+                    sizeBytes = resolvedFile.length(),
+                    widthPx = null,
+                    heightPx = null,
+                )
+            } else {
+                null
+            }
             val expanded = controls.expandedOverrides[template.id] ?: (template.type == TemplateType.POOL)
             val inlineInput = controls.inlineInputs[template.id] ?: InlinePoolInputState()
             TemplateCardUi(
@@ -280,6 +335,9 @@ class TemplatesViewModel(
                 nextPoolPreviewText = nextPick,
                 expanded = expanded,
                 inlineInput = inlineInput,
+                imageFile = resolvedFile,
+                imageAvailable = imageAvailable,
+                imageSummary = imageSummary,
             )
         }
 
@@ -287,6 +345,7 @@ class TemplatesViewModel(
             textTemplates = cards.filter { it.template.type == TemplateType.TEXT },
             poolTemplates = cards.filter { it.template.type == TemplateType.POOL },
             stickerTemplates = cards.filter { it.template.type == TemplateType.STICKER },
+            imageTemplates = cards.filter { it.template.type == TemplateType.IMAGE },
             sampleTargets = targets,
             selectedPreviewTargetId = previewTarget?.id,
             editorState = controls.editorState,
@@ -309,8 +368,10 @@ class TemplatesViewModel(
     }
 
     fun openCreateTemplate(type: TemplateType = TemplateType.TEXT) {
+        val previousStaged = localControls.value.stagedImagePaths
         localControls.update {
             it.copy(
+                stagedImagePaths = emptySet(),
                 editorState = TemplateEditorState(
                     isNew = true,
                     editingTemplateId = null,
@@ -323,13 +384,23 @@ class TemplatesViewModel(
                     stickerFallbackIndexInput = "",
                     enabled = true,
                     poolDrafts = listOf(PoolDraftItem()),
+                    imagePath = null,
+                    imageAvailable = false,
                 ),
             )
+        }
+        if (previousStaged.isNotEmpty()) {
+            scope.launch {
+                withContext(ioDispatcher) {
+                    cleanupOrphanPaths(previousStaged)
+                }
+            }
         }
     }
 
     fun openEditTemplate(template: MessageTemplateEntity) {
         scope.launch {
+            val previousStaged = localControls.value.stagedImagePaths
             val poolDrafts = if (template.type == TemplateType.POOL) {
                 val items = withContext(ioDispatcher) { repository.listPoolItems(template.id) }
                 if (items.isEmpty()) {
@@ -349,8 +420,42 @@ class TemplatesViewModel(
                 listOf(PoolDraftItem())
             }
 
+            val imageMeta = if (template.type == TemplateType.IMAGE) {
+                withContext(ioDispatcher) {
+                    val existingFile = imageStore?.resolveExistingFile(template.imagePath)
+                    val available = if (imageStore != null) {
+                        existingFile != null
+                    } else {
+                        !template.imagePath.isNullOrBlank()
+                    }
+                    var widthPx: Int? = null
+                    var heightPx: Int? = null
+                    if (existingFile != null) {
+                        try {
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(existingFile.absolutePath, bounds)
+                            if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                                widthPx = bounds.outWidth
+                                heightPx = bounds.outHeight
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    ImageMeta(
+                        available = available,
+                        mimeType = existingFile?.let { mimeFromExtension(it.extension) },
+                        sizeBytes = existingFile?.length(),
+                        widthPx = widthPx,
+                        heightPx = heightPx,
+                    )
+                }
+            } else {
+                ImageMeta()
+            }
+
             localControls.update {
                 it.copy(
+                    stagedImagePaths = emptySet(),
                     editorState = TemplateEditorState(
                         isNew = false,
                         editingTemplateId = template.id,
@@ -363,14 +468,118 @@ class TemplatesViewModel(
                         stickerFallbackIndexInput = template.stickerFallbackIndex?.toString().orEmpty(),
                         enabled = template.enabled,
                         poolDrafts = poolDrafts,
+                        imagePath = template.imagePath,
+                        imageAvailable = imageMeta.available,
+                        imageMimeType = imageMeta.mimeType,
+                        imageSizeBytes = imageMeta.sizeBytes,
+                        imageWidthPx = imageMeta.widthPx,
+                        imageHeightPx = imageMeta.heightPx,
                     ),
                 )
+            }
+            if (previousStaged.isNotEmpty()) {
+                withContext(ioDispatcher) {
+                    cleanupOrphanPaths(previousStaged)
+                }
             }
         }
     }
 
+    private data class ImageMeta(
+        val available: Boolean = false,
+        val mimeType: String? = null,
+        val sizeBytes: Long? = null,
+        val widthPx: Int? = null,
+        val heightPx: Int? = null,
+    )
+
     fun dismissTemplateEditor() {
-        localControls.update { it.copy(editorState = null) }
+        val staged = localControls.value.stagedImagePaths
+        localControls.update { it.copy(editorState = null, stagedImagePaths = emptySet()) }
+        if (staged.isNotEmpty()) {
+            scope.launch {
+                withContext(ioDispatcher) {
+                    cleanupOrphanPaths(staged)
+                }
+            }
+        }
+    }
+
+    fun importEditorImage(
+        mimeTypeHint: String?,
+        openInputStream: () -> InputStream?,
+    ) {
+        val store = imageStore
+        if (store == null) {
+            setEditorError("图片存储组件未就绪，请稍后重试")
+            return
+        }
+        val currentEditor = localControls.value.editorState ?: return
+        if (currentEditor.type != TemplateType.IMAGE || currentEditor.isImportingImage) return
+
+        localControls.update { state ->
+            state.copy(
+                editorState = state.editorState?.copy(
+                    isImportingImage = true,
+                    errorMessage = null,
+                ),
+            )
+        }
+
+        scope.launch {
+            try {
+                val imported = withContext(ioDispatcher) {
+                    val stream = openInputStream()
+                        ?: throw IllegalArgumentException("无法读取所选图片内容，请重新选择")
+                    stream.use { input ->
+                        store.importFromStream(input = input, mimeTypeHint = mimeTypeHint)
+                    }
+                }
+                var replacedPreviousStagedPath: String? = null
+                localControls.update { state ->
+                    val ed = state.editorState ?: run {
+                        replacedPreviousStagedPath = imported.storedPath
+                        return@update state
+                    }
+                    val prevPath = ed.imagePath
+                    if (prevPath != null && prevPath != imported.storedPath && prevPath in state.stagedImagePaths) {
+                        replacedPreviousStagedPath = prevPath
+                    }
+                    state.copy(
+                        stagedImagePaths = state.stagedImagePaths + imported.storedPath,
+                        editorState = ed.copy(
+                            imagePath = imported.storedPath,
+                            imageAvailable = true,
+                            imageMimeType = imported.mimeType,
+                            imageSizeBytes = imported.sizeBytes,
+                            imageWidthPx = imported.widthPx,
+                            imageHeightPx = imported.heightPx,
+                            isImportingImage = false,
+                            errorMessage = null,
+                        ),
+                    )
+                }
+                val orphanPath = replacedPreviousStagedPath
+                if (orphanPath != null) {
+                    withContext(ioDispatcher) {
+                        cleanupOrphanPaths(setOf(orphanPath))
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (ex: Throwable) {
+                val message = ex.message?.takeIf { it.isNotBlank() }
+                    ?: "导入图片失败（${ex.javaClass.simpleName}）"
+                localControls.update { state ->
+                    state.copy(
+                        editorState = state.editorState?.copy(
+                            isImportingImage = false,
+                            errorMessage = message,
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun updateEditorName(name: String) {
@@ -491,6 +700,7 @@ class TemplatesViewModel(
 
     fun saveTemplateEditor() {
         val editor = localControls.value.editorState ?: return
+        if (editor.isImportingImage) return
         val cleanName = editor.name.trim()
         if (cleanName.isEmpty()) {
             setEditorError("请输入模板名称")
@@ -501,6 +711,7 @@ class TemplatesViewModel(
         var cleanStickerName: String? = null
         var cleanStickerLabel: String? = null
         var cleanStickerCategory: String? = null
+        var cleanImagePath: String? = null
         var cleanContent = ""
 
         when (editor.type) {
@@ -540,16 +751,27 @@ class TemplatesViewModel(
             }
 
             TemplateType.IMAGE -> {
-                setEditorError("图片模板编辑器将在 UI 模块接入后启用")
-                return
+                cleanImagePath = editor.imagePath?.trim()?.takeIf { it.isNotEmpty() }
+                if (cleanImagePath == null) {
+                    setEditorError("缺少本地图片，请重新选择")
+                    return
+                }
             }
         }
 
+        val stagedSnapshot = localControls.value.stagedImagePaths
         localControls.update { it.copy(isBusy = true) }
         scope.launch {
             try {
                 val nowMs = nowInstant().toEpochMilli()
                 val outcome = withContext(ioDispatcher) {
+                    if (editor.type == TemplateType.IMAGE &&
+                        imageStore != null &&
+                        !imageStore.isImageAvailable(cleanImagePath)
+                    ) {
+                        return@withContext SaveResult.Error("缺少本地图片，请重新选择")
+                    }
+
                     val existingTemplates = repository.listTemplates(accountId)
                     val dup = existingTemplates.firstOrNull {
                         it.name == cleanName && it.id != editor.editingTemplateId
@@ -573,6 +795,7 @@ class TemplatesViewModel(
                             enabled = editor.enabled,
                             createdAt = nowMs,
                             updatedAt = nowMs,
+                            imagePath = if (editor.type == TemplateType.IMAGE) cleanImagePath else null,
                         )
                         repository.upsertTemplate(entity)
                         if (editor.type == TemplateType.POOL) {
@@ -593,12 +816,24 @@ class TemplatesViewModel(
                                     )
                                 }
                         }
+                        val unusedStaged = if (editor.type == TemplateType.IMAGE && cleanImagePath != null) {
+                            stagedSnapshot - cleanImagePath
+                        } else {
+                            stagedSnapshot
+                        }
+                        cleanupOrphanPaths(unusedStaged)
                         SaveResult.Success("已创建模板「$cleanName」")
                     } else {
                         val editingId = editor.editingTemplateId
                             ?: return@withContext SaveResult.Error("模板 ID 丢失")
                         val existing = repository.getTemplateById(editingId)
                             ?: return@withContext SaveResult.Error("模板不存在或已被删除")
+                        val previousImagePath = existing.imagePath
+                        val nextImagePath = if (existing.type == TemplateType.IMAGE) {
+                            cleanImagePath
+                        } else {
+                            existing.imagePath
+                        }
                         repository.updateTemplate(
                             existing.copy(
                                 name = cleanName,
@@ -609,6 +844,7 @@ class TemplatesViewModel(
                                 stickerFallbackIndex = if (existing.type == TemplateType.STICKER) parsedFallbackIndex else existing.stickerFallbackIndex,
                                 enabled = editor.enabled,
                                 updatedAt = nowMs,
+                                imagePath = nextImagePath,
                             ),
                         )
 
@@ -652,6 +888,20 @@ class TemplatesViewModel(
                                 }
                             }
                         }
+
+                        val orphanCandidates = buildSet {
+                            addAll(stagedSnapshot)
+                            if (existing.type == TemplateType.IMAGE &&
+                                !previousImagePath.isNullOrBlank() &&
+                                previousImagePath != nextImagePath
+                            ) {
+                                add(previousImagePath)
+                            }
+                            if (nextImagePath != null) {
+                                remove(nextImagePath)
+                            }
+                        }
+                        cleanupOrphanPaths(orphanCandidates)
                         SaveResult.Success("已保存模板「$cleanName」")
                     }
                 }
@@ -668,6 +918,7 @@ class TemplatesViewModel(
                         it.copy(
                             isBusy = false,
                             editorState = null,
+                            stagedImagePaths = emptySet(),
                             feedbackMessage = outcome.message,
                         )
                     }
@@ -682,6 +933,16 @@ class TemplatesViewModel(
                     )
                 }
             }
+        }
+    }
+
+    private suspend fun cleanupOrphanPaths(candidates: Set<String>) {
+        val store = imageStore ?: return
+        val cleanCandidates = candidates.mapNotNull { it.trim().takeIf { p -> p.isNotEmpty() } }.toSet()
+        if (cleanCandidates.isEmpty()) return
+        val referenced = repository.listAllReferencedImagePaths().toSet()
+        for (path in cleanCandidates) {
+            store.deleteIfUnreferenced(path, referenced)
         }
     }
 
@@ -734,6 +995,9 @@ class TemplatesViewModel(
             try {
                 withContext(ioDispatcher) {
                     repository.deleteTemplateById(confirm.template.id)
+                    if (confirm.template.type == TemplateType.IMAGE && !confirm.template.imagePath.isNullOrBlank()) {
+                        cleanupOrphanPaths(setOf(confirm.template.imagePath))
+                    }
                 }
                 localControls.update {
                     it.copy(
@@ -1119,12 +1383,54 @@ class TemplatesViewModel(
             }
         }
 
-        fun factory(database: FlameDatabase): ViewModelProvider.Factory =
+        fun mimeFromExtension(ext: String): String = when (ext.lowercase(Locale.ROOT)) {
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            else -> "image/jpeg"
+        }
+
+        fun formatImageSize(sizeBytes: Long): String = when {
+            sizeBytes < 1024L -> "$sizeBytes B"
+            sizeBytes < 1024L * 1024L -> String.format(Locale.US, "%.1f KB", sizeBytes / 1024.0)
+            else -> String.format(Locale.US, "%.2f MB", sizeBytes / (1024.0 * 1024.0))
+        }
+
+        fun formatImageSummary(
+            mimeType: String?,
+            sizeBytes: Long?,
+            widthPx: Int?,
+            heightPx: Int?,
+        ): String {
+            val formatLabel = when (mimeType?.lowercase(Locale.ROOT)) {
+                "image/png" -> "PNG"
+                "image/gif" -> "GIF"
+                "image/webp" -> "WebP"
+                "image/jpeg" -> "JPEG"
+                else -> "图片"
+            }
+            val parts = mutableListOf(formatLabel)
+            if (widthPx != null && heightPx != null && widthPx > 0 && heightPx > 0) {
+                parts += "${widthPx}×${heightPx}"
+            }
+            if (sizeBytes != null && sizeBytes > 0L) {
+                parts += formatImageSize(sizeBytes)
+            }
+            return parts.joinToString(" · ")
+        }
+
+        fun factory(
+            database: FlameDatabase,
+            imageStore: TemplateImageStorage? = null,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+        ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     return TemplatesViewModel(
                         repository = RoomTemplatesRepository(database),
+                        accountId = accountId,
+                        imageStore = imageStore,
                     ) as T
                 }
             }

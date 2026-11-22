@@ -92,6 +92,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.JobStatus
@@ -117,17 +118,23 @@ fun HistoryRoute(
     database: FlameDatabase,
     onNavigateToTodayReview: () -> Unit,
     modifier: Modifier = Modifier,
+    accountId: String = DEFAULT_ACCOUNT_ID,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val factory = remember(database) { HistoryViewModel.factory(database) }
-    val viewModel: HistoryViewModel = viewModel(factory = factory)
+    val factory = remember(database, accountId) {
+        HistoryViewModel.factory(database = database, accountId = accountId)
+    }
+    val viewModel: HistoryViewModel = viewModel(
+        key = "history_$accountId",
+        factory = factory,
+    )
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var isExportingCsv by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(accountId) {
         viewModel.refresh()
     }
 
@@ -1547,6 +1554,9 @@ private fun HistoryAttemptTimelineRow(attempt: SendAttemptEntity) {
         "js_execCommand" -> "JS 写入"
         "android_ime" -> "IME 输入"
         "sticker_click" -> "表情点击"
+        "image_chooser" -> "图片选择上传"
+        "image_datatransfer" -> "图片注入上传"
+        "image_upload" -> "图片上传"
         null -> "--"
         else -> attempt.inputMethodUsed
     }

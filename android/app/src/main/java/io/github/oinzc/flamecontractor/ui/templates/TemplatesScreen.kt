@@ -1,6 +1,13 @@
 package io.github.oinzc.flamecontractor.ui.templates
 
+import android.content.ActivityNotFoundException
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -25,7 +32,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -41,6 +50,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
@@ -56,34 +66,84 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStoreUtils
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun TemplatesRoute(
     database: FlameDatabase,
     modifier: Modifier = Modifier,
+    accountId: String = DEFAULT_ACCOUNT_ID,
+    imageStore: TemplateImageStorage? = null,
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val resolvedImageStore = imageStore ?: remember(context) { AndroidTemplateImageStore(context) }
     val viewModel: TemplatesViewModel = viewModel(
-        factory = TemplatesViewModel.factory(database),
+        key = "templates_$accountId",
+        factory = TemplatesViewModel.factory(
+            database = database,
+            imageStore = resolvedImageStore,
+            accountId = accountId,
+        ),
     )
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+
+    val pickImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val mimeHint = context.contentResolver.getType(uri)
+            viewModel.importEditorImage(mimeTypeHint = mimeHint) {
+                context.contentResolver.openInputStream(uri)
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshImageStates()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(uiState.feedbackMessage) {
         val message = uiState.feedbackMessage
@@ -128,6 +188,15 @@ fun TemplatesRoute(
             onStickerCategoryChanged = viewModel::updateEditorStickerCategory,
             onStickerFallbackIndexChanged = viewModel::updateEditorStickerFallbackIndex,
             onApplyStickerPreset = viewModel::applyStickerPreset,
+            onPickImage = {
+                try {
+                    pickImageLauncher.launch(arrayOf("image/*"))
+                } catch (_: ActivityNotFoundException) {
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("系统未提供图片选择器，无法选择本地图片")
+                    }
+                }
+            },
             onEnabledChanged = viewModel::updateEditorEnabled,
             onAddPoolDraft = viewModel::addEditorPoolDraftRow,
             onRemovePoolDraft = viewModel::removeEditorPoolDraftRow,
@@ -236,7 +305,7 @@ fun TemplatesScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "固定文本 · 星期轮换文案池 · 抖音原生表情",
+                        text = "固定文本 · 星期轮换文案池 · 抖音原生表情 · 本地图片",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -251,6 +320,9 @@ fun TemplatesScreen(
                     }
                     FilledTonalButton(onClick = { onOpenCreate(TemplateType.STICKER) }) {
                         Text("新建表情")
+                    }
+                    FilledTonalButton(onClick = { onOpenCreate(TemplateType.IMAGE) }) {
+                        Text("新建图片")
                     }
                 }
             }
@@ -386,6 +458,32 @@ fun TemplatesScreen(
                         key = { it.template.id },
                     ) { card ->
                         StickerTemplateCard(
+                            card = card,
+                            onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
+                            onEdit = { onOpenEdit(card.template) },
+                            onDelete = { onRequestDelete(card.template) },
+                        )
+                    }
+                }
+
+                // 分组 4：IMAGE
+                item(key = "section-image") {
+                    SectionHeader(
+                        icon = Icons.Default.Image,
+                        title = "本地图片模板 (${uiState.imageTemplates.size})",
+                        onAdd = { onOpenCreate(TemplateType.IMAGE) },
+                    )
+                }
+                if (uiState.imageTemplates.isEmpty()) {
+                    item(key = "empty-image") {
+                        EmptyGroupHint("暂无本地图片模板，支持从系统相册或文件选择 JPG / PNG / WebP / GIF 发送")
+                    }
+                } else {
+                    items(
+                        items = uiState.imageTemplates,
+                        key = { it.template.id },
+                    ) { card ->
+                        ImageTemplateCard(
                             card = card,
                             onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
                             onEdit = { onOpenEdit(card.template) },
@@ -876,6 +974,170 @@ private fun WeekdayMaskSelector(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun ImageTemplateCard(
+    card: TemplateCardUi,
+    onToggleEnabled: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val tpl = card.template
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TemplateCardHeader(
+                name = tpl.name,
+                badgeText = "IMAGE · 已绑 ${card.activeReferenceCount} 人",
+                enabled = tpl.enabled,
+                onToggleEnabled = onToggleEnabled,
+                onEdit = onEdit,
+                onDelete = onDelete,
+            )
+
+            if (card.imageAvailable && card.imageFile != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TemplateImageThumbnail(
+                        imagePath = card.imageFile.absolutePath,
+                        maxEdgePx = 192,
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(MaterialTheme.shapes.small),
+                        contentScale = ContentScale.Crop,
+                    )
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            Text(
+                                text = "本地图片就绪",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                        card.imageSummary?.let { summary ->
+                            Text(
+                                text = summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = "缺少本地图片，请重新选择",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                        TextButton(onClick = onEdit) {
+                            Text("重新选图")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TemplateImageThumbnail(
+    imagePath: String?,
+    maxEdgePx: Int,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    var bitmap by remember(imagePath, maxEdgePx) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(imagePath, maxEdgePx) {
+        bitmap = if (imagePath.isNullOrBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                decodeSampledThumbnail(imagePath = imagePath, maxEdgePx = maxEdgePx)
+            }
+        }
+    }
+
+    val currentBitmap = bitmap
+    if (currentBitmap != null) {
+        Image(
+            bitmap = currentBitmap,
+            contentDescription = "模板图片缩略图",
+            contentScale = contentScale,
+            modifier = modifier,
+        )
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Image,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun decodeSampledThumbnail(imagePath: String, maxEdgePx: Int): ImageBitmap? {
+    return try {
+        val file = File(imagePath)
+        if (!file.isFile || file.length() <= 0L) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = TemplateImageStoreUtils.computeInSampleSize(
+                widthPx = bounds.outWidth,
+                heightPx = bounds.outHeight,
+                maxEdgePx = maxEdgePx,
+            )
+        }
+        BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun TemplateEditorDialog(
     editor: TemplateEditorState,
     previewTarget: ContractTargetEntity?,
@@ -888,6 +1150,7 @@ private fun TemplateEditorDialog(
     onStickerCategoryChanged: (String) -> Unit,
     onStickerFallbackIndexChanged: (String) -> Unit,
     onApplyStickerPreset: (String) -> Unit,
+    onPickImage: () -> Unit,
     onEnabledChanged: (Boolean) -> Unit,
     onAddPoolDraft: () -> Unit,
     onRemovePoolDraft: (Int) -> Unit,
@@ -940,19 +1203,24 @@ private fun TemplateEditorDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         val types = listOf(
-                            TemplateType.TEXT to "固定文本",
+                            TemplateType.TEXT to "文本",
                             TemplateType.POOL to "文案池",
-                            TemplateType.STICKER to "原生表情",
+                            TemplateType.STICKER to "表情",
+                            TemplateType.IMAGE to "图片",
                         )
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                             types.forEachIndexed { idx, (type, label) ->
                                 SegmentedButton(
                                     selected = editor.type == type,
                                     onClick = { onTypeChanged(type) },
-                                    enabled = editor.isNew,
+                                    enabled = editor.isNew && !editor.isImportingImage,
                                     shape = SegmentedButtonDefaults.itemShape(index = idx, count = types.size),
                                 ) {
-                                    Text(label)
+                                    Text(
+                                        text = label,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
                                 }
                             }
                         }
@@ -1101,7 +1369,102 @@ private fun TemplateEditorDialog(
                             }
                         }
 
-                        TemplateType.IMAGE -> Unit
+                        TemplateType.IMAGE -> {
+                            if (editor.isImportingImage) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Text(
+                                    text = "正在压缩并剥离 EXIF 隐私元数据…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+
+                            if (editor.imageAvailable && !editor.imagePath.isNullOrBlank()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    shape = MaterialTheme.shapes.medium,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        TemplateImageThumbnail(
+                                            imagePath = editor.imagePath,
+                                            maxEdgePx = 512,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(160.dp)
+                                                .clip(MaterialTheme.shapes.small),
+                                            contentScale = ContentScale.Fit,
+                                        )
+                                        Text(
+                                            text = TemplatesViewModel.formatImageSummary(
+                                                mimeType = editor.imageMimeType,
+                                                sizeBytes = editor.imageSizeBytes,
+                                                widthPx = editor.imageWidthPx,
+                                                heightPx = editor.imageHeightPx,
+                                            ),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Medium,
+                                        )
+                                        Text(
+                                            text = "已剥离 EXIF 隐私信息并保存在应用私有目录，跨端备份不会上传原图字节。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = onPickImage,
+                                    enabled = !busy && !editor.isImportingImage,
+                                ) {
+                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("更换本地图片")
+                                }
+                            } else {
+                                if (!editor.isNew || !editor.imagePath.isNullOrBlank()) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.errorContainer,
+                                        shape = MaterialTheme.shapes.small,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Warning,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Text(
+                                                text = "缺少本地图片，请重新选择",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Text(
+                                        text = "支持 JPG / PNG / WebP（≤15 MB，自动缩至 2048px 并剥离 EXIF）及 GIF 动图（≤5 MB）",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = onPickImage,
+                                    enabled = !busy && !editor.isImportingImage,
+                                ) {
+                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("选择本地图片")
+                                }
+                            }
+                        }
                     }
 
                     Row(
@@ -1120,7 +1483,9 @@ private fun TemplateEditorDialog(
         confirmButton = {
             Button(
                 onClick = onSave,
-                enabled = !busy,
+                enabled = !busy &&
+                    !editor.isImportingImage &&
+                    (editor.type != TemplateType.IMAGE || editor.imageAvailable),
             ) {
                 Text(if (editor.isNew) "创建模板" else "保存修改")
             }

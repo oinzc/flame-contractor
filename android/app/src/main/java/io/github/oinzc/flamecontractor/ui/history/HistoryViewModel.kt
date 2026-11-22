@@ -354,12 +354,16 @@ class HistoryViewModel(
     companion object {
         const val DEFAULT_WINDOW_DAYS = 30
 
-        fun factory(database: FlameDatabase): ViewModelProvider.Factory =
+        fun factory(
+            database: FlameDatabase,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+        ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     return HistoryViewModel(
                         repository = RoomHistoryRepository(database),
+                        accountId = accountId,
                     ) as T
                 }
             }

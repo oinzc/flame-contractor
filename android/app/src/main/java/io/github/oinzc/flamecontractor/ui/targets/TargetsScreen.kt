@@ -71,6 +71,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -83,10 +84,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
+import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
 
 @Composable
@@ -95,17 +103,34 @@ fun TargetsRoute(
     scheduleCoordinator: ScheduleCoordinator,
     onNavigateToTodayReview: () -> Unit,
     modifier: Modifier = Modifier,
+    accountId: String = DEFAULT_ACCOUNT_ID,
+    imageStore: TemplateImageStorage? = null,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val resolvedImageStore = imageStore ?: remember(context) { AndroidTemplateImageStore(context) }
     val viewModel: TargetsViewModel = viewModel(
+        key = "targets_$accountId",
         factory = TargetsViewModel.factory(
             context = context,
             database = database,
             scheduleCoordinator = scheduleCoordinator,
+            accountId = accountId,
+            imageStore = resolvedImageStore,
         ),
     )
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshTemplateStates()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(uiState.feedbackMessage) {
         val message = uiState.feedbackMessage
@@ -150,6 +175,7 @@ fun TargetsRoute(
         TargetEditorDialog(
             editor = editor,
             templates = uiState.templates,
+            missingImageTemplateIds = uiState.missingImageTemplateIds,
             busy = uiState.isBusy,
             onNicknameChanged = viewModel::updateEditorNickname,
             onTypeChanged = viewModel::updateEditorType,
@@ -223,6 +249,10 @@ fun TargetsRoute(
 
         is SingleSendDialogState.ConfirmAlreadySucceeded -> {
             val canSend = dlg.overrideText.isNotBlank() || dlg.target.templateId != null
+            val tplLabel = dlg.templateName?.let { name ->
+                val typeTag = dlg.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
+                "$name$typeTag"
+            } ?: "未绑定"
             AlertDialog(
                 onDismissRequest = viewModel::dismissSingleSendDialog,
                 title = { Text("确认额外补发测试消息？") },
@@ -233,10 +263,24 @@ fun TargetsRoute(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
-                            text = "当前绑定模板：${dlg.templateName ?: "未绑定"}",
+                            text = "当前绑定模板：$tplLabel",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (dlg.isTemplateMissingImage && dlg.overrideText.isBlank()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = "该图片模板缺少本地图片（待补图），请先前往「模板」页重新选图或填写下方临时文本。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(10.dp),
+                                )
+                            }
+                        }
                         OutlinedTextField(
                             value = dlg.overrideText,
                             onValueChange = viewModel::updateSingleSendOverrideText,
@@ -273,6 +317,10 @@ fun TargetsRoute(
 
         is SingleSendDialogState.ConfirmSend -> {
             val canSend = dlg.overrideText.isNotBlank() || dlg.target.templateId != null
+            val tplLabel = dlg.templateName?.let { name ->
+                val typeTag = dlg.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
+                "$name$typeTag"
+            } ?: "未绑定"
             AlertDialog(
                 onDismissRequest = viewModel::dismissSingleSendDialog,
                 title = { Text("单发测试 · ${dlg.target.nicknameSnapshot}") },
@@ -284,10 +332,24 @@ fun TargetsRoute(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            text = "当前绑定模板：${dlg.templateName ?: "未绑定"}",
+                            text = "当前绑定模板：$tplLabel",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (dlg.isTemplateMissingImage && dlg.overrideText.isBlank()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = "该图片模板缺少本地图片（待补图），请先前往「模板」页重新选图或填写下方临时文本。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(10.dp),
+                                )
+                            }
+                        }
                         OutlinedTextField(
                             value = dlg.overrideText,
                             onValueChange = viewModel::updateSingleSendOverrideText,
@@ -805,14 +867,31 @@ private fun TargetCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val typeTag = item.templateType?.let { " · ${targetTemplateTypeLabel(it)}" }.orEmpty()
                     Text(
-                        text = "模板：${item.templateName ?: "未绑定模板"}",
+                        text = "模板：${item.templateName ?: "未绑定模板"}$typeTag",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (item.isTemplateMissingImage) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = MaterialTheme.shapes.extraSmall,
+                        ) {
+                            Text(
+                                text = "待补图 · 缺少本地图片",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                     if (!target.sendTimeHhmm.isNullOrBlank()) {
                         Text(
                             text = "固定发送时刻：${target.sendTimeHhmm}",
@@ -848,6 +927,7 @@ private fun TargetCard(
 private fun TargetEditorDialog(
     editor: TargetEditorState,
     templates: List<MessageTemplateEntity>,
+    missingImageTemplateIds: Set<String> = emptySet(),
     busy: Boolean,
     onNicknameChanged: (String) -> Unit,
     onTypeChanged: (String) -> Unit,
@@ -858,8 +938,14 @@ private fun TargetEditorDialog(
     onDismiss: () -> Unit,
 ) {
     var templateDropdownExpanded by remember { mutableStateOf(false) }
-    val selectedTemplateName = remember(editor.templateId, templates) {
-        templates.firstOrNull { it.id == editor.templateId }?.name
+    val selectedTemplate = remember(editor.templateId, templates) {
+        templates.firstOrNull { it.id == editor.templateId }
+    }
+    val selectedTemplateLabel = remember(selectedTemplate, missingImageTemplateIds) {
+        selectedTemplate?.let { tpl ->
+            val missingSuffix = if (tpl.id in missingImageTemplateIds) " · 待补图" else ""
+            "${tpl.name}（${targetTemplateTypeLabel(tpl.type)}$missingSuffix）"
+        }
     }
 
     AlertDialog(
@@ -937,7 +1023,7 @@ private fun TargetEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     OutlinedTextField(
-                        value = selectedTemplateName ?: "暂不绑定模板",
+                        value = selectedTemplateLabel ?: "暂不绑定模板",
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("绑定发送模板") },
@@ -960,8 +1046,19 @@ private fun TargetEditorDialog(
                             },
                         )
                         templates.forEach { tpl ->
+                            val isMissing = tpl.id in missingImageTemplateIds
                             DropdownMenuItem(
-                                text = { Text(tpl.name) },
+                                text = {
+                                    Text(
+                                        text = "${tpl.name} · ${targetTemplateTypeLabel(tpl.type)}" +
+                                            if (isMissing) "（待补图）" else "",
+                                        color = if (isMissing) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                    )
+                                },
                                 onClick = {
                                     onTemplateChanged(tpl.id)
                                     templateDropdownExpanded = false
@@ -969,6 +1066,13 @@ private fun TargetEditorDialog(
                             )
                         }
                     }
+                }
+                if (selectedTemplate != null && selectedTemplate.id in missingImageTemplateIds) {
+                    Text(
+                        text = "当前所选图片模板缺少本地图片（待补图），请先前往「模板」页重新选择本地图片。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
 
                 OutlinedTextField(
@@ -1014,6 +1118,13 @@ private fun TargetEditorDialog(
             }
         },
     )
+}
+
+private fun targetTemplateTypeLabel(type: TemplateType): String = when (type) {
+    TemplateType.TEXT -> "文本"
+    TemplateType.POOL -> "文案池"
+    TemplateType.STICKER -> "表情"
+    TemplateType.IMAGE -> "图片"
 }
 
 private fun formatOfficialSparkBadge(

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
+import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -14,6 +16,7 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
+import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.ManualSendDecision
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
@@ -281,6 +284,8 @@ enum class TargetFilter(val label: String) {
 data class TargetItemUi(
     val target: ContractTargetEntity,
     val templateName: String?,
+    val templateType: TemplateType? = null,
+    val isTemplateMissingImage: Boolean = false,
     val hasBoundIdentity: Boolean,
     val isAmbiguousInLatestScan: Boolean,
     val hasOfficialSpark: Boolean,
@@ -313,6 +318,8 @@ sealed interface SingleSendDialogState {
     data class ConfirmAlreadySucceeded(
         val target: ContractTargetEntity,
         val templateName: String?,
+        val templateType: TemplateType? = null,
+        val isTemplateMissingImage: Boolean = false,
         val overrideText: String = "",
         val message: String = "今日已发送成功，确认要额外补发一条测试消息吗？",
     ) : SingleSendDialogState
@@ -320,6 +327,8 @@ sealed interface SingleSendDialogState {
     data class ConfirmSend(
         val target: ContractTargetEntity,
         val templateName: String?,
+        val templateType: TemplateType? = null,
+        val isTemplateMissingImage: Boolean = false,
         val overrideText: String = "",
     ) : SingleSendDialogState
 }
@@ -360,6 +369,7 @@ data class TargetsUiState(
     val filterCounts: Map<TargetFilter, Int> = emptyMap(),
     val items: List<TargetItemUi> = emptyList(),
     val templates: List<MessageTemplateEntity> = emptyList(),
+    val missingImageTemplateIds: Set<String> = emptySet(),
     val scanRunning: Boolean = false,
     val scanDiscoveredCount: Int = 0,
     val scanTaskLabel: String? = null,
@@ -400,6 +410,7 @@ class TargetsViewModel(
     private val executionGateway: TargetExecutionGateway,
     private val scheduleGateway: TargetScheduleGateway,
     private val accountId: String = DEFAULT_ACCOUNT_ID,
+    private val imageStore: TemplateImageStorage? = null,
     private val nowInstant: () -> Instant = { Instant.now() },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val externalScope: CoroutineScope? = null,
@@ -410,6 +421,7 @@ class TargetsViewModel(
 
     private val selectionTracker = MutableStateFlow(SnapshotSelectionState())
     private val localControls = MutableStateFlow(LocalUiControls())
+    private val refreshTick = MutableStateFlow(0L)
 
     private val _uiState = MutableStateFlow(TargetsUiState())
     val uiState: StateFlow<TargetsUiState> = _uiState.asStateFlow()
@@ -429,7 +441,21 @@ class TargetsViewModel(
     init {
         val accountFlow = repository.observeAccount(accountId)
         val targetsFlow = repository.observeActiveTargets(accountId)
-        val templatesFlow = repository.observeTemplates(accountId)
+        val templatesWithMissingFlow = combine(
+            repository.observeTemplates(accountId),
+            refreshTick,
+        ) { templates, _ ->
+            val missingIds = withContext(ioDispatcher) {
+                templates.filter { tpl ->
+                    tpl.type == TemplateType.IMAGE && if (imageStore != null) {
+                        !imageStore.isImageAvailable(tpl.imagePath)
+                    } else {
+                        tpl.imagePath.isNullOrBlank()
+                    }
+                }.mapTo(HashSet()) { it.id }
+            }
+            templates to missingIds
+        }
         val todayJobsFlow = accountFlow.flatMapLatest { account ->
             val todayStr = computeBusinessDate(account?.timezone)
             repository.observeJobsForDate(accountId, todayStr)
@@ -445,15 +471,21 @@ class TargetsViewModel(
             }
         }
 
-        // 监听手动扫描完成生命周期，扫完自动打开对账抽屉；失败则提示结果
+        // 监听手动扫描完成生命周期，严格校验账号归属后再自动打开对账抽屉
         scope.launch {
             executionGateway.liveState.collect { live ->
                 if (!pendingOpenReconcileAfterScan) return@collect
                 if (live.running) {
-                    sawRunningDuringScanRequest = true
+                    if (isLiveEventForAccount(live)) {
+                        sawRunningDuringScanRequest = true
+                    }
                     return@collect
                 }
-                val liveSnap = live.latestScanSnapshot
+                val liveSnap = if (live.latestScanSnapshotAccountId == accountId) {
+                    live.latestScanSnapshot
+                } else {
+                    null
+                }
                 val liveKey = liveSnap?.let(::snapshotIdentityKey)
                 if (liveSnap != null && liveKey != scanOriginSnapshotKey) {
                     pendingOpenReconcileAfterScan = false
@@ -465,8 +497,8 @@ class TargetsViewModel(
                             reconcileErrorMessage = null,
                         )
                     }
-                } else if (!live.running &&
-                    (sawRunningDuringScanRequest || live.lastUpdatedAtEpochMs != scanRequestBusUpdatedAt)
+                } else if (sawRunningDuringScanRequest ||
+                    (isLiveEventForAccount(live) && live.lastUpdatedAtEpochMs != scanRequestBusUpdatedAt)
                 ) {
                     pendingOpenReconcileAfterScan = false
                     sawRunningDuringScanRequest = false
@@ -482,11 +514,18 @@ class TargetsViewModel(
             val dataBundleFlow = combine(
                 accountFlow,
                 targetsFlow,
-                templatesFlow,
+                templatesWithMissingFlow,
                 todayJobsFlow,
                 snapshotFlow,
-            ) { account, targets, templates, todayJobs, snapshot ->
-                DataBundle(account, targets, templates, todayJobs, snapshot)
+            ) { account, targets, templatePair, todayJobs, snapshot ->
+                DataBundle(
+                    account = account,
+                    targets = targets,
+                    templates = templatePair.first,
+                    missingImageTemplateIds = templatePair.second,
+                    todayJobs = todayJobs,
+                    snapshot = snapshot,
+                )
             }
 
             combine(
@@ -502,10 +541,19 @@ class TargetsViewModel(
         }
     }
 
+    fun refreshTemplateStates() {
+        refreshTick.value += 1L
+    }
+
+    private fun isLiveEventForAccount(live: ExecutionLiveState): Boolean =
+        live.activeAccountId == accountId ||
+            (live.activeAccountId == null && accountId == DEFAULT_ACCOUNT_ID)
+
     private data class DataBundle(
         val account: AccountEntity?,
         val targets: List<ContractTargetEntity>,
         val templates: List<MessageTemplateEntity>,
+        val missingImageTemplateIds: Set<String>,
         val todayJobs: List<SendJobEntity>,
         val snapshot: ScanReconciliationSnapshot?,
     )
@@ -514,8 +562,14 @@ class TargetsViewModel(
         live: ExecutionLiveState,
         scanRun: ScanRunEntity?,
     ): ScanReconciliationSnapshot? {
-        val liveSnap = live.latestScanSnapshot
-        val dbSnap = scanRun?.let { ScanReconciliationCodec.decodeOrNull(it.reconciliationJson) }
+        val liveSnap = if (live.latestScanSnapshotAccountId == accountId) {
+            live.latestScanSnapshot
+        } else {
+            null
+        }
+        val dbSnap = scanRun
+            ?.takeIf { it.accountId == accountId }
+            ?.let { ScanReconciliationCodec.decodeOrNull(it.reconciliationJson) }
         return when {
             liveSnap != null && dbSnap != null -> {
                 if (dbSnap.scannedAtEpochMs > liveSnap.scannedAtEpochMs) dbSnap else liveSnap
@@ -577,9 +631,12 @@ class TargetsViewModel(
                 sparkKind = target.sparkKind,
                 sparkLabel = target.sparkLabel,
             )
+            val tpl = target.templateId?.let { templateById[it] }
             TargetItemUi(
                 target = target,
-                templateName = target.templateId?.let { templateById[it]?.name },
+                templateName = tpl?.name,
+                templateType = tpl?.type,
+                isTemplateMissingImage = tpl != null && tpl.id in data.missingImageTemplateIds,
                 hasBoundIdentity = hasBound,
                 isAmbiguousInLatestScan = !hasBound && target.nicknameSnapshot in ambiguousNamesInLatestScan,
                 hasOfficialSpark = hasSpark,
@@ -687,8 +744,9 @@ class TargetsViewModel(
             errorMessage = controls.reconcileErrorMessage,
         )
 
-        val scanTaskActive = live.running &&
-            (live.currentTask?.contains("扫描") == true || pendingOpenReconcileAfterScan)
+        val belongsToThisAccount = isLiveEventForAccount(live)
+        val scanTaskActive = (live.running && belongsToThisAccount && live.currentTask?.contains("扫描") == true) ||
+            pendingOpenReconcileAfterScan
 
         return TargetsUiState(
             accountStatus = data.account?.status ?: AccountStatus.PENDING_LOGIN,
@@ -698,8 +756,9 @@ class TargetsViewModel(
             filterCounts = filterCounts,
             items = filteredItems,
             templates = data.templates,
+            missingImageTemplateIds = data.missingImageTemplateIds,
             scanRunning = scanTaskActive,
-            scanDiscoveredCount = live.scanDiscoveredCount,
+            scanDiscoveredCount = if (belongsToThisAccount) live.scanDiscoveredCount else 0,
             scanTaskLabel = if (scanTaskActive) live.currentTask else null,
             hasAvailableSnapshot = snapshot != null,
             isReconcileSheetOpen = controls.isReconcileSheetOpen,
@@ -1376,16 +1435,18 @@ class TargetsViewModel(
 
     fun requestSingleSend(target: ContractTargetEntity) {
         scope.launch {
-            val (decision, templateName) = withContext(ioDispatcher) {
+            val (decision, boundTemplate) = withContext(ioDispatcher) {
                 val account = repository.getAccount(accountId)
                 val todayStr = computeBusinessDate(account?.timezone)
                 val todayJobs = repository.listJobsForTargetDate(accountId, target.id, todayStr)
                 val d = SendGuard.checkManualSend(todayJobs)
-                val tplName = target.templateId?.let { id ->
-                    _uiState.value.templates.firstOrNull { it.id == id }?.name
+                val tpl = target.templateId?.let { id ->
+                    _uiState.value.templates.firstOrNull { it.id == id }
                 }
-                d to tplName
+                d to tpl
             }
+            val missingImg = boundTemplate != null &&
+                boundTemplate.id in _uiState.value.missingImageTemplateIds
 
             val nextDialog = when (decision) {
                 ManualSendDecision.BLOCKED_UNKNOWN_OR_INFLIGHT ->
@@ -1398,13 +1459,17 @@ class TargetsViewModel(
                 ManualSendDecision.CONFIRM_ALREADY_SUCCEEDED ->
                     SingleSendDialogState.ConfirmAlreadySucceeded(
                         target = target,
-                        templateName = templateName,
+                        templateName = boundTemplate?.name,
+                        templateType = boundTemplate?.type,
+                        isTemplateMissingImage = missingImg,
                     )
 
                 ManualSendDecision.ALLOWED ->
                     SingleSendDialogState.ConfirmSend(
                         target = target,
-                        templateName = templateName,
+                        templateName = boundTemplate?.name,
+                        templateType = boundTemplate?.type,
+                        isTemplateMissingImage = missingImg,
                     )
             }
             localControls.update { it.copy(singleSendDialog = nextDialog) }
@@ -1568,6 +1633,8 @@ class TargetsViewModel(
             context: Context,
             database: FlameDatabase,
             scheduleCoordinator: ScheduleCoordinator,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+            imageStore: TemplateImageStorage = AndroidTemplateImageStore(context),
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -1575,6 +1642,8 @@ class TargetsViewModel(
                     repository = RoomTargetsRepository(database),
                     executionGateway = AndroidTargetExecutionGateway(context),
                     scheduleGateway = AndroidTargetScheduleGateway(scheduleCoordinator),
+                    accountId = accountId,
+                    imageStore = imageStore,
                 ) as T
             }
         }

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.filled.PlayArrow
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -86,6 +88,7 @@ import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
@@ -107,10 +110,14 @@ fun TodayRoute(
     initialUrgentCategory: String? = null,
     modifier: Modifier = Modifier,
     urgentSignalNonce: Long = 0L,
+    accountId: String = DEFAULT_ACCOUNT_ID,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val viewModel: TodayViewModel = viewModel(factory = TodayViewModel.factory(container))
+    val viewModel: TodayViewModel = viewModel(
+        key = "today_$accountId",
+        factory = TodayViewModel.factory(container = container, accountId = accountId),
+    )
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -455,6 +462,21 @@ private fun TodayOverviewSection(
             onReloginClick = onReloginClick,
         )
 
+        state.otherRunningAccountName?.let { runningAccountName ->
+            OtherAccountRunningBanner(
+                accountName = runningAccountName,
+                taskLabel = state.otherRunningTaskLabel,
+            )
+        }
+
+        if (state.missingImageEnabledTargetCount > 0 || state.missingImageTemplateCount > 0) {
+            MissingImageTemplateBanner(
+                missingEnabledTargetCount = state.missingImageEnabledTargetCount,
+                missingTemplateCount = state.missingImageTemplateCount,
+                onGoTemplates = { onOpenTab(MainTab.TEMPLATES) },
+            )
+        }
+
         if (state.unknownReviewJobs.isNotEmpty()) {
             UnknownReviewBanner(
                 count = state.unknownReviewJobs.size,
@@ -601,6 +623,76 @@ private fun AccountHealthCapsuleCard(
             }
         }
     }
+}
+
+@Composable
+private fun OtherAccountRunningBanner(
+    accountName: String,
+    taskLabel: String?,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Sync,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(18.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "正在后台执行：$accountName",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = taskLabel?.takeIf { it.isNotBlank() }?.let {
+                        "$it · 多账号任务将按序排队串行运行"
+                    } ?: "多账号后台任务按序排队串行运行，互不干扰",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MissingImageTemplateBanner(
+    missingEnabledTargetCount: Int,
+    missingTemplateCount: Int,
+    onGoTemplates: () -> Unit,
+) {
+    val semantics = FlameThemeTokens.semanticColors
+    val title = if (missingEnabledTargetCount > 0) {
+        "有 $missingEnabledTargetCount 位启用好友的图片模板缺少本地图片"
+    } else {
+        "有 $missingTemplateCount 个图片模板缺少本地图片（待补图）"
+    }
+    UrgentBannerCard(
+        icon = Icons.Filled.Image,
+        title = title,
+        body = "请前往「模板」页重新选择本地图片，避免发送时因缺少图片文件而失败。",
+        actionLabel = "去补图",
+        containerColor = semantics.warningContainer,
+        contentColor = semantics.onWarningContainer,
+        accentColor = semantics.warning,
+        onActionClick = onGoTemplates,
+        onCardClick = onGoTemplates,
+    )
 }
 
 @Composable
@@ -1179,11 +1271,30 @@ private fun RecentJobCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = item.templateLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = item.templateLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (item.isImageMissing) {
+                            semantics.danger
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (item.isImageMissing) {
+                        StatusPill(
+                            text = "待补图",
+                            contentColor = semantics.onWarningContainer,
+                            containerColor = semantics.warningContainer,
+                        )
+                    }
+                }
                 Text(
                     text = formatEpochTimestamp(job.confirmedAt ?: job.updatedAt),
                     style = MaterialTheme.typography.labelSmall,
@@ -1267,6 +1378,9 @@ private fun AttemptDetailRow(attempt: SendAttemptEntity) {
         "js_execCommand" -> "JS 写入"
         "android_ime" -> "IME 输入"
         "sticker_click" -> "表情点击"
+        "image_chooser" -> "图片选择上传"
+        "image_datatransfer" -> "图片注入上传"
+        "image_upload" -> "图片上传"
         null -> "--"
         else -> attempt.inputMethodUsed
     }

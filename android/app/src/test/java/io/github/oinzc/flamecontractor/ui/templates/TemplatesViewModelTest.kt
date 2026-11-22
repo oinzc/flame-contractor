@@ -1,6 +1,9 @@
 package io.github.oinzc.flamecontractor.ui.templates
 
+import android.net.Uri
 import androidx.sqlite.db.SupportSQLiteDatabase
+import io.github.oinzc.flamecontractor.core.storage.StoredTemplateImage
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_MORNING_TEMPLATE_ID
@@ -12,8 +15,12 @@ import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.InputStream
 import java.lang.reflect.Proxy
 import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -29,10 +36,64 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TemplatesViewModelTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    private class FakeTemplateImageStorage(
+        private val rootDir: File,
+    ) : TemplateImageStorage {
+
+        override fun resolveExistingFile(storedPath: String?): File? {
+            val clean = storedPath?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val f = File(clean)
+            return if (f.isFile && f.length() > 0L) f else null
+        }
+
+        override suspend fun importFromStream(
+            input: InputStream,
+            mimeTypeHint: String?,
+        ): StoredTemplateImage {
+            val bytes = input.readBytes()
+            if (bytes.isEmpty()) throw IllegalArgumentException("所选图片内容为空")
+            rootDir.mkdirs()
+            val ext = when (mimeTypeHint) {
+                "image/png" -> "png"
+                "image/gif" -> "gif"
+                else -> "jpg"
+            }
+            val dest = File(rootDir, "${UUID.randomUUID()}.$ext")
+            dest.writeBytes(bytes)
+            return StoredTemplateImage(
+                storedPath = dest.absolutePath,
+                mimeType = mimeTypeHint ?: "image/jpeg",
+                sizeBytes = dest.length(),
+                widthPx = 640,
+                heightPx = 480,
+            )
+        }
+
+        override fun deleteIfUnreferenced(
+            storedPath: String?,
+            referencedPaths: Set<String>,
+        ): Boolean {
+            val file = resolveExistingFile(storedPath) ?: return false
+            val targetCanonical = file.canonicalPath
+            val stillReferenced = referencedPaths.any { ref ->
+                resolveExistingFile(ref)?.canonicalPath == targetCanonical
+            }
+            if (stillReferenced) return false
+            return file.delete()
+        }
+
+        override fun contentUriFor(file: File): Uri? = null
+    }
 
     private class FakeTemplatesRepository : TemplatesRepository {
         val templatesState = MutableStateFlow<List<MessageTemplateEntity>>(emptyList())
@@ -68,6 +129,9 @@ class TemplatesViewModelTest {
 
         override suspend fun countActiveTargetsByTemplate(templateId: String): Int =
             targetsState.value.count { it.templateId == templateId && it.deletedAt == null }
+
+        override suspend fun listAllReferencedImagePaths(): List<String> =
+            templatesState.value.mapNotNull { it.imagePath?.takeIf { p -> p.isNotBlank() } }
 
         override suspend fun upsertTemplate(template: MessageTemplateEntity) {
             val existing = templatesState.value.any { it.id == template.id }
@@ -432,5 +496,212 @@ class TemplatesViewModelTest {
         assertTrue(calls.all { it.second.size == 13 })
         assertTrue(calls.all { it.first.contains("INSERT OR IGNORE INTO message_templates") })
         assertTrue(calls.all { it.first.contains("WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)") })
+    }
+
+    @Test
+    fun imageTemplateCrudValidatesMissingImageAndCleansOrphansOnReplaceCancelAndDelete() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTemplatesRepository()
+            val imageStore = FakeTemplateImageStorage(tempFolder.newFolder("tpl_images"))
+            val vm = TemplatesViewModel(
+                repository = repo,
+                imageStore = imageStore,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+            advanceUntilIdle()
+
+            // 1. 新建图片模板未选图时禁止保存并提示缺图告警
+            vm.openCreateTemplate(TemplateType.IMAGE)
+            vm.updateEditorName("早安图")
+            vm.saveTemplateEditor()
+            advanceUntilIdle()
+
+            assertNotNull(vm.uiState.value.editorState?.errorMessage)
+            assertTrue(vm.uiState.value.editorState?.errorMessage!!.contains("缺少本地图片"))
+            assertTrue(repo.templatesState.value.isEmpty())
+
+            // 2. 选图 1 后再更换为图 2：未保存的图 1 应立即被清理，避免孤儿文件残留
+            vm.importEditorImage("image/png") { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+            advanceUntilIdle()
+            val stagedPath1 = vm.uiState.value.editorState?.imagePath!!
+            assertTrue(File(stagedPath1).exists())
+
+            vm.importEditorImage("image/jpeg") { ByteArrayInputStream(byteArrayOf(4, 5, 6, 7)) }
+            advanceUntilIdle()
+            val stagedPath2 = vm.uiState.value.editorState?.imagePath!!
+            assertFalse(File(stagedPath1).exists())
+            assertTrue(File(stagedPath2).exists())
+
+            vm.saveTemplateEditor()
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.editorState)
+            val created = repo.templatesState.value.single()
+            assertEquals(TemplateType.IMAGE, created.type)
+            assertEquals(stagedPath2, created.imagePath)
+            assertEquals(1, vm.uiState.value.imageTemplates.size)
+            assertTrue(vm.uiState.value.imageTemplates.single().imageAvailable)
+
+            // 3. 编辑模板选入新图 3 后取消编辑：图 3 被清理，原已保存图 2 保持完好
+            vm.openEditTemplate(created)
+            advanceUntilIdle()
+            vm.importEditorImage("image/gif") { ByteArrayInputStream(byteArrayOf(8, 9, 10)) }
+            advanceUntilIdle()
+            val stagedPath3 = vm.uiState.value.editorState?.imagePath!!
+            assertTrue(File(stagedPath3).exists())
+
+            vm.dismissTemplateEditor()
+            advanceUntilIdle()
+            assertFalse(File(stagedPath3).exists())
+            assertTrue(File(stagedPath2).exists())
+
+            // 4. 编辑换图并保存（图 2 -> 图 4）：保存后旧图 2 成为无引用图并被删除
+            vm.openEditTemplate(created)
+            advanceUntilIdle()
+            vm.importEditorImage("image/png") { ByteArrayInputStream(byteArrayOf(11, 12, 13)) }
+            advanceUntilIdle()
+            val path4 = vm.uiState.value.editorState?.imagePath!!
+            vm.saveTemplateEditor()
+            advanceUntilIdle()
+
+            assertFalse(File(stagedPath2).exists())
+            assertTrue(File(path4).exists())
+            assertEquals(path4, repo.templatesState.value.single().imagePath)
+
+            // 5. 若另一模板引用同一路径，删除模板时保留磁盘文件；无任何引用时才彻底删除
+            val sharedRefTemplate = MessageTemplateEntity(
+                id = "tpl-shared",
+                accountId = "acct_2",
+                name = "跨号复用图",
+                type = TemplateType.IMAGE,
+                imagePath = path4,
+            )
+            repo.upsertTemplate(sharedRefTemplate)
+            advanceUntilIdle()
+
+            val updatedCreated = repo.templatesState.value.first { it.id == created.id }
+            vm.requestDeleteTemplate(updatedCreated)
+            advanceUntilIdle()
+            vm.confirmDeleteTemplate()
+            advanceUntilIdle()
+            assertTrue(File(path4).exists())
+
+            // 移除剩余引用后，再删最后模板（或清理）验证无引用图可删除
+            repo.deleteTemplateById(sharedRefTemplate.id)
+            val soloFile = imageStore.importFromStream(ByteArrayInputStream(byteArrayOf(1, 2)), "image/png").storedPath
+            val soloTpl = MessageTemplateEntity(
+                id = "tpl-solo",
+                accountId = DEFAULT_ACCOUNT_ID,
+                name = "独立图片",
+                type = TemplateType.IMAGE,
+                imagePath = soloFile,
+            )
+            repo.upsertTemplate(soloTpl)
+            advanceUntilIdle()
+
+            vm.requestDeleteTemplate(soloTpl)
+            advanceUntilIdle()
+            vm.confirmDeleteTemplate()
+            advanceUntilIdle()
+            assertFalse(File(soloFile).exists())
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun missingLocalImageFileHighlightsErrorAndBlocksSave() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTemplatesRepository()
+            val imageStore = FakeTemplateImageStorage(tempFolder.newFolder("missing_check"))
+            val missingTpl = MessageTemplateEntity(
+                id = "tpl-missing",
+                accountId = DEFAULT_ACCOUNT_ID,
+                name = "换机导入图片",
+                type = TemplateType.IMAGE,
+                imagePath = null,
+            )
+            repo.templatesState.value = listOf(missingTpl)
+
+            val vm = TemplatesViewModel(
+                repository = repo,
+                imageStore = imageStore,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+            advanceUntilIdle()
+
+            val card = vm.uiState.value.imageTemplates.single()
+            assertFalse(card.imageAvailable)
+
+            vm.openEditTemplate(missingTpl)
+            advanceUntilIdle()
+            assertFalse(vm.uiState.value.editorState!!.imageAvailable)
+
+            vm.saveTemplateEditor()
+            advanceUntilIdle()
+            assertNotNull(vm.uiState.value.editorState?.errorMessage)
+            assertTrue(vm.uiState.value.editorState?.errorMessage!!.contains("缺少本地图片"))
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun templatesViewModelIsolatesTemplatesAndTargetsByAccount() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTemplatesRepository()
+            val imageStore = FakeTemplateImageStorage(tempFolder.newFolder("iso_images"))
+            repo.templatesState.value = listOf(
+                MessageTemplateEntity(
+                    id = "tpl-a1",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "账号一模板",
+                    type = TemplateType.TEXT,
+                    content = "hi 1",
+                ),
+                MessageTemplateEntity(
+                    id = "tpl-a2",
+                    accountId = "acct_2",
+                    name = "账号二模板",
+                    type = TemplateType.TEXT,
+                    content = "hi 2",
+                ),
+            )
+            repo.targetsState.value = listOf(
+                ContractTargetEntity(id = "t-1", accountId = DEFAULT_ACCOUNT_ID, nicknameSnapshot = "好友一", templateId = "tpl-a1"),
+                ContractTargetEntity(id = "t-2", accountId = "acct_2", nicknameSnapshot = "好友二", templateId = "tpl-a2"),
+            )
+
+            val vmAcct2 = TemplatesViewModel(
+                repository = repo,
+                accountId = "acct_2",
+                imageStore = imageStore,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+            advanceUntilIdle()
+
+            assertEquals(listOf("账号二模板"), vmAcct2.uiState.value.textTemplates.map { it.template.name })
+            assertEquals(listOf("好友二"), vmAcct2.uiState.value.sampleTargets.map { it.nicknameSnapshot })
+
+            vmAcct2.openCreateTemplate(TemplateType.TEXT)
+            vmAcct2.updateEditorName("账号二新模板")
+            vmAcct2.updateEditorContent("hello acct2")
+            vmAcct2.saveTemplateEditor()
+            advanceUntilIdle()
+
+            val newlyCreated = repo.templatesState.value.first { it.name == "账号二新模板" }
+            assertEquals("acct_2", newlyCreated.accountId)
+            assertEquals(2, vmAcct2.uiState.value.totalCount)
+        } finally {
+            vmScope.cancel()
+        }
     }
 }

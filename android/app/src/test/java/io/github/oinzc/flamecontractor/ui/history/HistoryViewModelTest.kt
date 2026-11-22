@@ -312,15 +312,44 @@ class HistoryViewModelTest {
         assertFalse(csv.contains("包含敏感摘要不应导出"))
     }
 
+    @Test
+    fun filtersJobsTargetsAndExportCsvStrictlyByBoundAccountId() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val acct2 = "acct-2"
+        val repo = FakeHistoryRepository(
+            initialTargets = listOf(
+                sampleTarget(id = "t-default", nickname = "默认好友"),
+                sampleTarget(id = "t-acct2", nickname = "二号好友").copy(accountId = acct2),
+            ),
+            initialJobs = listOf(
+                sampleJob(id = "job-default", targetId = "t-default", businessDate = today, status = JobStatus.SUCCEEDED),
+                sampleJob(id = "job-acct2", targetId = "t-acct2", businessDate = today, status = JobStatus.SUCCEEDED)
+                    .copy(accountId = acct2),
+            ),
+        )
+        val vm = createViewModel(repo = repo, dispatcher = dispatcher, accountId = acct2)
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals(1, state.totalJobsInWindow)
+        assertEquals("job-acct2", state.filteredJobs.single().job.id)
+        assertEquals("二号好友", state.filteredJobs.single().targetName)
+
+        val csv = vm.buildExportCsv()
+        assertTrue(csv.contains(",$acct2,t-acct2,"))
+        assertFalse(csv.contains(",$DEFAULT_ACCOUNT_ID,t-default,"))
+    }
+
     private fun createViewModel(
         repo: FakeHistoryRepository,
         dispatcher: CoroutineDispatcher,
+        accountId: String = DEFAULT_ACCOUNT_ID,
     ): HistoryViewModel {
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         createdScopes += scope
         return HistoryViewModel(
             repository = repo,
-            accountId = DEFAULT_ACCOUNT_ID,
+            accountId = accountId,
             clock = fixedClock,
             ioDispatcher = dispatcher,
             customScope = scope,

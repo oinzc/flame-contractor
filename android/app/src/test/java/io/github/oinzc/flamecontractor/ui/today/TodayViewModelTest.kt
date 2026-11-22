@@ -1,6 +1,9 @@
 package io.github.oinzc.flamecontractor.ui.today
 
+import android.net.Uri
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.storage.StoredTemplateImage
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
@@ -17,6 +20,8 @@ import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
+import java.io.File
+import java.io.InputStream
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
@@ -28,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -424,12 +430,133 @@ class TodayViewModelTest {
         assertNull(vm.uiState.value.manualBatchFeedback)
     }
 
+    @Test
+    fun otherRunningAccountShowsGentleBannerAndHidesForeignExecutionProgress() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val liveState = MutableStateFlow(
+            ExecutionLiveState(
+                running = true,
+                activeAccountId = "acct-2",
+                currentTask = "批量发火",
+                lastMessage = "小号进度消息",
+            ),
+        )
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(),
+            extraAccounts = listOf(
+                AccountEntity(
+                    id = "acct-2",
+                    displayName = "小号二",
+                    status = AccountStatus.HEALTHY,
+                    timezone = testZone.id,
+                ),
+            ),
+        )
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = FakeTodayExecutionLauncher(),
+            dispatcher = dispatcher,
+            liveState = liveState,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals("小号二", state.otherRunningAccountName)
+        assertEquals("批量发火", state.otherRunningTaskLabel)
+        assertFalse(state.executionState.running)
+        assertNull(state.executionState.lastMessage)
+    }
+
+    @Test
+    fun missingImageTemplateAndMultiAccountIsolationAreTrackedInTodayState() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val imageStore = FakeTodayImageStorage(existingPaths = mutableSetOf("images/ok.jpg"))
+        val acct1 = sampleAccount()
+        val acct2 = AccountEntity(
+            id = "acct-2",
+            displayName = "工作抖音号",
+            status = AccountStatus.HEALTHY,
+            timezone = testZone.id,
+        )
+        val missingTemplate = MessageTemplateEntity(
+            id = "tpl-img-missing",
+            accountId = "acct-2",
+            name = "早安图",
+            type = TemplateType.IMAGE,
+            imagePath = "images/missing.jpg",
+        )
+        val repo = FakeTodayRepository(
+            initialAccount = acct1,
+            extraAccounts = listOf(acct2),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "默认好友", templateId = "tpl-1"),
+                ContractTargetEntity(
+                    id = "t-2",
+                    accountId = "acct-2",
+                    nicknameSnapshot = "二号好友",
+                    platformUserId = "sec_2",
+                    conversationType = "friend",
+                    templateId = missingTemplate.id,
+                    enabled = true,
+                    createdAt = 1_000L,
+                    updatedAt = 1_000L,
+                ),
+            ),
+            initialTemplates = listOf(
+                MessageTemplateEntity(
+                    id = "tpl-1",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    name = "比心",
+                    type = TemplateType.STICKER,
+                ),
+                missingTemplate,
+            ),
+            initialJobs = listOf(
+                sampleJob(id = "j-1", targetId = "t-1", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED),
+                SendJobEntity(
+                    id = "j-2",
+                    accountId = "acct-2",
+                    targetId = "t-2",
+                    templateId = missingTemplate.id,
+                    businessDate = todayDate,
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.FAILED_TERMINAL,
+                    failureClass = FailureClass.DOM_CHANGED,
+                    createdAt = 2_000L,
+                    updatedAt = 2_000L,
+                ),
+            ),
+        )
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = FakeTodayExecutionLauncher(),
+            dispatcher = dispatcher,
+            accountId = "acct-2",
+            imageStore = imageStore,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals("acct-2", state.account?.id)
+        assertEquals(1, state.enabledTargetCount)
+        assertEquals(1, state.missingImageTemplateCount)
+        assertEquals(1, state.missingImageEnabledTargetCount)
+        assertEquals(1, state.recentJobs.size)
+        assertEquals("j-2", state.recentJobs.first().job.id)
+        assertTrue(state.recentJobs.first().isImageMissing)
+        assertTrue(state.recentJobs.first().templateLabel.contains("待补图"))
+    }
+
     private fun createViewModel(
         repo: FakeTodayRepository,
         scheduler: FakeTodayScheduleGateway,
         launcher: FakeTodayExecutionLauncher,
         dispatcher: CoroutineDispatcher,
         liveState: MutableStateFlow<ExecutionLiveState> = MutableStateFlow(ExecutionLiveState()),
+        accountId: String = DEFAULT_ACCOUNT_ID,
+        imageStore: TemplateImageStorage? = null,
     ): TodayViewModel {
         val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
         createdScopes += vmScope
@@ -438,7 +565,8 @@ class TodayViewModelTest {
             scheduleGateway = scheduler,
             executionLauncher = launcher,
             executionStateFlow = liveState,
-            accountId = DEFAULT_ACCOUNT_ID,
+            accountId = accountId,
+            imageStore = imageStore,
             clock = fixedClock,
             ioDispatcher = dispatcher,
             customScope = vmScope,
@@ -518,8 +646,23 @@ class TodayViewModelTest {
         }
     }
 
+    private class FakeTodayImageStorage(
+        private val existingPaths: MutableSet<String> = mutableSetOf(),
+    ) : TemplateImageStorage {
+        override fun resolveExistingFile(storedPath: String?): File? =
+            storedPath?.takeIf { it in existingPaths }?.let { File(it) }
+
+        override suspend fun importFromStream(input: InputStream, mimeTypeHint: String?): StoredTemplateImage =
+            StoredTemplateImage("images/fake.jpg", mimeTypeHint ?: "image/jpeg", 100L, 100, 100)
+
+        override fun deleteIfUnreferenced(storedPath: String?, referencedPaths: Set<String>): Boolean = false
+
+        override fun contentUriFor(file: File): Uri? = null
+    }
+
     private class FakeTodayRepository(
         initialAccount: AccountEntity? = null,
+        extraAccounts: List<AccountEntity> = emptyList(),
         initialTargets: List<ContractTargetEntity> = emptyList(),
         initialJobs: List<SendJobEntity> = emptyList(),
         initialAttempts: List<SendAttemptEntity> = emptyList(),
@@ -535,13 +678,21 @@ class TodayViewModelTest {
         ),
     ) : TodayRepository {
         val account = MutableStateFlow(initialAccount)
+        val extraAccountsState = MutableStateFlow(extraAccounts)
         val targets = MutableStateFlow(initialTargets)
         val jobs = MutableStateFlow(initialJobs)
         val attempts = MutableStateFlow(initialAttempts)
         val templates = MutableStateFlow(initialTemplates)
 
         override fun observeAccount(accountId: String): Flow<AccountEntity?> =
-            account.map { if (it?.id == accountId) it else null }
+            combine(account, extraAccountsState) { primary, extras ->
+                if (primary?.id == accountId) primary else extras.firstOrNull { it.id == accountId }
+            }
+
+        override fun observeAllAccounts(): Flow<List<AccountEntity>> =
+            combine(account, extraAccountsState) { primary, extras ->
+                listOfNotNull(primary) + extras.filter { it.id != primary?.id }
+            }
 
         override fun observeActiveTargets(accountId: String): Flow<List<ContractTargetEntity>> =
             targets.map { list -> list.filter { it.accountId == accountId && it.deletedAt == null } }
