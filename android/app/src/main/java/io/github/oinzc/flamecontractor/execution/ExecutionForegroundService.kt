@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -21,6 +22,7 @@ import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.notify.NotifyLevel
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -48,6 +50,7 @@ import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ExecutionDispatchContract
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -81,7 +84,7 @@ class ExecutionForegroundService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(serviceJob + Dispatchers.Default)
     private val queueLock = Any()
-    private val pendingIntents = ArrayDeque<Intent>()
+    private val pendingIntents = DeduplicatingCommandQueue(::extractCommandKey)
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var hardTimeoutJob: Job? = null
@@ -92,6 +95,7 @@ class ExecutionForegroundService : Service() {
     private lateinit var secretStore: EncryptedSecretStore
     private lateinit var barkNotifier: BarkNotifier
     private lateinit var localNotifier: LocalNotifier
+    private lateinit var templateImageStore: AndroidTemplateImageStore
     private lateinit var executor: DouyinWebExecutor
 
     @Volatile
@@ -114,6 +118,7 @@ class ExecutionForegroundService : Service() {
         secretStore = EncryptedSecretStore(appCtx)
         barkNotifier = BarkNotifier(baseUrlProvider = { secretStore.readBarkUrl() })
         localNotifier = LocalNotifier(appCtx)
+        templateImageStore = AndroidTemplateImageStore(appCtx)
         executor = DouyinWebExecutor(appCtx, selectorStore)
         ensureProgressChannel()
     }
@@ -124,7 +129,7 @@ class ExecutionForegroundService : Service() {
         armHardTimeout()
         synchronized(queueLock) {
             if (intent != null) {
-                pendingIntents.addLast(intent)
+                pendingIntents.enqueue(intent)
             }
             if (workerJob?.isActive != true) {
                 startWorkerLoopLocked()
@@ -155,6 +160,7 @@ class ExecutionForegroundService : Service() {
         ExecutionRuntimeBus.update {
             it.copy(
                 running = false,
+                activeAccountId = null,
                 currentTask = null,
                 lastUpdatedAtEpochMs = System.currentTimeMillis(),
             )
@@ -168,7 +174,7 @@ class ExecutionForegroundService : Service() {
         workerJob = serviceScope.launch {
             while (isActive) {
                 val nextIntent = synchronized(queueLock) {
-                    if (pendingIntents.isEmpty()) null else pendingIntents.removeFirst()
+                    pendingIntents.dequeue()
                 } ?: break
                 handleCommandSafely(nextIntent)
             }
@@ -215,7 +221,8 @@ class ExecutionForegroundService : Service() {
     private suspend fun handleCommandSafely(intent: Intent) {
         val action = intent.action ?: ExecutionDispatchContract.ACTION_RUN_SCHEDULED
         val accountId = intent.getStringExtra(ExecutionDispatchContract.EXTRA_ACCOUNT_ID)
-            ?.takeIf { it.isNotBlank() }
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
             ?: DEFAULT_ACCOUNT_ID
         val reason = intent.getStringExtra(ExecutionDispatchContract.EXTRA_TRIGGER_REASON)
             ?: action
@@ -264,6 +271,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = "执行任务发生异常（${exc.javaClass.simpleName}）",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -283,6 +291,7 @@ class ExecutionForegroundService : Service() {
         )
         if (hasUnknown) {
             sendUrgentBoth(
+                accountId = accountId,
                 category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
                 title = "发现未确认的发送任务",
                 body = "上次执行中断时已有消息进入发送或确认阶段，请到首页核对结果，系统已阻止自动重发。",
@@ -306,6 +315,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = if (scheduledOnly) {
                         "当前正在扫码或扫描，定时任务已延后等待下轮检查"
@@ -329,6 +339,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "账号当前处于非健康/暂停状态，请先按首页提示恢复后再发",
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -339,7 +350,6 @@ class ExecutionForegroundService : Service() {
         }
 
         val now = Instant.now()
-        val nowMs = now.toEpochMilli()
         val zoneId = DailySchedulePlanner.resolveZoneId(account.timezone)
         val today = ZonedDateTime.ofInstant(now, zoneId).toLocalDate()
         val todayStr = today.toString()
@@ -370,6 +380,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "今日所有启用好友已完成续火，或存在待核对记录需人工终裁",
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -380,7 +391,7 @@ class ExecutionForegroundService : Service() {
         }
 
         val taskLabel = if (scheduledOnly) "正在执行今日自动续火…" else "正在执行今日续火…"
-        updateProgressState(taskLabel, 0, targetsToRun.size)
+        updateProgressState(taskLabel, 0, targetsToRun.size, accountId)
         promoteForeground("正在检查抖音登录态…")
 
         val outcomes = mutableListOf<BatchTargetOutcome>()
@@ -390,6 +401,7 @@ class ExecutionForegroundService : Service() {
         var unknownCount = 0
         var abortedByAuth = false
 
+        // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
         executor.withOffscreenSession { session ->
             val authResult = executor.checkAuthAndIdentity(session = session)
             val authTransition = AccountHealthReducer.onAuthProbeResult(
@@ -429,10 +441,11 @@ class ExecutionForegroundService : Service() {
                             updatedAt = System.currentTimeMillis(),
                         ),
                     )
-                    ScheduleCoordinator(this@ExecutionForegroundService, database).cancelAllAlarms()
+                    ScheduleCoordinator(this@ExecutionForegroundService, database).rescheduleAll()
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             needsLoginChoicePrompt = true,
                             lastMessage = "检测到当前登录的抖音号与历史名单不一致，已暂停发送等待确认",
@@ -440,9 +453,11 @@ class ExecutionForegroundService : Service() {
                         )
                     }
                     sendUrgentBoth(
+                        accountId = accountId,
                         category = UrgentCategory.AUTH_EXPIRED,
                         title = "检测到抖音账号变更",
                         body = "当前网页登录账号与此前绑定账号不一致，已暂停自动续火，请打开 App 确认处理。",
+                        knownAccount = authTransition.account,
                     )
                     return@withOffscreenSession
                 }
@@ -483,7 +498,7 @@ class ExecutionForegroundService : Service() {
 
                     val progressText = "正在执行今日续火任务 ${index + 1}/${targetsToRun.size}"
                     promoteForeground(progressText)
-                    updateProgressState(progressText, index, targetsToRun.size)
+                    updateProgressState(progressText, index, targetsToRun.size, accountId)
 
                     val outcome = executeSingleTargetJob(
                         session = session,
@@ -524,7 +539,7 @@ class ExecutionForegroundService : Service() {
                     }
                     activeBatchOutcomes = outcomes.toList()
 
-                    updateProgressState(progressText, index + 1, targetsToRun.size)
+                    updateProgressState(progressText, index + 1, targetsToRun.size, accountId)
 
                     if (outcome.coreSkeletonBroken || outcome.failureClass == FailureClass.DOM_CHANGED) {
                         break
@@ -541,14 +556,18 @@ class ExecutionForegroundService : Service() {
 
                 when (finalizedAccount?.status) {
                     AccountStatus.DOM_BROKEN -> sendUrgentBoth(
+                        accountId = accountId,
                         category = UrgentCategory.DOM_BROKEN,
                         title = "抖音页面核心结构异常",
                         body = "检测到聊天页核心元素失效，已停止自动发送。请前往设置页运行「网页结构体检」。",
+                        knownAccount = finalizedAccount,
                     )
                     AccountStatus.COOLDOWN -> sendUrgentBoth(
+                        accountId = accountId,
                         category = UrgentCategory.COOLDOWN,
                         title = "连续失败熔断保护已触发",
                         body = "连续 ${finalizedAccount.failureStreak} 轮批处理均以终态失败收场，请打开 App 核对目标与模板后解除熔断。",
+                        knownAccount = finalizedAccount,
                     )
                     else -> Unit
                 }
@@ -572,19 +591,17 @@ class ExecutionForegroundService : Service() {
             val summary = "今日续火完成：成功 $succeededCount / 跳过 $skippedCount / 失败 $failedCount" +
                 if (unknownCount > 0) " / 待核对 $unknownCount" else ""
             if (succeededCount + failedCount + unknownCount > 0) {
-                localNotifier.notifyDailySummary(
+                sendDailySummaryBoth(
+                    accountId = accountId,
                     title = "抖音续火工执行汇总",
                     body = summary,
-                )
-                barkNotifier.send(
-                    title = "抖音续火工执行汇总",
-                    body = summary,
-                    level = NotifyLevel.ACTIVE,
+                    knownAccount = account,
                 )
             }
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = summary,
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -621,6 +638,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "当前网络异常，本轮不计入鉴权失败并等待 10 分钟顺延",
                         lastUpdatedAtEpochMs = nowMs,
@@ -631,14 +649,17 @@ class ExecutionForegroundService : Service() {
             AuthProbeOutcome.VERIFICATION_REQUIRED -> {
                 if (shouldNotifyUrgent) {
                     sendUrgentBoth(
+                        accountId = account.id,
                         category = UrgentCategory.VERIFICATION_REQUIRED,
                         title = "抖音触发身份验证",
                         body = "检测到风控身份验证弹窗，已立即停止发送。请打开 App 进入保留态验证页完成校验。",
+                        knownAccount = account,
                     )
                 }
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "检测到身份验证风控弹窗，已停发等待人工完成验证",
                         lastUpdatedAtEpochMs = nowMs,
@@ -655,13 +676,16 @@ class ExecutionForegroundService : Service() {
                     )
                     database.accountDao().update(broken)
                     sendUrgentBoth(
+                        accountId = account.id,
                         category = UrgentCategory.DOM_BROKEN,
                         title = "抖音页面核心结构异常",
                         body = "已登录状态下未能渲染会话列表骨架，请到设置页运行「网页结构体检」。",
+                        knownAccount = broken,
                     )
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = "检测到页面核心骨架未渲染，已标记结构异常待体检",
                             lastUpdatedAtEpochMs = nowMs,
@@ -677,6 +701,7 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = "首次未检出登录态，已预约 10 分钟后自动复判",
                             lastUpdatedAtEpochMs = nowMs,
@@ -684,13 +709,16 @@ class ExecutionForegroundService : Service() {
                     }
                 } else if (shouldNotifyUrgent) {
                     sendUrgentBoth(
+                        accountId = account.id,
                         category = UrgentCategory.AUTH_EXPIRED,
                         title = "抖音登录态已失效",
                         body = "连续两次确认未检测到已登录会话列表，请打开 App 重新扫码登录。",
+                        knownAccount = account,
                     )
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = "连续 2 次确认登录态失效，请重新扫码",
                             lastUpdatedAtEpochMs = nowMs,
@@ -709,8 +737,9 @@ class ExecutionForegroundService : Service() {
             if (!account.enabled || account.status != AccountStatus.HEALTHY) return@tryWithLock
 
             promoteForeground("正在复判抖音登录状态…")
-            updateProgressState("正在复判登录态…", 0, 1)
+            updateProgressState("正在复判登录态…", 0, 1, accountId)
 
+            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             val authResult = executor.checkAuthAndIdentity()
             val now = Instant.now()
             val nowMs = now.toEpochMilli()
@@ -734,6 +763,7 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = "登录态复判通过，已恢复正常调度",
                             lastUpdatedAtEpochMs = nowMs,
@@ -747,25 +777,56 @@ class ExecutionForegroundService : Service() {
                 }
                 AuthProbeOutcome.VERIFICATION_REQUIRED -> {
                     sendUrgentBoth(
+                        accountId = accountId,
                         category = UrgentCategory.VERIFICATION_REQUIRED,
                         title = "抖音触发身份验证",
                         body = "复判期间检测到安全验证弹窗，请打开 App 完成身份验证。",
+                        knownAccount = transition.account,
                     )
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            activeAccountId = null,
+                            currentTask = null,
+                            lastMessage = authResult.detail ?: "复判期间检测到安全验证弹窗",
+                            lastUpdatedAtEpochMs = nowMs,
+                        )
+                    }
                 }
                 AuthProbeOutcome.UNAUTHENTICATED -> {
                     if (transition.shouldNotifyUrgent) {
                         sendUrgentBoth(
+                            accountId = accountId,
                             category = UrgentCategory.AUTH_EXPIRED,
                             title = "抖音登录态已失效",
                             body = "10 分钟延迟复判仍未检出登录态，请重新扫码登录。",
+                            knownAccount = transition.account,
                         )
                     } else if (transition.scheduleRecheckIn10Min) {
                         val coordinator = ScheduleCoordinator(this@ExecutionForegroundService, database)
                         coordinator.rescheduleAll(now)
                         coordinator.scheduleAuthRecheckIn10Minutes(now)
                     }
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            activeAccountId = null,
+                            currentTask = null,
+                            lastMessage = authResult.detail ?: "延迟复判未检出登录态",
+                            lastUpdatedAtEpochMs = nowMs,
+                        )
+                    }
                 }
-                AuthProbeOutcome.NETWORK_ERROR -> Unit
+                AuthProbeOutcome.NETWORK_ERROR -> {
+                    ExecutionRuntimeBus.update {
+                        it.copy(
+                            running = false,
+                            activeAccountId = null,
+                            currentTask = null,
+                            lastUpdatedAtEpochMs = nowMs,
+                        )
+                    }
+                }
             }
         }
         if (acquired == null) {
@@ -781,9 +842,14 @@ class ExecutionForegroundService : Service() {
         val acquired = ExecutionMutex.tryWithLock("single_send", MANUAL_LOCK_WAIT_MS) {
             val account = database.accountDao().getAccount(accountId) ?: return@tryWithLock
             val target = database.targetDao().getById(targetId)
-            if (target == null || target.deletedAt != null) {
+            if (target == null || target.deletedAt != null || target.accountId != accountId) {
                 ExecutionRuntimeBus.update {
-                    it.copy(running = false, currentTask = null, lastMessage = "好友不存在或已删除")
+                    it.copy(
+                        running = false,
+                        activeAccountId = null,
+                        currentTask = null,
+                        lastMessage = "好友不存在或已删除",
+                    )
                 }
                 return@tryWithLock
             }
@@ -795,6 +861,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "请先在首页横幅核对今日未知发送结果",
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -804,8 +871,9 @@ class ExecutionForegroundService : Service() {
             }
 
             promoteForeground("正在执行单发测试…")
-            updateProgressState("正在执行单发测试…", 0, 1)
+            updateProgressState("正在执行单发测试…", 0, 1, accountId)
 
+            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             executor.withOffscreenSession { session ->
                 val auth = executor.checkAuthAndIdentity(session = session)
                 val transition = AccountHealthReducer.onAuthProbeResult(
@@ -821,11 +889,18 @@ class ExecutionForegroundService : Service() {
                         } else {
                             UrgentCategory.AUTH_EXPIRED
                         }
-                        sendUrgentBoth(cat, "登录校验未通过", auth.detail ?: "请检查登录态或网络")
+                        sendUrgentBoth(
+                            accountId = accountId,
+                            category = cat,
+                            title = "登录校验未通过",
+                            body = auth.detail ?: "请检查登录态或网络",
+                            knownAccount = transition.account,
+                        )
                     }
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = auth.detail ?: "登录态或网络检查未通过",
                             lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -868,15 +943,18 @@ class ExecutionForegroundService : Service() {
                         ),
                     )
                     sendUrgentBoth(
-                        UrgentCategory.DOM_BROKEN,
-                        "抖音页面核心结构异常",
-                        "单发测试检测到核心定位缺失，请到设置页运行「网页结构体检」。",
+                        accountId = accountId,
+                        category = UrgentCategory.DOM_BROKEN,
+                        title = "抖音页面核心结构异常",
+                        body = "单发测试检测到核心定位缺失，请到设置页运行「网页结构体检」。",
+                        knownAccount = latestAccount,
                     )
                 }
 
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         progressCurrent = 1,
                         progressTotal = 1,
@@ -890,6 +968,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = "当前有其他 WebView 任务正在运行，请稍后再试",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -915,6 +994,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = true,
+                    activeAccountId = accountId,
                     currentTask = "正在扫描抖音会话…",
                     scanDiscoveredCount = 0,
                     lastUpdatedAtEpochMs = startedAt,
@@ -922,6 +1002,7 @@ class ExecutionForegroundService : Service() {
             }
 
             val allTargets = database.targetDao().listActiveTargets(accountId)
+            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             val result = executor.scanAllChats(
                 existingTargets = allTargets,
                 scanRunId = scanId,
@@ -929,6 +1010,7 @@ class ExecutionForegroundService : Service() {
                     promoteForeground("已扫描发现 $count 条会话…")
                     ExecutionRuntimeBus.update {
                         it.copy(
+                            activeAccountId = accountId,
                             scanDiscoveredCount = count,
                             lastUpdatedAtEpochMs = System.currentTimeMillis(),
                         )
@@ -968,8 +1050,10 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             scanDiscoveredCount = result.snapshot.discoveredCount,
+                            latestScanSnapshotAccountId = accountId,
                             latestScanSnapshot = result.snapshot,
                             lastMessage = "扫描完成：共 ${result.snapshot.discoveredCount} 条会话，含官方火花 ${result.snapshot.sparkCount} 条",
                             lastUpdatedAtEpochMs = finishedAt,
@@ -993,12 +1077,19 @@ class ExecutionForegroundService : Service() {
                             } else {
                                 UrgentCategory.AUTH_EXPIRED
                             }
-                            sendUrgentBoth(cat, "扫描前登录校验未通过", result.detail)
+                            sendUrgentBoth(
+                                accountId = accountId,
+                                category = cat,
+                                title = "扫描前登录校验未通过",
+                                body = result.detail,
+                                knownAccount = transition.account,
+                            )
                         }
                     }
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = result.detail,
                             lastUpdatedAtEpochMs = finishedAt,
@@ -1016,6 +1107,7 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = result.detail,
                             lastUpdatedAtEpochMs = finishedAt,
@@ -1028,6 +1120,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = "当前有其他 WebView 任务正在运行，请稍后再试",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -1072,6 +1165,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = true,
+                    activeAccountId = accountId,
                     currentTask = "正在自动同步抖音会话…",
                     scanDiscoveredCount = 0,
                     lastUpdatedAtEpochMs = startedAt,
@@ -1079,6 +1173,7 @@ class ExecutionForegroundService : Service() {
             }
 
             val result = try {
+                // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
                 executor.scanAllChats(
                     existingTargets = activeTargets,
                     scanRunId = scanId,
@@ -1086,6 +1181,7 @@ class ExecutionForegroundService : Service() {
                         promoteForeground("自动同步已发现 $count 条会话…")
                         ExecutionRuntimeBus.update {
                             it.copy(
+                                activeAccountId = accountId,
                                 scanDiscoveredCount = count,
                                 lastUpdatedAtEpochMs = System.currentTimeMillis(),
                             )
@@ -1113,6 +1209,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         lastMessage = "自动同步失败（${ex.javaClass.simpleName}）",
                         lastUpdatedAtEpochMs = failedAt,
@@ -1174,8 +1271,10 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             scanDiscoveredCount = result.snapshot.discoveredCount,
+                            latestScanSnapshotAccountId = accountId,
                             latestScanSnapshot = result.snapshot,
                             lastMessage = if (sparkEvaluation.alerts.isNotEmpty()) {
                                 "自动同步完成：发现 ${sparkEvaluation.alerts.size} 位好友火花告急"
@@ -1191,9 +1290,11 @@ class ExecutionForegroundService : Service() {
                             sparkEvaluation.alerts,
                         )
                         sendUrgentBoth(
+                            accountId = accountId,
                             category = UrgentCategory.SPARK_DETERIORATING,
                             title = "好友火花告急",
                             body = body,
+                            knownAccount = account,
                         )
                     }
                 }
@@ -1223,12 +1324,19 @@ class ExecutionForegroundService : Service() {
                             } else {
                                 "抖音登录态已失效"
                             }
-                            sendUrgentBoth(cat, title, result.detail)
+                            sendUrgentBoth(
+                                accountId = accountId,
+                                category = cat,
+                                title = title,
+                                body = result.detail,
+                                knownAccount = transition.account,
+                            )
                         }
                     }
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = result.detail,
                             lastUpdatedAtEpochMs = finishedAt,
@@ -1246,6 +1354,7 @@ class ExecutionForegroundService : Service() {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = result.detail,
                             lastUpdatedAtEpochMs = finishedAt,
@@ -1273,22 +1382,29 @@ class ExecutionForegroundService : Service() {
     ) {
         val acquired = ExecutionMutex.tryWithLock("identity_repair", MANUAL_LOCK_WAIT_MS) {
             val target = database.targetDao().getById(targetId)
-            if (target == null || target.deletedAt != null) {
+            if (target == null || target.deletedAt != null || target.accountId != accountId) {
                 ExecutionRuntimeBus.update {
-                    it.copy(running = false, currentTask = null, lastMessage = "目标不存在或已删除")
+                    it.copy(
+                        running = false,
+                        activeAccountId = null,
+                        currentTask = null,
+                        lastMessage = "目标不存在或已删除",
+                    )
                 }
                 return@tryWithLock
             }
 
             promoteForeground("正在补采目标唯一身份…")
-            updateProgressState("正在补采目标身份…", 0, 1)
+            updateProgressState("正在补采目标身份…", 0, 1, accountId)
 
+            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             executor.withOffscreenSession { session ->
                 val auth = executor.checkAuthAndIdentity(session = session)
                 if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
+                            activeAccountId = null,
                             currentTask = null,
                             lastMessage = auth.detail ?: "当前未登录，无法补采身份",
                             lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -1318,6 +1434,7 @@ class ExecutionForegroundService : Service() {
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
+                        activeAccountId = null,
                         currentTask = null,
                         progressCurrent = 1,
                         progressTotal = 1,
@@ -1331,6 +1448,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = "当前有其他 WebView 任务正在运行，请稍后再试",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -1342,12 +1460,14 @@ class ExecutionForegroundService : Service() {
     private suspend fun runStructureProbeCommand(accountId: String) {
         val acquired = ExecutionMutex.tryWithLock("structure_probe", MANUAL_LOCK_WAIT_MS) {
             promoteForeground("正在执行只读网页结构体检…")
-            updateProgressState("正在执行网页结构体检…", 0, 1)
+            updateProgressState("正在执行网页结构体检…", 0, 1, accountId)
             val sampleTarget = database.targetDao().listEnabledTargets(accountId).firstOrNull()
+            // TODO(integrator): wire executor.sendImage & accountId session (pass accountId = accountId)
             val report = executor.probeStructure(sampleTarget = sampleTarget)
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     progressCurrent = 1,
                     progressTotal = 1,
@@ -1361,6 +1481,7 @@ class ExecutionForegroundService : Service() {
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
+                    activeAccountId = null,
                     currentTask = null,
                     lastMessage = "当前有其他 WebView 任务正在运行，请稍后再试",
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -1397,6 +1518,7 @@ class ExecutionForegroundService : Service() {
         val sendJobDao = database.sendJobDao()
         val freshTarget = database.targetDao().getById(target.id)
         if (freshTarget == null || freshTarget.deletedAt != null ||
+            freshTarget.accountId != account.id ||
             (slotId == SendGuard.DAILY_SLOT_ID && !freshTarget.enabled)
         ) {
             return TargetRunOutcome(TargetRunKind.SKIPPED, message = "好友已暂停或删除")
@@ -1439,59 +1561,73 @@ class ExecutionForegroundService : Service() {
         var currentJob = allocated.job
         val attemptRowNo = allocated.nextAttemptRowNo
 
+        val markStageSending: suspend () -> Unit = {
+            val ts = System.currentTimeMillis()
+            activeConfirmingJobId = currentJob.id
+            activeConfirmingAttemptNo = attemptRowNo
+            currentJob = currentJob.copy(status = JobStatus.SENDING, updatedAt = ts)
+            currentAttempt = currentAttempt.copy(stage = "sending")
+            sendJobDao.updateJob(currentJob)
+            sendJobDao.updateAttempt(currentAttempt)
+        }
+        val markStageConfirming: suspend (String) -> Unit = { method ->
+            val ts = System.currentTimeMillis()
+            activeConfirmingJobId = currentJob.id
+            activeConfirmingAttemptNo = attemptRowNo
+            currentJob = currentJob.copy(status = JobStatus.CONFIRMING, updatedAt = ts)
+            currentAttempt = currentAttempt.copy(stage = "confirming", inputMethodUsed = method)
+            sendJobDao.updateJob(currentJob)
+            sendJobDao.updateAttempt(currentAttempt)
+        }
+
         val execResult = try {
-            if (resolved.sticker != null) {
-                executor.sendSticker(
-                    target = freshTarget,
-                    stickerName = resolved.sticker.stickerName,
-                    stickerLabel = resolved.sticker.stickerLabel,
-                    stickerCategory = resolved.sticker.stickerCategory,
-                    fallbackIndex = resolved.sticker.fallbackIndex,
-                    session = session,
-                    onStageSending = {
-                        val ts = System.currentTimeMillis()
-                        activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = attemptRowNo
-                        currentJob = currentJob.copy(status = JobStatus.SENDING, updatedAt = ts)
-                        currentAttempt = currentAttempt.copy(stage = "sending")
-                        sendJobDao.updateJob(currentJob)
-                        sendJobDao.updateAttempt(currentAttempt)
-                    },
-                    onStageConfirming = {
-                        val ts = System.currentTimeMillis()
-                        activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = attemptRowNo
-                        currentJob = currentJob.copy(status = JobStatus.CONFIRMING, updatedAt = ts)
-                        currentAttempt = currentAttempt.copy(stage = "confirming", inputMethodUsed = "sticker_click")
-                        sendJobDao.updateJob(currentJob)
-                        sendJobDao.updateAttempt(currentAttempt)
-                    },
-                )
-            } else {
-                executor.sendText(
-                    target = freshTarget,
-                    text = resolved.text.orEmpty(),
-                    isVisibleActivity = isVisibleActivity,
-                    session = session,
-                    onStageSending = {
-                        val ts = System.currentTimeMillis()
-                        activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = attemptRowNo
-                        currentJob = currentJob.copy(status = JobStatus.SENDING, updatedAt = ts)
-                        currentAttempt = currentAttempt.copy(stage = "sending")
-                        sendJobDao.updateJob(currentJob)
-                        sendJobDao.updateAttempt(currentAttempt)
-                    },
-                    onStageConfirming = {
-                        val ts = System.currentTimeMillis()
-                        activeConfirmingJobId = currentJob.id
-                        activeConfirmingAttemptNo = attemptRowNo
-                        currentJob = currentJob.copy(status = JobStatus.CONFIRMING, updatedAt = ts)
-                        currentAttempt = currentAttempt.copy(stage = "confirming", inputMethodUsed = "js_execCommand")
-                        sendJobDao.updateJob(currentJob)
-                        sendJobDao.updateAttempt(currentAttempt)
-                    },
-                )
+            when {
+                resolved.image != null -> {
+                    val imageFile = resolved.image.imageFile
+                    val imageContentUri = resolved.image.imageContentUri
+                    if (imageFile == null || !imageFile.isFile || imageFile.length() <= 0L) {
+                        ExecutionServiceStoreOps.missingTemplateImageResult()
+                    } else {
+                        // TODO(integrator): wire executor.sendImage & accountId session
+                        // Replace fallback below once Track 1 is integrated:
+                        // executor.sendImage(
+                        //     session = session,
+                        //     target = freshTarget,
+                        //     imageFile = imageFile,
+                        //     imageContentUri = imageContentUri,
+                        //     onStageSending = markStageSending,
+                        //     onStageConfirming = { markStageConfirming("image_upload") },
+                        // )
+                        SendExecutionResult(
+                            jobStatus = JobStatus.FAILED_TERMINAL,
+                            failureClass = FailureClass.OTHER,
+                            inputMethodUsed = "image_upload",
+                            summaryDetail = "当前构建尚未整合图片发送引擎（contentUriReady=${imageContentUri != null}）",
+                        )
+                    }
+                }
+                resolved.sticker != null -> {
+                    executor.sendSticker(
+                        target = freshTarget,
+                        stickerName = resolved.sticker.stickerName,
+                        stickerLabel = resolved.sticker.stickerLabel,
+                        stickerCategory = resolved.sticker.stickerCategory,
+                        fallbackIndex = resolved.sticker.fallbackIndex,
+                        session = session,
+                        onStageSending = markStageSending,
+                        onStageConfirming = { markStageConfirming("sticker_click") },
+                    )
+                }
+                else -> {
+                    executor.sendText(
+                        target = freshTarget,
+                        text = resolved.text.orEmpty(),
+                        isVisibleActivity = isVisibleActivity,
+                        session = session,
+                        onStageSending = markStageSending,
+                        onStageConfirming = { markStageConfirming("js_execCommand") },
+                    )
+                }
             }
         } catch (ce: CancellationException) {
             if (currentJob.status == JobStatus.CONFIRMING || currentJob.status == JobStatus.SENDING) {
@@ -1560,9 +1696,11 @@ class ExecutionForegroundService : Service() {
             }
             JobStatus.UNKNOWN_REQUIRES_REVIEW -> {
                 sendUrgentBoth(
+                    accountId = account.id,
                     category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
                     title = "发送结果未明，待人工核对",
                     body = "已触发发送动作但页面确认超时，系统已硬禁止自动重发，请打开 App 核对。",
+                    knownAccount = account,
                 )
                 TargetRunOutcome(
                     outcomeType = TargetRunKind.UNKNOWN,
@@ -1588,11 +1726,18 @@ class ExecutionForegroundService : Service() {
         val fallbackIndex: Int?,
     )
 
+    private data class ImagePayload(
+        val imagePath: String?,
+        val imageFile: File?,
+        val imageContentUri: Uri?,
+    )
+
     private data class ResolvedPayload(
         val templateId: String?,
         val text: String? = null,
         val poolItemId: String? = null,
         val sticker: StickerPayload? = null,
+        val image: ImagePayload? = null,
     )
 
     private suspend fun resolveSendPayload(
@@ -1614,7 +1759,7 @@ class ExecutionForegroundService : Service() {
         val templateId = target.templateId ?: return null
         val template: MessageTemplateEntity = database.templateDao().getTemplateById(templateId)
             ?: return null
-        if (!template.enabled) return null
+        if (!template.enabled || template.accountId != target.accountId) return null
 
         return when (template.type) {
             TemplateType.TEXT -> {
@@ -1656,7 +1801,18 @@ class ExecutionForegroundService : Service() {
                     ),
                 )
             }
-            TemplateType.IMAGE -> null
+            TemplateType.IMAGE -> {
+                val imageFile = templateImageStore.resolveExistingFile(template.imagePath)
+                val imageContentUri = imageFile?.let { templateImageStore.contentUriFor(it) }
+                ResolvedPayload(
+                    templateId = template.id,
+                    image = ImagePayload(
+                        imagePath = template.imagePath,
+                        imageFile = imageFile,
+                        imageContentUri = imageContentUri,
+                    ),
+                )
+            }
         }
     }
 
@@ -1703,19 +1859,84 @@ class ExecutionForegroundService : Service() {
         return count
     }
 
+    private suspend fun resolveNotificationPrefixArgs(
+        accountId: String,
+        knownAccount: AccountEntity?,
+    ): Pair<String?, Boolean> {
+        val allAccounts = try {
+            database.accountDao().listAll()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        val account = knownAccount
+            ?: allAccounts.firstOrNull { it.id == accountId }
+            ?: try {
+                database.accountDao().getAccount(accountId)
+            } catch (_: Throwable) {
+                null
+            }
+        val totalAccounts = if (allAccounts.isNotEmpty()) allAccounts.size else if (account != null) 1 else 0
+        val isMulti = ExecutionServiceStoreOps.isMultiAccountMode(
+            accountId = accountId,
+            totalAccounts = totalAccounts,
+        )
+        return account?.displayName to isMulti
+    }
+
+    private suspend fun sendDailySummaryBoth(
+        accountId: String,
+        title: String,
+        body: String,
+        knownAccount: AccountEntity? = null,
+    ) {
+        val (displayName, isMulti) = resolveNotificationPrefixArgs(accountId, knownAccount)
+        val formattedTitle = LocalNotifier.formatWithAccountPrefix(title, displayName, isMulti)
+        val formattedBody = LocalNotifier.formatWithAccountPrefix(body, displayName, isMulti)
+        localNotifier.notifyDailySummary(
+            title = formattedTitle,
+            body = formattedBody,
+            accountId = accountId,
+        )
+        barkNotifier.send(
+            title = formattedTitle,
+            body = formattedBody,
+            level = NotifyLevel.ACTIVE,
+        )
+    }
+
     private suspend fun sendUrgentBoth(
+        accountId: String,
         category: UrgentCategory,
         title: String,
         body: String,
+        knownAccount: AccountEntity? = null,
     ) {
-        localNotifier.notifyUrgentAlert(category, title, body)
-        barkNotifier.send(title = title, body = body, level = NotifyLevel.TIME_SENSITIVE)
+        val (displayName, isMulti) = resolveNotificationPrefixArgs(accountId, knownAccount)
+        val formattedTitle = LocalNotifier.formatWithAccountPrefix(title, displayName, isMulti)
+        val formattedBody = LocalNotifier.formatWithAccountPrefix(body, displayName, isMulti)
+        localNotifier.notifyUrgentAlert(
+            category = category,
+            title = formattedTitle,
+            body = formattedBody,
+            accountId = accountId,
+        )
+        barkNotifier.send(
+            title = formattedTitle,
+            body = formattedBody,
+            level = NotifyLevel.TIME_SENSITIVE,
+        )
     }
 
-    private fun updateProgressState(task: String, current: Int, total: Int) {
+    private fun updateProgressState(
+        task: String,
+        current: Int,
+        total: Int,
+        accountId: String,
+    ) {
         ExecutionRuntimeBus.update {
             it.copy(
                 running = true,
+                activeAccountId = accountId,
                 currentTask = task,
                 progressCurrent = current,
                 progressTotal = total,
@@ -1767,10 +1988,25 @@ class ExecutionForegroundService : Service() {
                                         )
                                     }
                             }
+                            val (displayName, isMulti) = resolveNotificationPrefixArgs(
+                                accountId = job.accountId,
+                                knownAccount = null,
+                            )
+                            val formattedTitle = LocalNotifier.formatWithAccountPrefix(
+                                text = "任务被中断，待核对发送结果",
+                                accountDisplayName = displayName,
+                                isMultiAccount = isMulti,
+                            )
+                            val formattedBody = LocalNotifier.formatWithAccountPrefix(
+                                text = "执行服务被中止时已有消息进入确认期，已转待复核状态并禁止自动重发。",
+                                accountDisplayName = displayName,
+                                isMultiAccount = isMulti,
+                            )
                             localNotifier.notifyUrgentAlert(
                                 category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
-                                title = "任务被中断，待核对发送结果",
-                                body = "执行服务被中止时已有消息进入确认期，已转待复核状态并禁止自动重发。",
+                                title = formattedTitle,
+                                body = formattedBody,
+                                accountId = job.accountId,
                             )
                         }
                     }
@@ -2010,7 +2246,70 @@ class ExecutionForegroundService : Service() {
                 false
             }
         }
+
+        internal fun extractCommandKey(intent: Intent): PendingCommandKey {
+            val action = intent.action?.takeIf { it.isNotBlank() }
+                ?: ExecutionDispatchContract.ACTION_RUN_SCHEDULED
+            val accountId = intent.getStringExtra(ExecutionDispatchContract.EXTRA_ACCOUNT_ID)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: DEFAULT_ACCOUNT_ID
+            val targetId = intent.getStringExtra(EXTRA_TARGET_ID)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: ""
+            return PendingCommandKey(
+                action = action,
+                accountId = accountId,
+                targetId = targetId,
+            )
+        }
     }
+}
+
+internal data class PendingCommandKey(
+    val action: String,
+    val accountId: String,
+    val targetId: String = "",
+)
+
+/**
+ * 基于 `(action, accountId, targetId)` 联合键的串行队列：
+ * - 同账号同动作同目标尚在排队中时自动去重，避免闹钟或双击重复入队；
+ * - 不同账号的同类任务互不吞并，严格按 FIFO 依次排队执行。
+ */
+internal class DeduplicatingCommandQueue<T>(
+    private val keyExtractor: (T) -> PendingCommandKey,
+) {
+    private val queue = ArrayDeque<T>()
+    private val queuedKeys = HashSet<PendingCommandKey>()
+
+    fun enqueue(item: T): Boolean {
+        val key = keyExtractor(item)
+        if (!queuedKeys.add(key)) {
+            return false
+        }
+        queue.addLast(item)
+        return true
+    }
+
+    fun dequeue(): T? {
+        if (queue.isEmpty()) return null
+        val item = queue.removeFirst()
+        queuedKeys.remove(keyExtractor(item))
+        return item
+    }
+
+    fun clear() {
+        queue.clear()
+        queuedKeys.clear()
+    }
+
+    fun isEmpty(): Boolean = queue.isEmpty()
+
+    fun isNotEmpty(): Boolean = queue.isNotEmpty()
+
+    fun size(): Int = queue.size
 }
 
 internal data class AllocatedSendAttempt(
@@ -2245,6 +2544,18 @@ internal object ExecutionServiceStoreOps {
         return "自动同步发现火花状态告急：$shown$suffix。" +
             "可能对方尚未回复消息，请留意提醒（仅只读预警，不会自动重发）。"
     }
+
+    fun isMultiAccountMode(
+        accountId: String,
+        totalAccounts: Int,
+    ): Boolean = totalAccounts > 1 || accountId != DEFAULT_ACCOUNT_ID
+
+    fun missingTemplateImageResult(): SendExecutionResult = SendExecutionResult(
+        jobStatus = JobStatus.FAILED_TERMINAL,
+        failureClass = FailureClass.OTHER,
+        inputMethodUsed = "image_upload",
+        summaryDetail = "图片模板缺少有效的本地图片文件，请前往「模板」页重新选择",
+    )
 }
 
 internal object ServiceDatabaseHolder {

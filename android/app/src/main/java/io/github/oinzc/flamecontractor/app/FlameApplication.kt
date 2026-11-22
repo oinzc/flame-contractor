@@ -3,12 +3,16 @@ package io.github.oinzc.flamecontractor.app
 import android.app.Application
 import android.util.Log
 import androidx.room.withTransaction
+import io.github.oinzc.flamecontractor.core.account.PendingProfileCleanupStore
+import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
 import io.github.oinzc.flamecontractor.execution.ExecutionMutex
@@ -20,10 +24,11 @@ import kotlinx.coroutines.launch
 
 /**
  * 应用入口：
+ * - 在任何 WebView 初始化前执行待清理非默认 Profile 延迟销毁；
  * - 懒加载创建 [AppContainer] 并向后台服务注入共享数据库实例；
  * - 确保通知通道注册；
  * - 在 IO 协程执行冷启动僵尸单收敛（`SENDING`/`CONFIRMING` 必转 `UNKNOWN_REQUIRES_REVIEW`），
- *   并在无执行锁持有时恢复遗留 `RUNNING` 账号状态，随后刷新兜底周期任务与当日闹钟。
+ *   并在无执行锁持有时恢复遗留 `RUNNING` 账号状态，随后按账号发送隔离通知并刷新全部账号闹钟。
  */
 class FlameApplication : Application() {
 
@@ -33,13 +38,22 @@ class FlameApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 必须抢在任何 WebView 或后台执行服务初始化之前销毁待清理的已删除账号 Profile
+        try {
+            PendingProfileCleanupStore(this).cleanupPendingProfiles()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (exc: Throwable) {
+            Log.w(TAG, "Pending profile cleanup failed: ${exc.javaClass.simpleName}")
+        }
+
         val appContainer = container
         ExecutionForegroundService.attachDatabase(appContainer.database)
         appContainer.localNotifier.ensureChannels()
 
         appScope.launch {
             try {
-                val hasUnknown = if (!ExecutionMutex.isLocked()) {
+                val recoveryReport = if (!ExecutionMutex.isLocked()) {
                     val token = ExecutionMutex.tryAcquireSession(COLD_START_OWNER)
                     if (token != null) {
                         try {
@@ -48,17 +62,30 @@ class FlameApplication : Application() {
                             ExecutionMutex.releaseSession(token)
                         }
                     } else {
-                        false
+                        ColdStartRecoveryReport()
                     }
                 } else {
-                    false
+                    ColdStartRecoveryReport()
                 }
 
-                if (hasUnknown) {
+                for (alert in recoveryReport.unknownAlerts) {
+                    val isMultiAccount = recoveryReport.totalAccountCount > 1 ||
+                        alert.accountId != DEFAULT_ACCOUNT_ID
+                    val title = LocalNotifier.formatWithAccountPrefix(
+                        text = "发现未确认的发送任务",
+                        accountDisplayName = alert.displayName,
+                        isMultiAccount = isMultiAccount,
+                    )
+                    val body = LocalNotifier.formatWithAccountPrefix(
+                        text = "上次应用中断时已有消息进入发送或确认阶段，请到首页核对结果，系统已阻止自动重发。",
+                        accountDisplayName = alert.displayName,
+                        isMultiAccount = isMultiAccount,
+                    )
                     appContainer.localNotifier.notifyUrgentAlert(
                         category = UrgentCategory.UNKNOWN_REQUIRES_REVIEW,
-                        title = "发现未确认的发送任务",
-                        body = "上次应用中断时已有消息进入发送或确认阶段，请到首页核对结果，系统已阻止自动重发。",
+                        title = title,
+                        body = body,
+                        accountId = alert.accountId,
                     )
                 }
 
@@ -72,29 +99,53 @@ class FlameApplication : Application() {
         }
     }
 
+    internal data class ColdStartUnknownAlert(
+        val accountId: String,
+        val displayName: String,
+    )
+
+    internal data class ColdStartRecoveryReport(
+        val unknownAlerts: List<ColdStartUnknownAlert> = emptyList(),
+        val totalAccountCount: Int = 1,
+    ) {
+        val hasUnknown: Boolean get() = unknownAlerts.isNotEmpty()
+    }
+
     companion object {
         private const val TAG = "FlameApplication"
         private const val COLD_START_OWNER = "app_cold_start"
+        private const val FALLBACK_DEFAULT_ACCOUNT_NAME = "默认抖音号"
 
         internal suspend fun performColdStartRecovery(
             database: FlameDatabase,
             nowMs: Long = System.currentTimeMillis(),
-        ): Boolean = database.withTransaction {
-            val accountDao = database.accountDao()
-            val sendJobDao = database.sendJobDao()
+        ): ColdStartRecoveryReport = database.withTransaction {
+            performColdStartRecovery(
+                accountDao = database.accountDao(),
+                sendJobDao = database.sendJobDao(),
+                nowMs = nowMs,
+            )
+        }
+
+        internal suspend fun performColdStartRecovery(
+            accountDao: AccountDao,
+            sendJobDao: SendJobDao,
+            nowMs: Long = System.currentTimeMillis(),
+        ): ColdStartRecoveryReport {
             val accounts = accountDao.listAll()
-            val accountIds = if (accounts.isEmpty()) {
-                listOf(DEFAULT_ACCOUNT_ID)
+            val targets = if (accounts.isEmpty()) {
+                listOf(DEFAULT_ACCOUNT_ID to FALLBACK_DEFAULT_ACCOUNT_NAME)
             } else {
-                accounts.map { it.id }
+                accounts.map { it.id to it.displayName }
             }
 
-            var hasUnknown = false
-            for (accountId in accountIds) {
+            val unknownAlerts = mutableListOf<ColdStartUnknownAlert>()
+            for ((accountId, displayName) in targets) {
                 val crashedJobs = sendJobDao.listJobsByStatuses(
                     accountId = accountId,
                     statuses = SendGuard.CRASH_IN_PROGRESS_STATUSES.toList(),
                 )
+                var accountHasUnknown = false
                 if (crashedJobs.isNotEmpty()) {
                     val recoveredJobs = SendGuard.recoverCrashedJobs(crashedJobs, nowMs)
                     for (job in recoveredJobs) {
@@ -111,9 +162,15 @@ class FlameApplication : Application() {
                                 )
                             }
                         if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
-                            hasUnknown = true
+                            accountHasUnknown = true
                         }
                     }
+                }
+                if (accountHasUnknown) {
+                    unknownAlerts += ColdStartUnknownAlert(
+                        accountId = accountId,
+                        displayName = displayName,
+                    )
                 }
             }
 
@@ -127,7 +184,11 @@ class FlameApplication : Application() {
                     )
                 }
             }
-            hasUnknown
+
+            return ColdStartRecoveryReport(
+                unknownAlerts = unknownAlerts,
+                totalAccountCount = maxOf(accounts.size, 1),
+            )
         }
     }
 }

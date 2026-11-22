@@ -9,13 +9,18 @@ import android.util.Log
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import io.github.oinzc.flamecontractor.data.db.AccountDao
+import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.data.db.ScanRunDao
+import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
+import io.github.oinzc.flamecontractor.data.db.TargetDao
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import java.time.Duration
 import java.time.Instant
@@ -47,41 +52,37 @@ internal data class ScheduleReadSnapshot(
     val autoScanEvaluation: AutoScanEvaluation? = null,
 )
 
+internal data class AccountDispatchPlan(
+    val snapshot: ScheduleReadSnapshot,
+    val action: String,
+)
+
+internal data class MultiAccountScheduleAggregation(
+    val snapshots: List<ScheduleReadSnapshot>,
+    val schedulableSnapshots: List<ScheduleReadSnapshot>,
+    val hasAnySchedulableAccount: Boolean,
+    val earliestNextWakeAt: Instant?,
+    val earliestNextAutoScanAt: Instant?,
+    val dispatchPlans: List<AccountDispatchPlan>,
+    val primarySnapshot: ScheduleReadSnapshot?,
+)
+
 /**
- * 调度协调器：
- * - 基于 DailySchedulePlanner 与 Room 只读状态计算同日防过窗下次唤醒时刻；
- * - 注册 AlarmManager 主唤醒（API 31+ 有权限用精确闹钟，无权限降级 setAndAllowWhileIdle）；
- * - 注册 WorkManager 每 30 分钟纯 SQLite 兜底任务 SafetyNetWorker。
+ * 纯 JVM 多账号调度评估与聚合器（零 android.* 依赖），供 [ScheduleCoordinator] 与 JVM 单元测试共享。
  */
-class ScheduleCoordinator private constructor(
-    private val appContext: Context,
-    private val databaseProvider: () -> FlameDatabase,
-) {
+internal object MultiAccountSchedulePlanner {
 
-    constructor(context: Context) : this(
-        appContext = context.applicationContext ?: context,
-        databaseProvider = { SchedulerDatabaseHolder.getInstance(context.applicationContext ?: context) },
-    )
-
-    constructor(context: Context, database: FlameDatabase) : this(
-        appContext = context.applicationContext ?: context,
-        databaseProvider = { database },
-    )
-
-    private val alarmManager: AlarmManager?
-        get() = appContext.getSystemService(AlarmManager::class.java)
-
-    internal suspend fun evaluateCurrentSchedule(
+    suspend fun evaluateAccount(
+        account: AccountEntity,
+        targetDao: TargetDao,
+        sendJobDao: SendJobDao,
+        scanRunDao: ScanRunDao,
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
-        accountId: String = DEFAULT_ACCOUNT_ID,
-    ): ScheduleReadSnapshot? {
-        val db = databaseProvider()
-        val account = db.accountDao().getAccount(accountId) ?: return null
+    ): ScheduleReadSnapshot {
         val zoneId = DailySchedulePlanner.resolveZoneId(account.timezone)
         val todayStr = ZonedDateTime.ofInstant(now, zoneId).toLocalDate().toString()
-        val targets = db.targetDao().listEnabledTargets(account.id)
-        val sendJobDao = db.sendJobDao()
+        val targets = targetDao.listEnabledTargets(account.id)
         val todayJobs = sendJobDao.listJobsForDate(account.id, todayStr)
 
         var networkDeferCountToday = 0
@@ -119,7 +120,6 @@ class ScheduleCoordinator private constructor(
             networkDeferCountToday = networkDeferCountToday,
         )
 
-        val scanRunDao = db.scanRunDao()
         val latestCompletedScan = scanRunDao.getLatestCompletedScanRun(account.id)
         val latestAnyScan = scanRunDao.getLatestScanRun(account.id)
         val autoScanEvaluation = AutoScanPlanner.evaluate(
@@ -141,45 +141,206 @@ class ScheduleCoordinator private constructor(
         )
     }
 
+    suspend fun evaluateAllAccounts(
+        accountDao: AccountDao,
+        targetDao: TargetDao,
+        sendJobDao: SendJobDao,
+        scanRunDao: ScanRunDao,
+        now: Instant = Instant.now(),
+        staleCrashRecoveryMillis: Long? = null,
+    ): MultiAccountScheduleAggregation {
+        val accounts = accountDao.listAll()
+        if (accounts.isEmpty()) {
+            return aggregate(emptyList())
+        }
+        val snapshots = accounts.map { account ->
+            evaluateAccount(
+                account = account,
+                targetDao = targetDao,
+                sendJobDao = sendJobDao,
+                scanRunDao = scanRunDao,
+                now = now,
+                staleCrashRecoveryMillis = staleCrashRecoveryMillis,
+            )
+        }
+        return aggregate(snapshots)
+    }
+
+    suspend fun inspectNextAutoScanAt(
+        accountDao: AccountDao,
+        targetDao: TargetDao,
+        sendJobDao: SendJobDao,
+        scanRunDao: ScanRunDao,
+        now: Instant = Instant.now(),
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): Instant? {
+        val account = accountDao.getAccount(accountId) ?: return null
+        val snapshot = evaluateAccount(
+            account = account,
+            targetDao = targetDao,
+            sendJobDao = sendJobDao,
+            scanRunDao = scanRunDao,
+            now = now,
+            staleCrashRecoveryMillis = null,
+        )
+        val autoScanEval = snapshot.autoScanEvaluation ?: return null
+        return if (autoScanEval.eligible) autoScanEval.nextAutoScanAt else null
+    }
+
+    fun aggregate(snapshots: List<ScheduleReadSnapshot>): MultiAccountScheduleAggregation {
+        val schedulableSnapshots = snapshots.filter {
+            it.accountEnabled && it.accountStatus == AccountStatus.HEALTHY
+        }
+        val earliestNextWakeAt = schedulableSnapshots
+            .mapNotNull { it.evaluation.nextWakeAt }
+            .minOrNull()
+        val earliestNextAutoScanAt = schedulableSnapshots
+            .mapNotNull { snapshot ->
+                snapshot.autoScanEvaluation?.takeIf { it.eligible }?.nextAutoScanAt
+            }
+            .minOrNull()
+        val dispatchPlans = schedulableSnapshots.mapNotNull { snapshot ->
+            val action = ExecutionDispatchContract.decideAction(
+                evaluation = snapshot.evaluation,
+                autoScanEvaluation = snapshot.autoScanEvaluation,
+            )
+            if (action != null) {
+                AccountDispatchPlan(snapshot = snapshot, action = action)
+            } else {
+                null
+            }
+        }
+        val primarySnapshot = dispatchPlans.firstOrNull()?.snapshot
+            ?: schedulableSnapshots.firstOrNull { it.crashInProgressCount > 0 }
+            ?: snapshots.firstOrNull { it.accountId == DEFAULT_ACCOUNT_ID }
+            ?: snapshots.firstOrNull()
+
+        return MultiAccountScheduleAggregation(
+            snapshots = snapshots,
+            schedulableSnapshots = schedulableSnapshots,
+            hasAnySchedulableAccount = schedulableSnapshots.isNotEmpty(),
+            earliestNextWakeAt = earliestNextWakeAt,
+            earliestNextAutoScanAt = earliestNextAutoScanAt,
+            dispatchPlans = dispatchPlans,
+            primarySnapshot = primarySnapshot,
+        )
+    }
+
+    fun projectStaleInProgressJobs(
+        jobs: List<SendJobEntity>,
+        nowEpochMs: Long,
+        staleThresholdMillis: Long,
+    ): List<SendJobEntity> = jobs.map { job ->
+        if (job.status !in SendGuard.CRASH_IN_PROGRESS_STATUSES) {
+            job
+        } else if (nowEpochMs - job.updatedAt < staleThresholdMillis) {
+            job
+        } else {
+            val recoveredStatus = SendGuard.classifyCrashedJob(job)
+            if (recoveredStatus == job.status) {
+                job
+            } else {
+                job.copy(status = recoveredStatus)
+            }
+        }
+    }
+}
+
+/**
+ * 调度协调器：
+ * - 遍历所有账号，基于 DailySchedulePlanner 与 AutoScanPlanner 评估同日防过窗下次唤醒时刻；
+ * - 汇总最早 `nextWakeAt`（`4101`）与最早 `nextAutoScanAt`（`4104`）注册 AlarmManager 主闹钟；
+ * - 到期触发时逐个为各到期账号分别派发执行或自动扫描指令；
+ * - 注册 WorkManager 每 30 分钟纯 SQLite 兜底任务 SafetyNetWorker。
+ */
+class ScheduleCoordinator private constructor(
+    private val appContext: Context,
+    private val databaseProvider: () -> FlameDatabase,
+) {
+
+    constructor(context: Context) : this(
+        appContext = context.applicationContext ?: context,
+        databaseProvider = { SchedulerDatabaseHolder.getInstance(context.applicationContext ?: context) },
+    )
+
+    constructor(context: Context, database: FlameDatabase) : this(
+        appContext = context.applicationContext ?: context,
+        databaseProvider = { database },
+    )
+
+    private val alarmManager: AlarmManager?
+        get() = appContext.getSystemService(AlarmManager::class.java)
+
+    internal suspend fun evaluateCurrentSchedule(
+        now: Instant = Instant.now(),
+        staleCrashRecoveryMillis: Long? = null,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+    ): ScheduleReadSnapshot? {
+        val db = databaseProvider()
+        val account = db.accountDao().getAccount(accountId) ?: return null
+        return MultiAccountSchedulePlanner.evaluateAccount(
+            account = account,
+            targetDao = db.targetDao(),
+            sendJobDao = db.sendJobDao(),
+            scanRunDao = db.scanRunDao(),
+            now = now,
+            staleCrashRecoveryMillis = staleCrashRecoveryMillis,
+        )
+    }
+
     internal suspend fun evaluateAndDispatchIfNeeded(
         triggerSource: String,
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
     ): ScheduleReadSnapshot? {
-        val snapshot = evaluateCurrentSchedule(
+        val db = databaseProvider()
+        val aggregation = MultiAccountSchedulePlanner.evaluateAllAccounts(
+            accountDao = db.accountDao(),
+            targetDao = db.targetDao(),
+            sendJobDao = db.sendJobDao(),
+            scanRunDao = db.scanRunDao(),
             now = now,
             staleCrashRecoveryMillis = staleCrashRecoveryMillis,
         )
-        if (snapshot != null) {
+        for (plan in aggregation.dispatchPlans) {
             ExecutionDispatchContract.dispatchEvaluationIfNeeded(
                 context = appContext,
-                accountId = snapshot.accountId,
-                evaluation = snapshot.evaluation,
+                accountId = plan.snapshot.accountId,
+                evaluation = plan.snapshot.evaluation,
                 triggerSource = triggerSource,
-                autoScanEvaluation = snapshot.autoScanEvaluation,
+                autoScanEvaluation = plan.snapshot.autoScanEvaluation,
             )
         }
         rescheduleAll(now)
-        return snapshot
+        return aggregation.primarySnapshot
     }
 
     suspend fun inspectNextAutoScanAt(
         now: Instant = Instant.now(),
         accountId: String = DEFAULT_ACCOUNT_ID,
     ): Instant? {
-        val snapshot = evaluateCurrentSchedule(
+        val db = databaseProvider()
+        return MultiAccountSchedulePlanner.inspectNextAutoScanAt(
+            accountDao = db.accountDao(),
+            targetDao = db.targetDao(),
+            sendJobDao = db.sendJobDao(),
+            scanRunDao = db.scanRunDao(),
             now = now,
-            staleCrashRecoveryMillis = null,
             accountId = accountId,
         )
-            ?: return null
-        val autoScanEval = snapshot.autoScanEvaluation ?: return null
-        return if (autoScanEval.eligible) autoScanEval.nextAutoScanAt else null
     }
 
     suspend fun rescheduleAll(now: Instant = Instant.now()): Instant? {
-        val snapshot = evaluateCurrentSchedule(now = now, staleCrashRecoveryMillis = null)
-        if (snapshot == null || !snapshot.accountEnabled || snapshot.accountStatus != AccountStatus.HEALTHY) {
+        val db = databaseProvider()
+        val aggregation = MultiAccountSchedulePlanner.evaluateAllAccounts(
+            accountDao = db.accountDao(),
+            targetDao = db.targetDao(),
+            sendJobDao = db.sendJobDao(),
+            scanRunDao = db.scanRunDao(),
+            now = now,
+            staleCrashRecoveryMillis = null,
+        )
+        if (!aggregation.hasAnySchedulableAccount) {
             cancelAllAlarms()
             return null
         }
@@ -188,9 +349,8 @@ class ScheduleCoordinator private constructor(
         cancelAlarm(REQUEST_CODE_AUTH_RECHECK, KIND_AUTH_RECHECK)
         cancelAlarm(REQUEST_CODE_RETRY_BACKOFF, KIND_RETRY_BACKOFF)
 
-        val autoScanEval = snapshot.autoScanEvaluation
-        val nextAutoScanAt = autoScanEval?.nextAutoScanAt
-        if (autoScanEval?.eligible == true && nextAutoScanAt != null) {
+        val nextAutoScanAt = aggregation.earliestNextAutoScanAt
+        if (nextAutoScanAt != null) {
             val autoScanIntent = createAlarmPendingIntent(
                 requestCode = REQUEST_CODE_AUTO_SCAN,
                 kind = KIND_AUTO_SCAN,
@@ -202,7 +362,7 @@ class ScheduleCoordinator private constructor(
             cancelAlarm(REQUEST_CODE_AUTO_SCAN, KIND_AUTO_SCAN)
         }
 
-        val nextWakeAt = snapshot.evaluation.nextWakeAt
+        val nextWakeAt = aggregation.earliestNextWakeAt
         if (nextWakeAt == null) {
             cancelAlarm(REQUEST_CODE_MAIN_WAKE, KIND_SCHEDULED_WAKE)
             return null
@@ -277,25 +437,6 @@ class ScheduleCoordinator private constructor(
         WorkManager.getInstance(appContext).cancelUniqueWork(WORK_NAME_SAFETY_NET)
     }
 
-    private fun projectStaleInProgressJobs(
-        jobs: List<SendJobEntity>,
-        nowEpochMs: Long,
-        staleThresholdMillis: Long,
-    ): List<SendJobEntity> = jobs.map { job ->
-        if (job.status !in SendGuard.CRASH_IN_PROGRESS_STATUSES) {
-            job
-        } else if (nowEpochMs - job.updatedAt < staleThresholdMillis) {
-            job
-        } else {
-            val recoveredStatus = SendGuard.classifyCrashedJob(job)
-            if (recoveredStatus == job.status) {
-                job
-            } else {
-                job.copy(status = recoveredStatus)
-            }
-        }
-    }
-
     private fun scheduleAlarmAt(triggerAtMillis: Long, pendingIntent: PendingIntent) {
         val manager = alarmManager ?: return
         val canExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -360,7 +501,7 @@ class ScheduleCoordinator private constructor(
         const val KIND_RETRY_BACKOFF = "retry_backoff"
         const val KIND_AUTO_SCAN = "auto_scan"
 
-        private const val REQUEST_CODE_MAIN_WAKE = 4101
+        const val REQUEST_CODE_MAIN_WAKE = 4101
         private const val REQUEST_CODE_AUTH_RECHECK = 4102
         private const val REQUEST_CODE_RETRY_BACKOFF = 4103
         const val REQUEST_CODE_AUTO_SCAN = 4104
