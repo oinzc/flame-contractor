@@ -26,6 +26,7 @@ object BackupCodec {
 
     private const val MAX_SLOT_ID_LENGTH = 64
     private const val IMPORT_SLOT_ID_PREFIX_MAX_LEN = 48
+    private const val RAW_DAILY_SLOT_ID = "raw:daily"
     private val TEMPLATE_VERSION_SLOT_REGEX = Regex("""^.+:v\d+$""")
 
     fun defaultBackupFileName(date: LocalDate = LocalDate.now()): String =
@@ -195,7 +196,10 @@ object BackupCodec {
     fun inspect(rawJson: String): BackupInspection {
         val byteCount = rawJson.toByteArray(Charsets.UTF_8).size
         if (byteCount > MAX_BACKUP_BYTES) {
-            throw IllegalArgumentException("备份文件超过 20 MB 上限（实际 ${byteCount / (1024 * 1024)} MB），已拒绝解析")
+            val actualMb = String.format(Locale.US, "%.2f", byteCount / (1024.0 * 1024.0))
+            throw IllegalArgumentException(
+                "备份文件超过 20 MB 上限（实际 $actualMb MB，$byteCount 字节），已拒绝解析",
+            )
         }
         if (rawJson.isBlank()) {
             throw IllegalArgumentException("备份文件内容为空")
@@ -337,7 +341,7 @@ object BackupCodec {
         val trimmedSlot = localSlot.trim()
         if (trimmedSlot == SendGuard.DAILY_SLOT_ID) {
             val cleanedTemplateId = templateId?.trim()?.takeIf { it.isNotEmpty() }
-            if (cleanedTemplateId == null) return "raw:daily"
+            if (cleanedTemplateId == null) return RAW_DAILY_SLOT_ID
             val candidate = "$cleanedTemplateId:v1"
             return if (candidate.length <= MAX_SLOT_ID_LENGTH) {
                 candidate
@@ -364,6 +368,7 @@ object BackupCodec {
         }
         val trimmed = backupSlot.trim()
         if (trimmed == SendGuard.DAILY_SLOT_ID ||
+            trimmed == RAW_DAILY_SLOT_ID ||
             (TEMPLATE_VERSION_SLOT_REGEX.matches(trimmed) && !trimmed.contains(":force:"))
         ) {
             return SendGuard.DAILY_SLOT_ID
@@ -631,7 +636,7 @@ object BackupCodec {
 
     private fun Map<String, Any?>.valueAlias(vararg keys: String): Any? {
         for (key in keys) {
-            if (containsKey(key)) return this[key]
+            this[key]?.let { return it }
         }
         return null
     }

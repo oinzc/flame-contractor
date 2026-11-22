@@ -14,6 +14,7 @@ import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.SendGuard
+import io.github.oinzc.flamecontractor.execution.ExecJson
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1032,6 +1033,443 @@ class BackupManagerTest {
         assertEquals(2, secondReport.targetsUpdated)
         assertEquals(0, secondReport.jobsInserted)
         assertEquals(2, secondReport.jobsUpdated)
+    }
+
+    @Test
+    fun importRestoresRawDailyWithoutAndroidExtensionsAndLocksDailySlot() = runTest {
+        val sourceStore = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(
+                ContractTargetEntity(
+                    id = "tgt-1",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    nicknameSnapshot = "好友甲",
+                    platformUserId = "uid-1",
+                    conversationType = "friend",
+                ),
+            ),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "job-raw-daily",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-1",
+                    templateId = null,
+                    businessDate = "2026-11-22",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.SUCCEEDED,
+                    attemptCount = 1,
+                    confirmedAt = 4_000L,
+                ),
+            ),
+        )
+        val sourceManager = BackupManager(store = sourceStore, clockMillis = { 10_000L })
+        val exported = sourceManager.exportJson(DEFAULT_ACCOUNT_ID)
+        val strippedRoot = ExecJson.parseObject(exported).toMutableMap().apply {
+            remove("androidExtensions")
+        }
+        val strippedJson = ExecJson.encode(strippedRoot)
+
+        val destStore = FakeBackupStore(account = AccountEntity(id = DEFAULT_ACCOUNT_ID))
+        val destManager = BackupManager(store = destStore, clockMillis = { 20_000L })
+        val report = destManager.importBackup(
+            parsed = destManager.inspectJson(strippedJson).parsed,
+            selectedSourceAccountId = DEFAULT_ACCOUNT_ID,
+        )
+        assertEquals(1, report.jobsInserted)
+
+        val restoredJobs = destStore.listAllJobs(DEFAULT_ACCOUNT_ID)
+        val restored = restoredJobs.single()
+        assertEquals("job-raw-daily", restored.id)
+        assertEquals(SendGuard.DAILY_SLOT_ID, restored.messageSlotId)
+        assertEquals(JobStatus.SUCCEEDED, restored.status)
+        assertFalse(SendGuard.canDispatchDaily(restoredJobs))
+    }
+
+    @Test
+    fun importPreventsIdMatchFromMigratingLocalDailyJobOutOfDailySlot() = runTest {
+        val localTarget = ContractTargetEntity(
+            id = "tgt-a",
+            accountId = DEFAULT_ACCOUNT_ID,
+            nicknameSnapshot = "好友A",
+            platformUserId = "uid-a",
+            conversationType = "friend",
+        )
+        val localDailyJob = SendJobEntity(
+            id = "job-daily-lock",
+            accountId = DEFAULT_ACCOUNT_ID,
+            targetId = "tgt-a",
+            templateId = "tpl-local",
+            businessDate = "2026-11-22",
+            messageSlotId = SendGuard.DAILY_SLOT_ID,
+            status = JobStatus.SUCCEEDED,
+            scheduledAt = 10_000L,
+            attemptCount = 1,
+            failureClass = null,
+            summaryDetail = "本地每日已成功",
+            confirmedAt = 12_000L,
+        )
+        val store = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(localTarget),
+            jobs = listOf(localDailyJob),
+        )
+        val manager = BackupManager(store = store, clockMillis = { 50_000L })
+
+        val incomingJson = """
+            {
+              "app": "flame-contractor",
+              "schemaVersion": 1,
+              "exportedAt": "2026-11-22T12:00:00Z",
+              "data": {
+                "accounts": [{"id":"pc-acc","display_name":"桌面号","status":"pending_login"}],
+                "templates": [],
+                "poolItems": [],
+                "targets": [
+                  {
+                    "id": "pc-tgt-a",
+                    "account_id": "pc-acc",
+                    "platform_user_id": "uid-a",
+                    "nickname_snapshot": "好友A",
+                    "conversation_type": "user"
+                  }
+                ],
+                "jobs": [
+                  {
+                    "id": "job-daily-lock",
+                    "account_id": "pc-acc",
+                    "target_id": "pc-tgt-a",
+                    "business_date": "2026-11-22",
+                    "message_slot_id": "manual:1700000000000",
+                    "status": "failed_retryable",
+                    "scheduled_at": "1970-01-01T00:00:01Z",
+                    "attempt_count": 0,
+                    "failure_class": "network",
+                    "summary_detail": "手动重试覆盖"
+                  },
+                  {
+                    "id": "job-second-daily",
+                    "account_id": "pc-acc",
+                    "target_id": "pc-tgt-a",
+                    "business_date": "2026-11-22",
+                    "message_slot_id": "tpl-new:v1",
+                    "status": "scheduled",
+                    "attempt_count": 0
+                  }
+                ],
+                "attempts": []
+              }
+            }
+        """.trimIndent()
+
+        val report = manager.importBackup(
+            parsed = manager.inspectJson(incomingJson).parsed,
+            selectedSourceAccountId = "pc-acc",
+        )
+        assertTrue(report.warnings.any { it.contains("拒绝迁移") || it.contains("拒绝被较早状态") })
+
+        val jobsAfter = store.listAllJobs(DEFAULT_ACCOUNT_ID)
+        assertEquals(1, jobsAfter.size)
+        val preserved = jobsAfter.single()
+        assertEquals("job-daily-lock", preserved.id)
+        assertEquals(SendGuard.DAILY_SLOT_ID, preserved.messageSlotId)
+        assertEquals(JobStatus.SUCCEEDED, preserved.status)
+        assertEquals("本地每日已成功", preserved.summaryDetail)
+        assertEquals(10_000L, preserved.scheduledAt)
+        assertEquals(12_000L, preserved.confirmedAt)
+        assertEquals(1, preserved.attemptCount)
+        assertNull(preserved.failureClass)
+        assertFalse(SendGuard.canDispatchDaily(jobsAfter))
+    }
+
+    @Test
+    fun importEnforcesStrictMonotonicAntiDowngradeGuardOnDailyTerminalStates() = runTest {
+        fun buildSingleJobBackup(
+            jobId: String,
+            status: String,
+            slot: String = "tpl-1:v1",
+            attemptCount: Int = 0,
+            failureClass: String? = null,
+            summaryDetail: String? = "备份摘要",
+            scheduledAtIso: String? = "1970-01-01T00:00:01Z",
+            confirmedAtIso: String? = "1970-01-01T00:00:02Z",
+        ): String {
+            val failureField = failureClass?.let { "\"failure_class\": \"$it\"," } ?: ""
+            val summaryField = summaryDetail?.let { "\"summary_detail\": \"$it\"," } ?: ""
+            val scheduledField = scheduledAtIso?.let { "\"scheduled_at\": \"$it\"," } ?: ""
+            val confirmedField = confirmedAtIso?.let { "\"confirmed_at\": \"$it\"," } ?: ""
+            return """
+                {
+                  "app": "flame-contractor",
+                  "schemaVersion": 1,
+                  "exportedAt": "2026-11-22T12:00:00Z",
+                  "data": {
+                    "accounts": [{"id":"pc-acc","display_name":"桌面号","status":"pending_login"}],
+                    "templates": [],
+                    "poolItems": [],
+                    "targets": [
+                      {
+                        "id": "pc-tgt-a",
+                        "account_id": "pc-acc",
+                        "platform_user_id": "uid-a",
+                        "nickname_snapshot": "好友A",
+                        "conversation_type": "user"
+                      }
+                    ],
+                    "jobs": [
+                      {
+                        "id": "$jobId",
+                        "account_id": "pc-acc",
+                        "target_id": "pc-tgt-a",
+                        "business_date": "2026-11-22",
+                        "message_slot_id": "$slot",
+                        "status": "$status",
+                        $scheduledField
+                        $confirmedField
+                        $failureField
+                        $summaryField
+                        "attempt_count": $attemptCount
+                      }
+                    ],
+                    "attempts": []
+                  }
+                }
+            """.trimIndent()
+        }
+
+        val localTarget = ContractTargetEntity(
+            id = "tgt-a",
+            accountId = DEFAULT_ACCOUNT_ID,
+            nicknameSnapshot = "好友A",
+            platformUserId = "uid-a",
+            conversationType = "friend",
+        )
+
+        // 1. 本地 SUCCEEDED：拒绝降级至 FAILED_TERMINAL / CANCELLED / FAILED_RETRYABLE / SCHEDULED，并保留全部保护字段；仅允许升级至 UNKNOWN_REQUIRES_REVIEW
+        val succeededStore = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(localTarget),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "local-succ",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-a",
+                    businessDate = "2026-11-22",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.SUCCEEDED,
+                    scheduledAt = 10_000L,
+                    confirmedAt = 12_000L,
+                    attemptCount = 1,
+                    failureClass = null,
+                    summaryDetail = "本地确认成功",
+                ),
+            ),
+        )
+        val succeededManager = BackupManager(store = succeededStore, clockMillis = { 50_000L })
+        for ((badStatus, failCls, attempts) in listOf(
+            Triple("failed_terminal", "dom_changed", 3),
+            Triple("cancelled", null, 0),
+            Triple("failed_retryable", "network", 0),
+            Triple("scheduled", null, 0),
+        )) {
+            val json = buildSingleJobBackup(
+                jobId = "bak-$badStatus",
+                status = badStatus,
+                attemptCount = attempts,
+                failureClass = failCls,
+                summaryDetail = "旧状态-$badStatus",
+            )
+            val rep = succeededManager.importBackup(succeededManager.inspectJson(json).parsed, "pc-acc")
+            assertTrue(rep.warnings.any { it.contains("拒绝被较早状态") })
+            val current = succeededStore.listAllJobs(DEFAULT_ACCOUNT_ID).single()
+            assertEquals(JobStatus.SUCCEEDED, current.status)
+            assertEquals("本地确认成功", current.summaryDetail)
+            assertEquals(10_000L, current.scheduledAt)
+            assertEquals(12_000L, current.confirmedAt)
+            assertEquals(1, current.attemptCount)
+            assertNull(current.failureClass)
+            assertFalse(SendGuard.canDispatchDaily(listOf(current)))
+        }
+        val upgradeToReviewJson = buildSingleJobBackup(
+            jobId = "bak-review",
+            status = "unknown_requires_review",
+            attemptCount = 2,
+            failureClass = "unknown_outcome",
+            summaryDetail = "需人工核对",
+        )
+        succeededManager.importBackup(succeededManager.inspectJson(upgradeToReviewJson).parsed, "pc-acc")
+        assertEquals(
+            JobStatus.UNKNOWN_REQUIRES_REVIEW,
+            succeededStore.listAllJobs(DEFAULT_ACCOUNT_ID).single().status,
+        )
+
+        // 2. 本地 FAILED_TERMINAL：拒绝降级至 CANCELLED / FAILED_RETRYABLE / SCHEDULED；允许升级至 SUCCEEDED / UNKNOWN_REQUIRES_REVIEW
+        val failedTermStore = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(localTarget),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "local-ft",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-a",
+                    businessDate = "2026-11-22",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.FAILED_TERMINAL,
+                    scheduledAt = 10_000L,
+                    confirmedAt = null,
+                    attemptCount = 3,
+                    failureClass = FailureClass.DOM_CHANGED,
+                    summaryDetail = "本地终态失败",
+                ),
+            ),
+        )
+        val failedTermManager = BackupManager(store = failedTermStore, clockMillis = { 50_000L })
+        for (badStatus in listOf("cancelled", "failed_retryable", "scheduled")) {
+            val json = buildSingleJobBackup(
+                jobId = "bak-ft-$badStatus",
+                status = badStatus,
+                attemptCount = 0,
+                summaryDetail = "试图降级-$badStatus",
+            )
+            failedTermManager.importBackup(failedTermManager.inspectJson(json).parsed, "pc-acc")
+            val current = failedTermStore.listAllJobs(DEFAULT_ACCOUNT_ID).single()
+            assertEquals(JobStatus.FAILED_TERMINAL, current.status)
+            assertEquals(FailureClass.DOM_CHANGED, current.failureClass)
+            assertEquals(3, current.attemptCount)
+            assertEquals("本地终态失败", current.summaryDetail)
+            assertEquals(10_000L, current.scheduledAt)
+            assertNull(current.confirmedAt)
+            assertFalse(SendGuard.canDispatchDaily(listOf(current)))
+        }
+        val upgradeFtToSuccJson = buildSingleJobBackup(
+            jobId = "bak-ft-succ",
+            status = "succeeded",
+            attemptCount = 1,
+            summaryDetail = "远端已成功",
+        )
+        failedTermManager.importBackup(failedTermManager.inspectJson(upgradeFtToSuccJson).parsed, "pc-acc")
+        assertEquals(
+            JobStatus.SUCCEEDED,
+            failedTermStore.listAllJobs(DEFAULT_ACCOUNT_ID).single().status,
+        )
+
+        // 3. 本地 CANCELLED：拒绝降级至 FAILED_RETRYABLE / SCHEDULED；允许升级至 FAILED_TERMINAL / SUCCEEDED / UNKNOWN_REQUIRES_REVIEW
+        val cancelledStore = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(localTarget),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "local-cancel",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-a",
+                    businessDate = "2026-11-22",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.CANCELLED,
+                    scheduledAt = 10_000L,
+                    confirmedAt = null,
+                    attemptCount = 0,
+                    failureClass = null,
+                    summaryDetail = "本地已取消",
+                ),
+            ),
+        )
+        val cancelledManager = BackupManager(store = cancelledStore, clockMillis = { 50_000L })
+        for (badStatus in listOf("failed_retryable", "scheduled")) {
+            val json = buildSingleJobBackup(
+                jobId = "bak-c-$badStatus",
+                status = badStatus,
+                attemptCount = 0,
+                failureClass = "network",
+                summaryDetail = "试图降级-$badStatus",
+            )
+            cancelledManager.importBackup(cancelledManager.inspectJson(json).parsed, "pc-acc")
+            val current = cancelledStore.listAllJobs(DEFAULT_ACCOUNT_ID).single()
+            assertEquals(JobStatus.CANCELLED, current.status)
+            assertEquals("本地已取消", current.summaryDetail)
+            assertEquals(10_000L, current.scheduledAt)
+            assertEquals(0, current.attemptCount)
+            assertNull(current.failureClass)
+            assertFalse(SendGuard.canDispatchDaily(listOf(current)))
+        }
+        val upgradeCancelToFtJson = buildSingleJobBackup(
+            jobId = "bak-c-ft",
+            status = "failed_terminal",
+            attemptCount = 3,
+            failureClass = "dom_changed",
+            summaryDetail = "升级终态失败",
+        )
+        cancelledManager.importBackup(cancelledManager.inspectJson(upgradeCancelToFtJson).parsed, "pc-acc")
+        assertEquals(
+            JobStatus.FAILED_TERMINAL,
+            cancelledStore.listAllJobs(DEFAULT_ACCOUNT_ID).single().status,
+        )
+
+        // 4. 本地 FAILED_RETRYABLE（已达重试上限 attemptCount = 3）拒绝被 SCHEDULED 或低 attemptCount 降级而重开当日发送
+        val exhaustedRetryStore = FakeBackupStore(
+            account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+            targets = listOf(localTarget),
+            jobs = listOf(
+                SendJobEntity(
+                    id = "local-retry-exhausted",
+                    accountId = DEFAULT_ACCOUNT_ID,
+                    targetId = "tgt-a",
+                    businessDate = "2026-11-22",
+                    messageSlotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.FAILED_RETRYABLE,
+                    attemptCount = SendGuard.RETRY_MAX_COUNT + 1,
+                    failureClass = FailureClass.NETWORK,
+                    summaryDetail = "重试次数已满",
+                ),
+            ),
+        )
+        val exhaustedRetryManager = BackupManager(store = exhaustedRetryStore, clockMillis = { 50_000L })
+        for ((badStatus, badAttempts) in listOf("scheduled" to 0, "failed_retryable" to 1)) {
+            val json = buildSingleJobBackup(
+                jobId = "bak-re-$badStatus",
+                status = badStatus,
+                attemptCount = badAttempts,
+                summaryDetail = "试图重置重试计数",
+            )
+            exhaustedRetryManager.importBackup(exhaustedRetryManager.inspectJson(json).parsed, "pc-acc")
+            val current = exhaustedRetryStore.listAllJobs(DEFAULT_ACCOUNT_ID).single()
+            assertEquals(JobStatus.FAILED_RETRYABLE, current.status)
+            assertEquals(SendGuard.RETRY_MAX_COUNT + 1, current.attemptCount)
+            assertFalse(SendGuard.canDispatchDaily(listOf(current)))
+        }
+
+        // 5. 本地 SENDING / CONFIRMING / UNKNOWN_REQUIRES_REVIEW 继续硬跳过
+        for (protectedStatus in listOf(
+            JobStatus.SENDING,
+            JobStatus.CONFIRMING,
+            JobStatus.UNKNOWN_REQUIRES_REVIEW,
+        )) {
+            val protectedStore = FakeBackupStore(
+                account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+                targets = listOf(localTarget),
+                jobs = listOf(
+                    SendJobEntity(
+                        id = "local-prot",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        targetId = "tgt-a",
+                        businessDate = "2026-11-22",
+                        messageSlotId = SendGuard.DAILY_SLOT_ID,
+                        status = protectedStatus,
+                        summaryDetail = "受保护状态",
+                    ),
+                ),
+            )
+            val protManager = BackupManager(store = protectedStore, clockMillis = { 50_000L })
+            val json = buildSingleJobBackup(
+                jobId = "bak-override",
+                status = "succeeded",
+                attemptCount = 1,
+                summaryDetail = "不应覆盖",
+            )
+            val rep = protManager.importBackup(protManager.inspectJson(json).parsed, "pc-acc")
+            assertEquals(1, rep.skippedProtectedJobs)
+            val current = protectedStore.listAllJobs(DEFAULT_ACCOUNT_ID).single()
+            assertEquals(protectedStatus, current.status)
+            assertEquals("受保护状态", current.summaryDetail)
+        }
     }
 
     private class FakeBackupStore(

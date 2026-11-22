@@ -479,4 +479,149 @@ class BackupCodecTest {
             BackupCodec.inspect(emptyAccounts)
         }
     }
+
+    @Test
+    fun resolveRawDailyRestoresDailySlotWithoutAndroidExtensions() {
+        assertEquals(
+            SendGuard.DAILY_SLOT_ID,
+            BackupCodec.resolveSlotIdFromBackup("raw:daily", "job-raw-1", null),
+        )
+        assertEquals(
+            SendGuard.DAILY_SLOT_ID,
+            BackupCodec.resolveSlotIdFromBackup("  raw:daily  ", "job-raw-2", "   "),
+        )
+        assertEquals(
+            "manual:import:job-raw-force",
+            BackupCodec.resolveSlotIdFromBackup("raw:daily:force:1700", "job-raw-force", null),
+        )
+
+        val now = 1_795_348_800_000L
+        val rawJson = BackupCodec.encode(
+            snapshot = BackupExportSnapshot(
+                account = AccountEntity(id = DEFAULT_ACCOUNT_ID),
+                templates = emptyList(),
+                poolItems = emptyList(),
+                targets = listOf(
+                    ContractTargetEntity(
+                        id = "tgt-1",
+                        nicknameSnapshot = "好友甲",
+                        conversationType = "friend",
+                    ),
+                ),
+                jobs = listOf(
+                    SendJobEntity(
+                        id = "job-no-tpl",
+                        targetId = "tgt-1",
+                        templateId = null,
+                        businessDate = "2026-11-22",
+                        messageSlotId = SendGuard.DAILY_SLOT_ID,
+                        status = JobStatus.SUCCEEDED,
+                    ),
+                ),
+                attempts = emptyList(),
+            ),
+            exportedAtEpochMs = now,
+        )
+        val rootWithoutExt = ExecJson.parseObject(rawJson).toMutableMap().apply {
+            remove("androidExtensions")
+        }
+        val strippedJson = ExecJson.encode(rootWithoutExt)
+        val inspection = BackupCodec.inspect(strippedJson)
+        val parsedJob = inspection.parsed.jobs.single()
+        assertEquals("raw:daily", parsedJob.messageSlotId)
+        assertEquals(
+            SendGuard.DAILY_SLOT_ID,
+            BackupCodec.resolveSlotIdFromBackup(
+                backupSlot = parsedJob.messageSlotId,
+                jobId = parsedJob.sourceId,
+                originalSlotFromExt = inspection.parsed.jobOriginalSlots[parsedJob.sourceId],
+            ),
+        )
+    }
+
+    @Test
+    fun inspectFallsBackToSnakeCaseWhenCamelCaseAliasIsNull() {
+        val expectedMillis = Instant.parse("2026-11-22T12:00:00Z").toEpochMilli()
+        val mixedJson = """
+            {
+              "app": "flame-contractor",
+              "schemaVersion": null,
+              "schema_version": 1,
+              "exportedAt": null,
+              "exported_at": "2026-11-22T12:00:00Z",
+              "androidExtensions": null,
+              "android_extensions": {
+                "account": {
+                  "jitterMaxMinutes": null,
+                  "jitter_max_minutes": 7,
+                  "autoScanEnabled": null,
+                  "auto_scan_enabled": false
+                },
+                "jobSummaryDetails": null,
+                "job_summary_details": {
+                  "job-1": "扩展摘要"
+                }
+              },
+              "data": {
+                "accounts": [
+                  {
+                    "id": "acc-1",
+                    "display_name": "桌面账号",
+                    "status": "pending_login",
+                    "timezone": "Asia/Shanghai",
+                    "send_window_start": "20:00",
+                    "send_window_end": "22:00"
+                  }
+                ],
+                "templates": [
+                  {
+                    "id": "tpl-pool",
+                    "name": "随机池",
+                    "type": "pool",
+                    "content": ""
+                  }
+                ],
+                "poolItems": null,
+                "pool_items": [
+                  {
+                    "id": "pi-1",
+                    "template_id": "tpl-pool",
+                    "content": "文案1"
+                  }
+                ],
+                "targets": [],
+                "jobs": [],
+                "attempts": []
+              }
+            }
+        """.trimIndent()
+
+        val inspection = BackupCodec.inspect(mixedJson)
+        assertEquals(1, inspection.parsed.schemaVersion)
+        assertEquals(expectedMillis, inspection.parsed.exportedAtEpochMs)
+        assertEquals(1, inspection.parsed.poolItems.size)
+        assertEquals("pi-1", inspection.parsed.poolItems.single().sourceId)
+        assertEquals(7, inspection.parsed.androidAccountExt?.jitterMaxMinutes)
+        assertEquals(false, inspection.parsed.androidAccountExt?.autoScanEnabled)
+        assertEquals("扩展摘要", inspection.parsed.jobSummaryDetails["job-1"])
+    }
+
+    @Test
+    fun inspectOversizedErrorReportsDecimalMbAndExactByteCount() {
+        val oneByteOver = "a".repeat(BackupCodec.MAX_BACKUP_BYTES + 1)
+        val oneByteEx = assertThrows(IllegalArgumentException::class.java) {
+            BackupCodec.inspect(oneByteOver)
+        }
+        val oneByteMsg = oneByteEx.message.orEmpty()
+        assertTrue(oneByteMsg.contains("20 MB"))
+        assertFalse(oneByteMsg.contains("实际 20 MB"))
+        assertTrue(oneByteMsg.contains("20.00 MB"))
+        assertTrue(oneByteMsg.contains((BackupCodec.MAX_BACKUP_BYTES + 1).toString()))
+
+        val twentyOneHalfMb = "a".repeat(21 * 1024 * 1024 + 512 * 1024)
+        val halfMbEx = assertThrows(IllegalArgumentException::class.java) {
+            BackupCodec.inspect(twentyOneHalfMb)
+        }
+        assertTrue(halfMbEx.message.orEmpty().contains("21.50 MB"))
+    }
 }

@@ -741,21 +741,27 @@ class BackupManager(
                     continue
                 }
 
-                // 防止本地已确认成功的日常任务被较旧备份中的待发送/重试态降级而引发同日重复发送
-                val keepLocalSucceededDaily =
-                    existing.status == JobStatus.SUCCEEDED &&
-                        item.resolvedSlot == SendGuard.DAILY_SLOT_ID &&
-                        item.normalizedStatus in DOWNGRADABLE_STATUSES_AGAINST_SUCCEEDED
-
-                val finalStatus = if (keepLocalSucceededDaily) existing.status else item.normalizedStatus
-                if (keepLocalSucceededDaily) {
-                    warnings += "本地 ${job.businessDate} 日常任务已成功，拒绝被较早状态（${item.normalizedStatus.wireValue}）降级"
-                }
-
-                val finalFailureClass = if (keepLocalSucceededDaily) {
-                    existing.failureClass
+                // 若通过 idMatch 命中了本地 daily 槽位任务，严禁被备份中的非 daily 槽位迁出或解除 daily 锁定
+                val preserveLocalDailySlot =
+                    existing.messageSlotId == SendGuard.DAILY_SLOT_ID &&
+                        item.resolvedSlot != SendGuard.DAILY_SLOT_ID
+                val finalSlotId = if (preserveLocalDailySlot) {
+                    SendGuard.DAILY_SLOT_ID
                 } else {
-                    resolveImportedFailureClass(job, finalStatus)
+                    item.resolvedSlot
+                }
+                val targetSlotKey = if (preserveLocalDailySlot) {
+                    JobSlotKey(
+                        accountId = targetAccountId,
+                        targetId = item.remappedTargetId,
+                        businessDate = job.businessDate,
+                        slotId = SendGuard.DAILY_SLOT_ID,
+                    )
+                } else {
+                    slotKey
+                }
+                if (preserveLocalDailySlot) {
+                    warnings += "本地 ${job.businessDate} 日常任务已锁定 daily 槽位，拒绝迁移至 ${item.resolvedSlot}"
                 }
 
                 val oldSlotKey = JobSlotKey(
@@ -764,33 +770,57 @@ class BackupManager(
                     businessDate = existing.businessDate,
                     slotId = existing.messageSlotId,
                 )
-                if (oldSlotKey != slotKey && jobBySlot.containsKey(slotKey)) {
+                if (oldSlotKey != targetSlotKey && jobBySlot.containsKey(targetSlotKey)) {
                     continue
                 }
 
-                val updated = existing.copy(
-                    templateId = item.remappedTemplateId ?: existing.templateId,
-                    messageSlotId = item.resolvedSlot,
-                    status = finalStatus,
-                    scheduledAt = job.scheduledAtEpochMs ?: existing.scheduledAt,
-                    attemptCount = if (keepLocalSucceededDaily) existing.attemptCount else job.attemptCount,
-                    failureClass = finalFailureClass,
-                    summaryDetail = parsed.jobSummaryDetails[job.sourceId]
-                        ?: job.summaryDetail
-                        ?: existing.summaryDetail,
-                    confirmedAt = if (keepLocalSucceededDaily) {
-                        existing.confirmedAt
+                // daily 槽位严格单调防降级：终态与已尝试状态绝不被较早状态覆写而重开当日发送
+                val keepLocalDailyState =
+                    finalSlotId == SendGuard.DAILY_SLOT_ID &&
+                        isDailyStatusDowngrade(existing.status, item.normalizedStatus)
+
+                val updated = if (keepLocalDailyState) {
+                    warnings += if (existing.status == JobStatus.SUCCEEDED) {
+                        "本地 ${job.businessDate} 日常任务已成功，拒绝被较早状态（${item.normalizedStatus.wireValue}）降级"
                     } else {
-                        job.confirmedAtEpochMs ?: existing.confirmedAt
-                    },
-                    updatedAt = nowMs,
-                )
+                        "本地 ${job.businessDate} 日常任务已处于 ${existing.status.wireValue} 状态，拒绝被较早状态（${item.normalizedStatus.wireValue}）降级"
+                    }
+                    existing.copy(
+                        messageSlotId = finalSlotId,
+                        updatedAt = nowMs,
+                    )
+                } else {
+                    val finalStatus = item.normalizedStatus
+                    val finalFailureClass = resolveImportedFailureClass(job, finalStatus)
+                        ?: if (finalStatus == existing.status) existing.failureClass else null
+                    val finalAttemptCount = if (
+                        finalSlotId == SendGuard.DAILY_SLOT_ID &&
+                        finalStatus == existing.status
+                    ) {
+                        maxOf(existing.attemptCount, job.attemptCount)
+                    } else {
+                        job.attemptCount
+                    }
+                    existing.copy(
+                        templateId = item.remappedTemplateId ?: existing.templateId,
+                        messageSlotId = finalSlotId,
+                        status = finalStatus,
+                        scheduledAt = job.scheduledAtEpochMs ?: existing.scheduledAt,
+                        attemptCount = finalAttemptCount,
+                        failureClass = finalFailureClass,
+                        summaryDetail = parsed.jobSummaryDetails[job.sourceId]
+                            ?: job.summaryDetail
+                            ?: existing.summaryDetail,
+                        confirmedAt = job.confirmedAtEpochMs ?: existing.confirmedAt,
+                        updatedAt = nowMs,
+                    )
+                }
                 store.upsertJob(updated)
                 jobById[updated.id] = updated
-                if (oldSlotKey != slotKey) {
+                if (oldSlotKey != targetSlotKey) {
                     jobBySlot.remove(oldSlotKey)
                 }
-                jobBySlot[slotKey] = updated
+                jobBySlot[targetSlotKey] = updated
                 jobIdRemap[job.sourceId] = updated.id
                 jobsUpdated++
                 continue
@@ -1122,6 +1152,28 @@ class BackupManager(
             else -> status
         }
 
+    private fun isDailyStatusDowngrade(
+        existingStatus: JobStatus,
+        incomingNormalizedStatus: JobStatus,
+    ): Boolean =
+        dailyMonotonicRank(incomingNormalizedStatus) < dailyMonotonicRank(existingStatus)
+
+    private fun dailyMonotonicRank(status: JobStatus): Int =
+        when (status) {
+            JobStatus.SCHEDULED -> 0
+            JobStatus.LEASED,
+            JobStatus.OPENING_CHAT,
+            -> 1
+            JobStatus.FAILED_RETRYABLE -> 2
+            JobStatus.CANCELLED -> 3
+            JobStatus.FAILED_TERMINAL -> 4
+            JobStatus.SUCCEEDED -> 5
+            JobStatus.UNKNOWN_REQUIRES_REVIEW,
+            JobStatus.SENDING,
+            JobStatus.CONFIRMING,
+            -> 6
+        }
+
     private fun dailyPriorityRank(status: JobStatus): Int =
         when (status) {
             JobStatus.UNKNOWN_REQUIRES_REVIEW -> 0
@@ -1197,11 +1249,6 @@ class BackupManager(
             JobStatus.UNKNOWN_REQUIRES_REVIEW,
             JobStatus.SENDING,
             JobStatus.CONFIRMING,
-        )
-
-        private val DOWNGRADABLE_STATUSES_AGAINST_SUCCEEDED: Set<JobStatus> = setOf(
-            JobStatus.SCHEDULED,
-            JobStatus.FAILED_RETRYABLE,
         )
     }
 }
