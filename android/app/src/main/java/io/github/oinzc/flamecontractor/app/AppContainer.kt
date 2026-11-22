@@ -1,6 +1,8 @@
 package io.github.oinzc.flamecontractor.app
 
 import android.content.Context
+import io.github.oinzc.flamecontractor.core.backup.BackupManager
+import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
@@ -26,6 +28,10 @@ class AppContainer(context: Context) {
     val barkNotifier: BarkNotifier = BarkNotifier(baseUrlProvider = { secretStore.readBarkUrl() })
     val localNotifier: LocalNotifier = LocalNotifier(appContext)
     val scheduleCoordinator: ScheduleCoordinator = ScheduleCoordinator(appContext, database)
+    val backupManager: BackupManager = BackupManager(
+        store = RoomBackupStore(database),
+        onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
+    )
     val webExecutor: DouyinWebExecutor = DouyinWebExecutor(appContext, selectorBundleStore)
 
     val sendGuard: SendGuard = SendGuard

@@ -1,5 +1,10 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
+import io.github.oinzc.flamecontractor.core.backup.BackupCodec
+import io.github.oinzc.flamecontractor.core.backup.BackupImportReport
+import io.github.oinzc.flamecontractor.core.backup.BackupInspection
+import io.github.oinzc.flamecontractor.core.backup.BackupManager
+import io.github.oinzc.flamecontractor.core.backup.BackupStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.BarkProbeResult
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
@@ -10,11 +15,17 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
+import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
+import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
+import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
+import io.github.oinzc.flamecontractor.execution.ExecJson
 import io.github.oinzc.flamecontractor.execution.StructureProbeItem
 import io.github.oinzc.flamecontractor.execution.StructureProbeReport
 import java.io.File
+import java.io.InputStream
 import java.time.Instant
 import javax.crypto.KeyGenerator
 import kotlinx.coroutines.CoroutineScope
@@ -424,6 +435,341 @@ class SettingsViewModelTest {
         }
     }
 
+    @Test
+    fun validatesAutoScanConfigAndReschedulesOnValidSave() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val initialAccount = AccountEntity(
+            id = DEFAULT_ACCOUNT_ID,
+            status = AccountStatus.HEALTHY,
+            enabled = true,
+            autoScanEnabled = true,
+            autoScanIntervalHours = 24,
+        )
+        val latestScan = ScanRunEntity(
+            id = "auto-scan-1",
+            accountId = DEFAULT_ACCOUNT_ID,
+            source = "automatic",
+            status = ScanRunStatus.COMPLETED,
+            discoveredCount = 8,
+            sparkCount = 6,
+            startedAt = 1_763_739_000_000L,
+            finishedAt = 1_763_739_015_000L,
+            alertSummary = "发现 1 位好友火花告急",
+        )
+        val repo = FakeSettingsAccountRepository(initialAccount, initialAutoScan = latestScan)
+        val scheduler = FakeScheduleGateway(nextAutoScanAt = Instant.ofEpochMilli(1_763_782_200_000L))
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = createViewModel(
+                vmScope = vmScope,
+                dispatcher = dispatcher,
+                accountRepo = repo,
+                scheduleGateway = scheduler,
+            )
+            advanceUntilIdle()
+
+            assertTrue(vm.uiState.value.autoScanEnabledInput)
+            assertEquals("24", vm.uiState.value.autoScanIntervalHoursInput)
+            assertEquals("auto-scan-1", vm.uiState.value.latestAutoScanRun?.id)
+            assertNotNull(vm.uiState.value.nextAutoScanTimeText)
+
+            // 1. 0 小时或 169 小时或非数字必须拦截且不写入、不调用 rescheduleAll
+            for (badValue in listOf("0", "169", "-5", "abc", "")) {
+                vm.onAutoScanIntervalHoursChanged(badValue)
+                vm.saveAutoScanConfig()
+                advanceUntilIdle()
+
+                assertNotNull("Expected error for [$badValue]", vm.uiState.value.autoScanError)
+                assertEquals(0, repo.updateCount)
+                assertEquals(0, scheduler.rescheduleCount)
+                assertEquals(24, repo.currentAccount.autoScanIntervalHours)
+            }
+
+            // 2. 快捷芯片选择 12h + 关闭自动同步 -> 合法保存并触发 rescheduleAll
+            vm.selectAutoScanPresetHours(12)
+            assertEquals("12", vm.uiState.value.autoScanIntervalHoursInput)
+            assertNull(vm.uiState.value.autoScanError)
+            vm.onAutoScanEnabledChanged(false)
+            assertTrue(vm.uiState.value.hasUnsavedAutoScanChanges)
+
+            scheduler.nextAutoScanAt = null
+            vm.saveAutoScanConfig()
+            advanceUntilIdle()
+
+            assertNull(vm.uiState.value.autoScanError)
+            assertNotNull(vm.uiState.value.autoScanMessage)
+            assertFalse(vm.uiState.value.hasUnsavedAutoScanChanges)
+            assertEquals(1, repo.updateCount)
+            assertEquals(1, scheduler.rescheduleCount)
+            assertFalse(repo.currentAccount.autoScanEnabled)
+            assertEquals(12, repo.currentAccount.autoScanIntervalHours)
+            assertNull(vm.uiState.value.nextAutoScanTimeText)
+
+            // 3. 重新开启并保存 48h，刷新下次自动同步时间
+            scheduler.nextAutoScanAt = Instant.ofEpochMilli(1_763_820_000_000L)
+            vm.onAutoScanEnabledChanged(true)
+            vm.selectAutoScanPresetHours(48)
+            vm.saveAutoScanConfig()
+            advanceUntilIdle()
+
+            assertNull(vm.uiState.value.autoScanError)
+            assertEquals(2, repo.updateCount)
+            assertEquals(2, scheduler.rescheduleCount)
+            assertTrue(repo.currentAccount.autoScanEnabled)
+            assertEquals(48, repo.currentAccount.autoScanIntervalHours)
+            assertNotNull(vm.uiState.value.nextAutoScanTimeText)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun exportsInspectsMultiAccountBackupAndImportsWithOptions() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val store = FakeSettingsBackupStore(
+            account = AccountEntity(
+                id = DEFAULT_ACCOUNT_ID,
+                displayName = "当前本地号",
+                status = AccountStatus.HEALTHY,
+                selfUid = "u_local_secret",
+            ),
+        )
+        var backupScheduleRescheduleCount = 0
+        val backupManager = BackupManager(
+            store = store,
+            onScheduleChanged = { backupScheduleRescheduleCount++ },
+            clockMillis = { 1_763_740_500_000L },
+        )
+        val backupGateway = AndroidBackupGateway(backupManager)
+        val repo = FakeSettingsAccountRepository(store.account)
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = createViewModel(
+                vmScope = vmScope,
+                dispatcher = dispatcher,
+                accountRepo = repo,
+                backupGateway = backupGateway,
+            )
+            advanceUntilIdle()
+
+            // 1. 导出 JSON 返回合法结构
+            val exportedJson = vm.prepareExportBackupJson()
+            val exportedObj = ExecJson.parseObject(exportedJson)
+            assertEquals("flame-contractor", exportedObj["app"])
+            assertEquals(1, (exportedObj["schemaVersion"] as Number).toInt())
+
+            // 2. 非法 JSON 报错且不弹窗
+            vm.inspectBackupFile("{not-valid-json")
+            advanceUntilIdle()
+            assertNotNull(vm.uiState.value.backupError)
+            assertFalse(vm.uiState.value.showBackupPreviewDialog)
+
+            // 3. 含 2 个源账号 + 1 个 image 模板的备份打开预览弹窗并清除旧错误
+            val multiAccountBackupJson = """
+                {
+                  "app": "flame-contractor",
+                  "schemaVersion": 1,
+                  "exportedAt": "2026-11-22T12:00:00Z",
+                  "androidExtensions": {
+                    "account": {
+                      "jitterMaxMinutes": 8,
+                      "cooldownMinSec": 4,
+                      "cooldownMaxSec": 10,
+                      "autoScanEnabled": true,
+                      "autoScanIntervalHours": 12
+                    }
+                  },
+                  "data": {
+                    "accounts": [
+                      {
+                        "id": "acc-1",
+                        "display_name": "桌面一号",
+                        "status": "pending_login",
+                        "enabled": true,
+                        "timezone": "Asia/Shanghai",
+                        "send_window_start": "19:00",
+                        "send_window_end": "21:00"
+                      },
+                      {
+                        "id": "acc-2",
+                        "display_name": "桌面二号",
+                        "status": "pending_login",
+                        "enabled": true,
+                        "timezone": "Asia/Shanghai",
+                        "send_window_start": "20:30",
+                        "send_window_end": "22:30"
+                      }
+                    ],
+                    "templates": [
+                      {
+                        "id": "tpl-img",
+                        "name": "图片模板",
+                        "type": "image",
+                        "content": ""
+                      },
+                      {
+                        "id": "tpl-txt",
+                        "name": "问候文本",
+                        "type": "text",
+                        "content": "续火打卡"
+                      }
+                    ],
+                    "poolItems": [],
+                    "targets": [
+                      {
+                        "id": "t-2",
+                        "account_id": "acc-2",
+                        "nickname_snapshot": "二号好友A",
+                        "conversation_type": "user",
+                        "template_id": "tpl-txt",
+                        "enabled": true,
+                        "streak_days": 7
+                      }
+                    ],
+                    "jobs": [
+                      {
+                        "id": "job-2",
+                        "account_id": "acc-2",
+                        "target_id": "t-2",
+                        "template_id": "tpl-txt",
+                        "business_date": "2026-11-22",
+                        "message_slot_id": "tpl-txt:v1",
+                        "status": "succeeded"
+                      }
+                    ],
+                    "attempts": []
+                  }
+                }
+            """.trimIndent()
+
+            vm.inspectBackupFile(multiAccountBackupJson)
+            advanceUntilIdle()
+
+            val previewState = vm.uiState.value
+            assertNull(previewState.backupError)
+            assertTrue(previewState.showBackupPreviewDialog)
+            assertEquals(2, previewState.backupInspection?.accounts?.size)
+            assertEquals(1, previewState.backupInspection?.skippedImageTemplateCount)
+            assertEquals("acc-1", previewState.selectedBackupAccountId)
+            assertTrue(previewState.includeBackupHistory)
+
+            // 切换源账号为 acc-2，并取消勾选 includeHistory
+            vm.onSelectBackupAccount("acc-2")
+            vm.onIncludeBackupHistoryChanged(false)
+            assertEquals("acc-2", vm.uiState.value.selectedBackupAccountId)
+            assertFalse(vm.uiState.value.includeBackupHistory)
+
+            // 确认导入
+            vm.confirmImportBackup()
+            advanceUntilIdle()
+
+            val afterImport = vm.uiState.value
+            assertFalse(afterImport.showBackupPreviewDialog)
+            assertNull(afterImport.backupError)
+            assertNotNull(afterImport.backupMessage)
+            val report = afterImport.lastBackupImportReport
+            assertNotNull(report)
+            assertEquals("桌面二号", report!!.sourceAccountName)
+            assertEquals(1, report.templatesInserted)
+            assertEquals(1, report.skippedImageTemplates)
+            assertEquals(1, report.targetsInserted)
+            // includeHistory = false 时不应导入历史任务
+            assertEquals(0, report.jobsInserted)
+            assertEquals(1, backupScheduleRescheduleCount)
+            // 本地登录态不可被 pending_login 覆盖
+            assertEquals(AccountStatus.HEALTHY, store.account.status)
+            assertEquals("u_local_secret", store.account.selfUid)
+            // 重新打开预览弹窗后再取消关闭，确认预览状态被清理
+            vm.inspectBackupFile(multiAccountBackupJson)
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.showBackupPreviewDialog)
+            vm.dismissBackupPreviewDialog()
+            assertFalse(vm.uiState.value.showBackupPreviewDialog)
+            assertNull(vm.uiState.value.backupInspection)
+            assertNull(vm.uiState.value.selectedBackupAccountId)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun readUtf8StreamWithLimitEnforces20MbPlus1Cap() {
+        val exactLimitStream = repeatingByteStream(totalBytes = BackupCodec.MAX_BACKUP_BYTES, byteValue = 'a'.code)
+        val exactResult = readUtf8StreamWithLimit(exactLimitStream)
+        assertEquals(BackupCodec.MAX_BACKUP_BYTES, exactResult.length)
+
+        val overLimitStream = repeatingByteStream(totalBytes = BackupCodec.MAX_BACKUP_BYTES + 1, byteValue = 'b'.code)
+        var rejected = false
+        try {
+            readUtf8StreamWithLimit(overLimitStream)
+        } catch (expected: IllegalArgumentException) {
+            rejected = true
+        }
+        assertTrue("Expected stream exceeding 20 MB + 1 bytes to be rejected", rejected)
+    }
+
+    private fun repeatingByteStream(totalBytes: Int, byteValue: Int): InputStream =
+        object : InputStream() {
+            private var remaining = totalBytes
+            override fun read(): Int {
+                if (remaining <= 0) return -1
+                remaining--
+                return byteValue
+            }
+
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (remaining <= 0) return -1
+                val count = minOf(len, remaining)
+                b.fill(byteValue.toByte(), off, off + count)
+                remaining -= count
+                return count
+            }
+        }
+
+    @Test
+    fun diagnosticsIncludesLatestAutoScanWithoutLeakingAlertSummary() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val secretAlert = "绝密好友昵称(9天 -> 1天后消失)"
+        val repo = FakeSettingsAccountRepository(
+            initialAccount = AccountEntity(
+                id = DEFAULT_ACCOUNT_ID,
+                status = AccountStatus.HEALTHY,
+                autoScanEnabled = true,
+                autoScanIntervalHours = 12,
+            ),
+            initialAutoScan = ScanRunEntity(
+                id = "auto-run-diag",
+                source = "automatic",
+                status = ScanRunStatus.COMPLETED,
+                startedAt = 1_763_739_000_000L,
+                finishedAt = 1_763_739_005_000L,
+                alertSummary = secretAlert,
+            ),
+        )
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = createViewModel(
+                vmScope = vmScope,
+                dispatcher = dispatcher,
+                accountRepo = repo,
+            )
+            advanceUntilIdle()
+
+            vm.generateDiagnosticsReport()
+            advanceUntilIdle()
+
+            val report = vm.uiState.value.diagnosticsReport!!
+            assertTrue(report.autoScanEnabled)
+            assertEquals(12, report.autoScanIntervalHours)
+            assertEquals("completed", report.latestAutoScanStatus)
+            assertNotNull(report.latestAutoScanAtIso)
+            assertFalse(report.textReport.contains("绝密好友昵称"))
+            assertFalse(report.jsonReport.contains("绝密好友昵称"))
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
     private fun createRealSelectorStore(subDir: String): SelectorBundleStore {
         val assetCandidates = listOf(
             File("src/main/assets/selectors_bundle.json"),
@@ -449,6 +795,7 @@ class SettingsViewModelTest {
         probeGateway: FakeProbeGateway = FakeProbeGateway(),
         survivalGateway: SettingsSurvivalGateway = FakeSurvivalGateway(),
         envProvider: SettingsDiagnosticsEnvProvider = FakeDiagnosticsEnvProvider(),
+        backupGateway: SettingsBackupGateway = FakeBackupGateway(),
     ): SettingsViewModel = SettingsViewModel(
         accountRepo = accountRepo,
         scheduleGateway = scheduleGateway,
@@ -457,6 +804,7 @@ class SettingsViewModelTest {
         probeGateway = probeGateway,
         survivalGateway = survivalGateway,
         envProvider = envProvider,
+        backupGateway = backupGateway,
         ioDispatcher = dispatcher,
         clockMillis = { 1_763_740_500_000L },
         coroutineScope = vmScope,
@@ -464,8 +812,10 @@ class SettingsViewModelTest {
 
     private class FakeSettingsAccountRepository(
         initialAccount: AccountEntity = AccountEntity(id = DEFAULT_ACCOUNT_ID, status = AccountStatus.HEALTHY),
+        initialAutoScan: ScanRunEntity? = null,
     ) : SettingsAccountRepository {
         private val accountFlow = MutableStateFlow<AccountEntity?>(initialAccount)
+        private val autoScanFlow = MutableStateFlow<ScanRunEntity?>(initialAutoScan)
         var currentAccount: AccountEntity = initialAccount
             private set
         var updateCount: Int = 0
@@ -485,15 +835,73 @@ class SettingsViewModelTest {
         override suspend fun listActiveTargets(accountId: String): List<ContractTargetEntity> = emptyList()
         override suspend fun listJobsForDate(accountId: String, businessDate: String): List<SendJobEntity> = emptyList()
         override suspend fun listRecentAttempts(accountId: String, limit: Int): List<SendAttemptEntity> = emptyList()
+        override suspend fun getLatestAutoScanRun(accountId: String): ScanRunEntity? = autoScanFlow.value
+        override fun observeLatestAutoScanRun(accountId: String): Flow<ScanRunEntity?> = autoScanFlow
     }
 
-    private class FakeScheduleGateway : SettingsScheduleGateway {
+    private class FakeScheduleGateway(
+        var nextAutoScanAt: Instant? = null,
+    ) : SettingsScheduleGateway {
         var rescheduleCount: Int = 0
             private set
 
         override suspend fun rescheduleAll(): Instant {
             rescheduleCount += 1
             return Instant.ofEpochMilli(1_763_745_600_000L)
+        }
+
+        override suspend fun inspectNextAutoScanAt(): Instant? = nextAutoScanAt
+    }
+
+    private class FakeBackupGateway : SettingsBackupGateway {
+        override suspend fun exportBackupJson(): String = "{}"
+        override fun inspectBackup(rawJson: String): BackupInspection = BackupCodec.inspect(rawJson)
+        override suspend fun importBackup(
+            rawJson: String,
+            selectedSourceAccountId: String,
+            includeHistory: Boolean,
+        ): BackupImportReport = BackupImportReport(sourceAccountName = selectedSourceAccountId)
+    }
+
+    private class FakeSettingsBackupStore(
+        var account: AccountEntity,
+    ) : BackupStore {
+        private val templates = linkedMapOf<String, MessageTemplateEntity>()
+        private val poolItems = linkedMapOf<String, TemplatePoolItemEntity>()
+        private val targets = linkedMapOf<String, ContractTargetEntity>()
+        private val jobs = linkedMapOf<String, SendJobEntity>()
+        private val attempts = linkedMapOf<String, SendAttemptEntity>()
+
+        override suspend fun <T> runInTransaction(block: suspend () -> T): T = block()
+        override suspend fun getAccount(accountId: String): AccountEntity? =
+            if (account.id == accountId) account else null
+        override suspend fun upsertAccount(account: AccountEntity) {
+            this.account = account
+        }
+        override suspend fun listTemplates(accountId: String): List<MessageTemplateEntity> =
+            templates.values.filter { it.accountId == accountId }
+        override suspend fun upsertTemplate(template: MessageTemplateEntity) {
+            templates[template.id] = template
+        }
+        override suspend fun listPoolItems(templateId: String): List<TemplatePoolItemEntity> =
+            poolItems.values.filter { it.templateId == templateId }
+        override suspend fun upsertPoolItem(item: TemplatePoolItemEntity) {
+            poolItems[item.id] = item
+        }
+        override suspend fun listAllTargetsIncludingDeleted(accountId: String): List<ContractTargetEntity> =
+            targets.values.filter { it.accountId == accountId }
+        override suspend fun upsertTarget(target: ContractTargetEntity) {
+            targets[target.id] = target
+        }
+        override suspend fun listAllJobs(accountId: String): List<SendJobEntity> =
+            jobs.values.filter { it.accountId == accountId }
+        override suspend fun upsertJob(job: SendJobEntity) {
+            jobs[job.id] = job
+        }
+        override suspend fun listAllAttemptsForAccount(accountId: String): List<SendAttemptEntity> =
+            attempts.values.toList()
+        override suspend fun upsertAttempt(attempt: SendAttemptEntity) {
+            attempts[attempt.id] = attempt
         }
     }
 

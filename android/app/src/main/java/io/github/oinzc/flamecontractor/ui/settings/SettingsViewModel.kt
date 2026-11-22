@@ -7,6 +7,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.webkit.WebViewCompat
+import io.github.oinzc.flamecontractor.core.backup.BackupCodec
+import io.github.oinzc.flamecontractor.core.backup.BackupImportReport
+import io.github.oinzc.flamecontractor.core.backup.BackupInspection
+import io.github.oinzc.flamecontractor.core.backup.BackupManager
+import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.BarkProbeResult
 import io.github.oinzc.flamecontractor.core.notify.BarkUrlNormalizer
@@ -19,6 +24,7 @@ import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
+import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
@@ -27,6 +33,8 @@ import io.github.oinzc.flamecontractor.execution.ExecutionRuntimeBus
 import io.github.oinzc.flamecontractor.execution.StructureProbeReport
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZonedDateTime
@@ -41,6 +49,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -54,10 +63,23 @@ interface SettingsAccountRepository {
     suspend fun listActiveTargets(accountId: String = DEFAULT_ACCOUNT_ID): List<ContractTargetEntity>
     suspend fun listJobsForDate(accountId: String, businessDate: String): List<SendJobEntity>
     suspend fun listRecentAttempts(accountId: String, limit: Int = 50): List<SendAttemptEntity>
+    suspend fun getLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity? = null
+    fun observeLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): Flow<ScanRunEntity?> = flowOf(null)
 }
 
 interface SettingsScheduleGateway {
     suspend fun rescheduleAll(): Instant?
+    suspend fun inspectNextAutoScanAt(): Instant? = null
+}
+
+interface SettingsBackupGateway {
+    suspend fun exportBackupJson(): String
+    fun inspectBackup(rawJson: String): BackupInspection
+    suspend fun importBackup(
+        rawJson: String,
+        selectedSourceAccountId: String,
+        includeHistory: Boolean,
+    ): BackupImportReport
 }
 
 interface SettingsSelectorGateway {
@@ -119,6 +141,26 @@ data class SettingsUiState(
     val scheduleMessage: String? = null,
     val nextScheduledWakeText: String? = null,
 
+    val autoScanEnabledInput: Boolean = true,
+    val autoScanIntervalHoursInput: String = "24",
+    val hasUnsavedAutoScanChanges: Boolean = false,
+    val isSavingAutoScan: Boolean = false,
+    val autoScanError: String? = null,
+    val autoScanMessage: String? = null,
+    val latestAutoScanRun: ScanRunEntity? = null,
+    val nextAutoScanTimeText: String? = null,
+
+    val isExportingBackup: Boolean = false,
+    val isInspectingBackup: Boolean = false,
+    val isImportingBackup: Boolean = false,
+    val showBackupPreviewDialog: Boolean = false,
+    val backupInspection: BackupInspection? = null,
+    val selectedBackupAccountId: String? = null,
+    val includeBackupHistory: Boolean = true,
+    val lastBackupImportReport: BackupImportReport? = null,
+    val backupError: String? = null,
+    val backupMessage: String? = null,
+
     val barkConfigured: Boolean = false,
     val maskedBarkUrl: String? = null,
     val barkInputText: String = "",
@@ -166,6 +208,7 @@ class SettingsViewModel(
     private val probeGateway: SettingsProbeGateway,
     private val survivalGateway: SettingsSurvivalGateway,
     private val envProvider: SettingsDiagnosticsEnvProvider,
+    private val backupGateway: SettingsBackupGateway,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
     private val accountId: String = DEFAULT_ACCOUNT_ID,
@@ -178,6 +221,8 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     private var scheduleFormDirty = false
+    private var autoScanFormDirty = false
+    private var pendingBackupRawJson: String? = null
     private var initialProbeSeen = false
     private var initialProbeReportRef: StructureProbeReport? = null
     private var awaitingProbeResult = false
@@ -186,6 +231,7 @@ class SettingsViewModel(
     init {
         loadInitialSnapshot()
         observeAccountChanges()
+        observeLatestAutoScanRun()
         observeProbeStream()
     }
 
@@ -230,12 +276,19 @@ class SettingsViewModel(
         scope.launch {
             accountRepo.observeAccount(accountId).collect { account ->
                 if (account == null) return@collect
+                val nextAutoScan = withContext(ioDispatcher) {
+                    scheduleGateway.inspectNextAutoScanAt()
+                }
+                val nextAutoScanText = nextAutoScan?.let { formatInstantHhmm(it, account.timezone) }
                 _uiState.update { state ->
+                    var nextState = state.copy(
+                        isLoading = false,
+                        accountStatus = account.status,
+                        accountTimezone = account.timezone,
+                        nextAutoScanTimeText = nextAutoScanText,
+                    )
                     if (!scheduleFormDirty) {
-                        state.copy(
-                            isLoading = false,
-                            accountStatus = account.status,
-                            accountTimezone = account.timezone,
+                        nextState = nextState.copy(
                             enabledInput = account.enabled,
                             sendWindowStartInput = account.sendWindowStart,
                             sendWindowEndInput = account.sendWindowEnd,
@@ -245,13 +298,31 @@ class SettingsViewModel(
                             cooldownMaxSecInput = account.cooldownMaxSec.toString(),
                             hasUnsavedScheduleChanges = false,
                         )
-                    } else {
-                        state.copy(
-                            isLoading = false,
-                            accountStatus = account.status,
-                            accountTimezone = account.timezone,
+                    }
+                    if (!autoScanFormDirty) {
+                        nextState = nextState.copy(
+                            autoScanEnabledInput = account.autoScanEnabled,
+                            autoScanIntervalHoursInput = account.autoScanIntervalHours.toString(),
+                            hasUnsavedAutoScanChanges = false,
                         )
                     }
+                    nextState
+                }
+            }
+        }
+    }
+
+    private fun observeLatestAutoScanRun() {
+        scope.launch {
+            accountRepo.observeLatestAutoScanRun(accountId).collect { scanRun ->
+                val nextAutoScan = withContext(ioDispatcher) {
+                    scheduleGateway.inspectNextAutoScanAt()
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        latestAutoScanRun = scanRun,
+                        nextAutoScanTimeText = nextAutoScan?.let { formatInstantHhmm(it, state.accountTimezone) },
+                    )
                 }
             }
         }
@@ -460,7 +531,7 @@ class SettingsViewModel(
         _uiState.update { it.copy(isSavingSchedule = true, scheduleError = null, scheduleMessage = null) }
         scope.launch {
             try {
-                val (updated, nextWake) = withContext(ioDispatcher) {
+                val (updated, nextWake, nextAutoScan) = withContext(ioDispatcher) {
                     val existing = accountRepo.getAccount(accountId) ?: AccountEntity(id = accountId)
                     val nextAccount = existing.copy(
                         enabled = current.enabledInput,
@@ -474,11 +545,13 @@ class SettingsViewModel(
                     )
                     accountRepo.updateAccount(nextAccount)
                     val wakeAt = scheduleGateway.rescheduleAll()
-                    nextAccount to wakeAt
+                    val autoScanAt = scheduleGateway.inspectNextAutoScanAt()
+                    Triple(nextAccount, wakeAt, autoScanAt)
                 }
 
                 scheduleFormDirty = false
                 val wakeText = nextWake?.let { formatInstantHhmm(it, updated.timezone) }
+                val nextAutoScanText = nextAutoScan?.let { formatInstantHhmm(it, updated.timezone) }
                 val message = when {
                     !updated.enabled -> "已保存：每日自动定时总开关已关闭"
                     wakeText != null -> "已保存并重算定时计划，下次自动唤醒：$wakeText"
@@ -500,6 +573,7 @@ class SettingsViewModel(
                         scheduleError = null,
                         scheduleMessage = message,
                         nextScheduledWakeText = wakeText,
+                        nextAutoScanTimeText = nextAutoScanText,
                     )
                 }
             } catch (ce: CancellationException) {
@@ -512,6 +586,353 @@ class SettingsViewModel(
                     )
                 }
             }
+        }
+    }
+
+    fun onAutoScanEnabledChanged(enabled: Boolean) {
+        autoScanFormDirty = true
+        _uiState.update {
+            it.copy(
+                autoScanEnabledInput = enabled,
+                hasUnsavedAutoScanChanges = true,
+                autoScanError = null,
+                autoScanMessage = null,
+            )
+        }
+    }
+
+    fun onAutoScanIntervalHoursChanged(value: String) {
+        autoScanFormDirty = true
+        _uiState.update {
+            it.copy(
+                autoScanIntervalHoursInput = value,
+                hasUnsavedAutoScanChanges = true,
+                autoScanError = null,
+                autoScanMessage = null,
+            )
+        }
+    }
+
+    fun selectAutoScanPresetHours(hours: Int) {
+        autoScanFormDirty = true
+        _uiState.update {
+            it.copy(
+                autoScanIntervalHoursInput = hours.coerceIn(
+                    MIN_AUTO_SCAN_INTERVAL_HOURS,
+                    MAX_AUTO_SCAN_INTERVAL_HOURS,
+                ).toString(),
+                hasUnsavedAutoScanChanges = true,
+                autoScanError = null,
+                autoScanMessage = null,
+            )
+        }
+    }
+
+    fun resetAutoScanDraftFromSaved() {
+        autoScanFormDirty = false
+        scope.launch {
+            val saved = withContext(ioDispatcher) { accountRepo.getAccount(accountId) } ?: return@launch
+            _uiState.update {
+                it.copy(
+                    autoScanEnabledInput = saved.autoScanEnabled,
+                    autoScanIntervalHoursInput = saved.autoScanIntervalHours.toString(),
+                    hasUnsavedAutoScanChanges = false,
+                    autoScanError = null,
+                    autoScanMessage = null,
+                )
+            }
+        }
+    }
+
+    fun saveAutoScanConfig() {
+        val current = _uiState.value
+        val intervalHours = current.autoScanIntervalHoursInput.trim().toIntOrNull()
+        if (intervalHours == null || intervalHours !in MIN_AUTO_SCAN_INTERVAL_HOURS..MAX_AUTO_SCAN_INTERVAL_HOURS) {
+            _uiState.update {
+                it.copy(
+                    autoScanError = "自动同步周期须为 $MIN_AUTO_SCAN_INTERVAL_HOURS 至 $MAX_AUTO_SCAN_INTERVAL_HOURS 小时之间的整数",
+                    autoScanMessage = null,
+                )
+            }
+            return
+        }
+
+        _uiState.update { it.copy(isSavingAutoScan = true, autoScanError = null, autoScanMessage = null) }
+        scope.launch {
+            try {
+                val (updated, nextAutoScan) = withContext(ioDispatcher) {
+                    val existing = accountRepo.getAccount(accountId) ?: AccountEntity(id = accountId)
+                    val nextAccount = existing.copy(
+                        autoScanEnabled = current.autoScanEnabledInput,
+                        autoScanIntervalHours = intervalHours,
+                        updatedAt = clockMillis(),
+                    )
+                    accountRepo.updateAccount(nextAccount)
+                    scheduleGateway.rescheduleAll()
+                    val nextScanAt = scheduleGateway.inspectNextAutoScanAt()
+                    nextAccount to nextScanAt
+                }
+
+                autoScanFormDirty = false
+                val nextScanText = nextAutoScan?.let { formatInstantHhmm(it, updated.timezone) }
+                val message = when {
+                    !updated.autoScanEnabled -> "已保存：官方火花自动同步已关闭"
+                    nextScanText != null -> "已保存自动同步配置（每 ${updated.autoScanIntervalHours} 小时），下次预计同步：$nextScanText"
+                    else -> "已保存官方火花自动同步配置（每 ${updated.autoScanIntervalHours} 小时）"
+                }
+                _uiState.update {
+                    it.copy(
+                        isSavingAutoScan = false,
+                        autoScanEnabledInput = updated.autoScanEnabled,
+                        autoScanIntervalHoursInput = updated.autoScanIntervalHours.toString(),
+                        hasUnsavedAutoScanChanges = false,
+                        autoScanError = null,
+                        autoScanMessage = message,
+                        nextAutoScanTimeText = nextScanText,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (exc: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isSavingAutoScan = false,
+                        autoScanError = "保存自动同步配置失败（${exc.javaClass.simpleName}）",
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun prepareExportBackupJson(): String {
+        _uiState.update {
+            it.copy(
+                isExportingBackup = true,
+                backupError = null,
+                backupMessage = null,
+            )
+        }
+        return try {
+            val json = withContext(ioDispatcher) {
+                backupGateway.exportBackupJson()
+            }
+            _uiState.update { it.copy(isExportingBackup = false) }
+            json
+        } catch (ce: CancellationException) {
+            _uiState.update { it.copy(isExportingBackup = false) }
+            throw ce
+        } catch (exc: Throwable) {
+            _uiState.update {
+                it.copy(
+                    isExportingBackup = false,
+                    backupError = "导出备份失败：${exc.message ?: exc.javaClass.simpleName}",
+                )
+            }
+            throw exc
+        }
+    }
+
+    fun onBackupExportCompleted() {
+        _uiState.update {
+            it.copy(
+                isExportingBackup = false,
+                backupError = null,
+                backupMessage = "已导出脱敏 JSON 备份文件（不包含抖音登录态与 Bark 密钥）",
+            )
+        }
+    }
+
+    fun onBackupExportFailed(message: String) {
+        _uiState.update {
+            it.copy(
+                isExportingBackup = false,
+                backupError = message,
+                backupMessage = null,
+            )
+        }
+    }
+
+    fun onBackupReadFailed(message: String) {
+        pendingBackupRawJson = null
+        _uiState.update {
+            it.copy(
+                isInspectingBackup = false,
+                showBackupPreviewDialog = false,
+                backupInspection = null,
+                selectedBackupAccountId = null,
+                backupError = message,
+                backupMessage = null,
+            )
+        }
+    }
+
+    fun inspectBackupFile(rawJson: String) {
+        _uiState.update {
+            it.copy(
+                isInspectingBackup = true,
+                backupError = null,
+                backupMessage = null,
+            )
+        }
+        scope.launch {
+            try {
+                val inspection = withContext(ioDispatcher) {
+                    backupGateway.inspectBackup(rawJson)
+                }
+                pendingBackupRawJson = rawJson
+                _uiState.update {
+                    it.copy(
+                        isInspectingBackup = false,
+                        showBackupPreviewDialog = true,
+                        backupInspection = inspection,
+                        selectedBackupAccountId = inspection.accounts.firstOrNull()?.sourceId,
+                        includeBackupHistory = true,
+                        backupError = null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (exc: Throwable) {
+                pendingBackupRawJson = null
+                _uiState.update {
+                    it.copy(
+                        isInspectingBackup = false,
+                        showBackupPreviewDialog = false,
+                        backupInspection = null,
+                        selectedBackupAccountId = null,
+                        backupError = exc.message ?: "解析备份文件失败（${exc.javaClass.simpleName}）",
+                    )
+                }
+            }
+        }
+    }
+
+    fun onSelectBackupAccount(sourceAccountId: String) {
+        _uiState.update { it.copy(selectedBackupAccountId = sourceAccountId, backupError = null) }
+    }
+
+    fun onIncludeBackupHistoryChanged(include: Boolean) {
+        _uiState.update { it.copy(includeBackupHistory = include) }
+    }
+
+    fun dismissBackupPreviewDialog() {
+        pendingBackupRawJson = null
+        _uiState.update {
+            it.copy(
+                showBackupPreviewDialog = false,
+                backupInspection = null,
+                selectedBackupAccountId = null,
+            )
+        }
+    }
+
+    fun confirmImportBackup() {
+        val rawJson = pendingBackupRawJson
+        val stateSnapshot = _uiState.value
+        val selectedAccountId = stateSnapshot.selectedBackupAccountId
+        if (rawJson.isNullOrEmpty() || selectedAccountId.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    showBackupPreviewDialog = false,
+                    backupError = "请先选择有效的备份文件与源账号",
+                )
+            }
+            return
+        }
+
+        val includeHistory = stateSnapshot.includeBackupHistory
+        _uiState.update {
+            it.copy(
+                isImportingBackup = true,
+                backupError = null,
+                backupMessage = null,
+            )
+        }
+        scope.launch {
+            try {
+                val (report, refreshedAccount, nextAutoScan) = withContext(ioDispatcher) {
+                    val importReport = backupGateway.importBackup(
+                        rawJson = rawJson,
+                        selectedSourceAccountId = selectedAccountId,
+                        includeHistory = includeHistory,
+                    )
+                    val latestAcc = accountRepo.getAccount(accountId)
+                    val nextScan = scheduleGateway.inspectNextAutoScanAt()
+                    Triple(importReport, latestAcc, nextScan)
+                }
+
+                pendingBackupRawJson = null
+                scheduleFormDirty = false
+                autoScanFormDirty = false
+
+                _uiState.update { state ->
+                    val timezone = refreshedAccount?.timezone ?: state.accountTimezone
+                    val nextScanText = nextAutoScan?.let { formatInstantHhmm(it, timezone) }
+                    var updated = state.copy(
+                        isImportingBackup = false,
+                        showBackupPreviewDialog = false,
+                        backupInspection = null,
+                        selectedBackupAccountId = null,
+                        lastBackupImportReport = report,
+                        backupError = null,
+                        backupMessage = formatBackupImportMessage(report),
+                        nextAutoScanTimeText = nextScanText,
+                    )
+                    if (refreshedAccount != null) {
+                        updated = updated.copy(
+                            accountStatus = refreshedAccount.status,
+                            accountTimezone = refreshedAccount.timezone,
+                            enabledInput = refreshedAccount.enabled,
+                            sendWindowStartInput = refreshedAccount.sendWindowStart,
+                            sendWindowEndInput = refreshedAccount.sendWindowEnd,
+                            sendTimeHhmmInput = refreshedAccount.sendTimeHhmm.orEmpty(),
+                            jitterMaxMinutesInput = refreshedAccount.jitterMaxMinutes.toString(),
+                            cooldownMinSecInput = refreshedAccount.cooldownMinSec.toString(),
+                            cooldownMaxSecInput = refreshedAccount.cooldownMaxSec.toString(),
+                            hasUnsavedScheduleChanges = false,
+                            autoScanEnabledInput = refreshedAccount.autoScanEnabled,
+                            autoScanIntervalHoursInput = refreshedAccount.autoScanIntervalHours.toString(),
+                            hasUnsavedAutoScanChanges = false,
+                        )
+                    }
+                    updated
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (exc: Throwable) {
+                pendingBackupRawJson = null
+                _uiState.update {
+                    it.copy(
+                        isImportingBackup = false,
+                        showBackupPreviewDialog = false,
+                        backupInspection = null,
+                        selectedBackupAccountId = null,
+                        backupError = "导入备份失败：${exc.message ?: exc.javaClass.simpleName}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearBackupFeedback() {
+        _uiState.update {
+            it.copy(
+                backupError = null,
+                backupMessage = null,
+            )
+        }
+    }
+
+    private fun formatBackupImportMessage(report: BackupImportReport): String = buildString {
+        append("已从「${report.sourceAccountName}」导入：")
+        append("模板 +${report.templatesInserted}/更新${report.templatesUpdated}，")
+        append("好友 +${report.targetsInserted}/更新${report.targetsUpdated}，")
+        append("任务 +${report.jobsInserted}/更新${report.jobsUpdated}")
+        if (report.skippedImageTemplates > 0) {
+            append("；已跳过 ${report.skippedImageTemplates} 个图片模板")
+        }
+        if (report.skippedProtectedJobs > 0) {
+            append("；保留 ${report.skippedProtectedJobs} 条受保护本地任务")
         }
     }
 
@@ -854,6 +1275,7 @@ class SettingsViewModel(
                         .toString()
                     val todayJobs = accountRepo.listJobsForDate(accountId, todayStr)
                     val recentAttempts = accountRepo.listRecentAttempts(accountId, limit = 50)
+                    val latestAutoScan = accountRepo.getLatestAutoScanRun(accountId)
                     val survival = survivalGateway.inspect()
                     val digest = selectorGateway.digest()
                     val hasOverrides = selectorGateway.hasOverrides()
@@ -877,6 +1299,7 @@ class SettingsViewModel(
                             survivalSnapshot = survival,
                             rawBarkUrl = rawBark,
                             latestProbeReport = probeReport,
+                            latestAutoScan = latestAutoScan,
                         ),
                     )
                 }
@@ -969,6 +1392,9 @@ class SettingsViewModel(
 
     companion object {
         const val MAX_JITTER_MINUTES = 15
+        const val MIN_AUTO_SCAN_INTERVAL_HOURS = 1
+        const val MAX_AUTO_SCAN_INTERVAL_HOURS = 168
+        val AUTO_SCAN_PRESET_HOURS = listOf(12, 24, 48)
         private val HHMM_REGEX = Regex("^\\d{2}:\\d{2}$")
         private val TIME_DISPLAY_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
@@ -979,6 +1405,10 @@ class SettingsViewModel(
             secretStore: EncryptedSecretStore,
             barkNotifier: BarkNotifier,
             scheduleCoordinator: ScheduleCoordinator,
+            backupManager: BackupManager = BackupManager(
+                store = RoomBackupStore(database),
+                onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
+            ),
         ): ViewModelProvider.Factory {
             val appContext = context.applicationContext ?: context
             return object : ViewModelProvider.Factory {
@@ -993,6 +1423,7 @@ class SettingsViewModel(
                             probeGateway = RuntimeBusProbeGateway(appContext),
                             survivalGateway = AndroidSurvivalGateway(appContext),
                             envProvider = AndroidDiagnosticsEnvProvider(appContext),
+                            backupGateway = AndroidBackupGateway(backupManager),
                         ) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
@@ -1000,6 +1431,27 @@ class SettingsViewModel(
             }
         }
     }
+}
+
+internal fun readUtf8StreamWithLimit(
+    input: InputStream,
+    maxBytes: Int = BackupCodec.MAX_BACKUP_BYTES,
+): String {
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    val output = ByteArrayOutputStream()
+    var totalBytes = 0L
+    val limitPlusOne = maxBytes.toLong() + 1L
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        if (read == 0) continue
+        totalBytes += read
+        if (totalBytes >= limitPlusOne) {
+            throw IllegalArgumentException("备份文件超过 20 MB 上限，已停止读取以防止内存溢出")
+        }
+        output.write(buffer, 0, read)
+    }
+    return output.toByteArray().toString(Charsets.UTF_8)
 }
 
 internal class RoomSettingsAccountRepository(
@@ -1035,12 +1487,44 @@ internal class RoomSettingsAccountRepository(
             .sortedByDescending { it.startedAt }
             .take(limit)
     }
+
+    override suspend fun getLatestAutoScanRun(accountId: String): ScanRunEntity? =
+        database.scanRunDao().getLatestAutoScanRun(accountId)
+
+    override fun observeLatestAutoScanRun(accountId: String): Flow<ScanRunEntity?> =
+        database.scanRunDao().observeLatestAutoScanRun(accountId)
 }
 
 internal class AndroidScheduleGateway(
     private val coordinator: ScheduleCoordinator,
 ) : SettingsScheduleGateway {
     override suspend fun rescheduleAll(): Instant? = coordinator.rescheduleAll()
+
+    override suspend fun inspectNextAutoScanAt(): Instant? = null // TODO(integrator): delegate to scheduleCoordinator.inspectNextAutoScanAt()
+}
+
+internal class AndroidBackupGateway(
+    private val backupManager: BackupManager,
+    private val accountId: String = DEFAULT_ACCOUNT_ID,
+) : SettingsBackupGateway {
+
+    override suspend fun exportBackupJson(): String = backupManager.exportJson(accountId)
+
+    override fun inspectBackup(rawJson: String): BackupInspection = backupManager.inspectJson(rawJson)
+
+    override suspend fun importBackup(
+        rawJson: String,
+        selectedSourceAccountId: String,
+        includeHistory: Boolean,
+    ): BackupImportReport {
+        val parsed = backupManager.inspectJson(rawJson).parsed
+        return backupManager.importBackup(
+            parsed = parsed,
+            selectedSourceAccountId = selectedSourceAccountId,
+            includeHistory = includeHistory,
+            targetAccountId = accountId,
+        )
+    }
 }
 
 internal class StoreSettingsSelectorGateway(

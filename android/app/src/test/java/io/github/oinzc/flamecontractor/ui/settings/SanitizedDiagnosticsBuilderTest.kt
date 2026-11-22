@@ -7,6 +7,8 @@ import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
+import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.execution.ExecJson
@@ -259,5 +261,95 @@ class SanitizedDiagnosticsBuilderTest {
         assertFalse(redacted.contains("raw_cookie_value_9988"))
         assertFalse(redacted.contains("abc1234567890"))
         assertFalse(redacted.contains("MS4wLjABAAAA_LeakSecUidValue_001"))
+    }
+
+    @Test
+    fun includesAutoScanFieldsWithoutRedactingKeysAndNeverLeaksAlertSummary() {
+        val sensitiveAlertSummary = "好友敏感昵称(12天 -> 1天后消失)"
+        val secretScanReconciliation = "{\"nickname\":\"绝密好友扫描快照\"}"
+        val scanFinishedAtMs = 1_763_739_012_000L
+
+        val account = AccountEntity(
+            id = DEFAULT_ACCOUNT_ID,
+            status = AccountStatus.HEALTHY,
+            enabled = true,
+            autoScanEnabled = true,
+            autoScanIntervalHours = 12,
+        )
+        val latestAutoScan = ScanRunEntity(
+            id = "scan-auto-1",
+            accountId = DEFAULT_ACCOUNT_ID,
+            source = "automatic",
+            status = ScanRunStatus.COMPLETED,
+            discoveredCount = 15,
+            sparkCount = 10,
+            reconciliationJson = secretScanReconciliation,
+            startedAt = scanFinishedAtMs - 8_000L,
+            finishedAt = scanFinishedAtMs,
+            alertSummary = sensitiveAlertSummary,
+        )
+
+        val report = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.4.0-dev",
+                appVersionCode = 1L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                webViewVersion = "157.0.8103.50",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                account = account,
+                latestAutoScan = latestAutoScan,
+            ),
+        )
+
+        assertTrue(report.autoScanEnabled)
+        assertEquals(12, report.autoScanIntervalHours)
+        assertEquals("completed", report.latestAutoScanStatus)
+        val expectedScanIso = java.time.Instant.ofEpochMilli(scanFinishedAtMs).toString()
+        assertEquals(expectedScanIso, report.latestAutoScanAtIso)
+
+        val parsedJson = ExecJson.parseObject(report.jsonReport)
+        assertEquals(true, parsedJson["autoScanEnabled"])
+        assertEquals(12, (parsedJson["autoScanIntervalHours"] as Number).toInt())
+        assertEquals("completed", parsedJson["latestAutoScanStatus"])
+        assertEquals(expectedScanIso, parsedJson["latestAutoScanAtIso"])
+
+        for (output in listOf(report.textReport, report.jsonReport)) {
+            assertFalse("Key name must not be redacted: $output", output.contains("[REDACTED_TOKEN]"))
+            assertFalse("Alert summary leaked: $output", output.contains("好友敏感昵称"))
+            assertFalse("Alert summary leaked: $output", output.contains(sensitiveAlertSummary))
+            assertFalse("Scan reconciliation leaked: $output", output.contains("绝密好友扫描快照"))
+            assertTrue("Expected completed status in output: $output", output.contains("completed"))
+            assertTrue("Expected scan ISO time in output: $output", output.contains(expectedScanIso))
+        }
+
+        val disabledReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.4.0-dev",
+                appVersionCode = 1L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                account = AccountEntity(
+                    id = DEFAULT_ACCOUNT_ID,
+                    autoScanEnabled = false,
+                    autoScanIntervalHours = 48,
+                ),
+                latestAutoScan = null,
+            ),
+        )
+        assertFalse(disabledReport.autoScanEnabled)
+        assertEquals(48, disabledReport.autoScanIntervalHours)
+        assertEquals(null, disabledReport.latestAutoScanStatus)
+        assertEquals(null, disabledReport.latestAutoScanAtIso)
+        val disabledJson = ExecJson.parseObject(disabledReport.jsonReport)
+        assertEquals(false, disabledJson["autoScanEnabled"])
+        assertEquals(48, (disabledJson["autoScanIntervalHours"] as Number).toInt())
+        assertEquals(null, disabledJson["latestAutoScanStatus"])
+        assertEquals(null, disabledJson["latestAutoScanAtIso"])
     }
 }

@@ -7,6 +7,7 @@ import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.JobStatus
+import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.execution.StructureProbeReport
@@ -36,6 +37,7 @@ data class RawDiagnosticsContext(
     val rawBarkUrl: String? = null,
     val latestProbeReport: StructureProbeReport? = null,
     val extraRawStrings: List<String> = emptyList(),
+    val latestAutoScan: ScanRunEntity? = null,
 )
 
 data class SanitizedSurvivalSummary(
@@ -72,6 +74,10 @@ data class SanitizedDiagnosticsReport(
     val accountEnabled: Boolean,
     val authFailCount: Int,
     val failureStreak: Int,
+    val autoScanEnabled: Boolean,
+    val autoScanIntervalHours: Int,
+    val latestAutoScanStatus: String?,
+    val latestAutoScanAtIso: String?,
     val survival: SanitizedSurvivalSummary,
     val bark: SanitizedBarkSummary,
     val activeTargetCount: Int,
@@ -151,6 +157,12 @@ object SanitizedDiagnosticsBuilder {
         val accountEnabled = input.account?.enabled ?: false
         val authFailCount = input.account?.authFailCount ?: 0
         val failureStreak = input.account?.failureStreak ?: 0
+        val autoScanEnabled = input.account?.autoScanEnabled ?: false
+        val autoScanIntervalHours = input.account?.autoScanIntervalHours ?: 24
+        val latestAutoScanStatus = input.latestAutoScan?.status?.wireValue
+        val latestAutoScanAtIso = input.latestAutoScan?.let { scan ->
+            formatIso(scan.finishedAt ?: scan.startedAt)
+        }
 
         val activeTargets = input.targets.filter { it.deletedAt == null }
         val activeTargetCount = activeTargets.size
@@ -227,6 +239,10 @@ object SanitizedDiagnosticsBuilder {
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
             failureStreak = failureStreak,
+            autoScanEnabled = autoScanEnabled,
+            autoScanIntervalHours = autoScanIntervalHours,
+            latestAutoScanStatus = latestAutoScanStatus,
+            latestAutoScanAtIso = latestAutoScanAtIso,
             survival = survivalSummary,
             bark = barkSummary,
             activeTargetCount = activeTargetCount,
@@ -253,6 +269,10 @@ object SanitizedDiagnosticsBuilder {
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
             failureStreak = failureStreak,
+            autoScanEnabled = autoScanEnabled,
+            autoScanIntervalHours = autoScanIntervalHours,
+            latestAutoScanStatus = latestAutoScanStatus,
+            latestAutoScanAtIso = latestAutoScanAtIso,
             survival = survivalSummary,
             bark = barkSummary,
             activeTargetCount = activeTargetCount,
@@ -282,6 +302,10 @@ object SanitizedDiagnosticsBuilder {
             accountEnabled = accountEnabled,
             authFailCount = authFailCount,
             failureStreak = failureStreak,
+            autoScanEnabled = autoScanEnabled,
+            autoScanIntervalHours = autoScanIntervalHours,
+            latestAutoScanStatus = latestAutoScanStatus,
+            latestAutoScanAtIso = latestAutoScanAtIso,
             survival = survivalSummary,
             bark = barkSummary,
             activeTargetCount = activeTargetCount,
@@ -515,6 +539,10 @@ object SanitizedDiagnosticsBuilder {
         accountEnabled: Boolean,
         authFailCount: Int,
         failureStreak: Int,
+        autoScanEnabled: Boolean,
+        autoScanIntervalHours: Int,
+        latestAutoScanStatus: String?,
+        latestAutoScanAtIso: String?,
         survival: SanitizedSurvivalSummary,
         bark: SanitizedBarkSummary,
         activeTargetCount: Int,
@@ -537,6 +565,11 @@ object SanitizedDiagnosticsBuilder {
         appendLine("[账号状态（已脱敏）]")
         appendLine("状态: $accountStatus | 总开关: ${if (accountEnabled) "开启" else "关闭"}")
         appendLine("连续鉴权失败次数: $authFailCount | 连续批处理终态失败次数: $failureStreak")
+        appendLine("官方火花自动同步: ${if (autoScanEnabled) "开启" else "关闭"} | 周期: ${autoScanIntervalHours}小时")
+        appendLine(
+            "最近自动扫描: ${latestAutoScanStatus ?: "无"}" +
+                (latestAutoScanAtIso?.let { " | 时间 (UTC): $it" } ?: ""),
+        )
         appendLine()
         appendLine("[后台保活体检]")
         appendLine("通知权限: ${survival.notificationsGranted}")
@@ -589,6 +622,10 @@ object SanitizedDiagnosticsBuilder {
         accountEnabled: Boolean,
         authFailCount: Int,
         failureStreak: Int,
+        autoScanEnabled: Boolean,
+        autoScanIntervalHours: Int,
+        latestAutoScanStatus: String?,
+        latestAutoScanAtIso: String?,
         survival: SanitizedSurvivalSummary,
         bark: SanitizedBarkSummary,
         activeTargetCount: Int,
@@ -615,6 +652,10 @@ object SanitizedDiagnosticsBuilder {
         appendBoolField(sb, 1, "accountEnabled", accountEnabled, comma = true)
         appendNumberField(sb, 1, "authFailCount", authFailCount, comma = true)
         appendNumberField(sb, 1, "failureStreak", failureStreak, comma = true)
+        appendBoolField(sb, 1, "autoScanEnabled", autoScanEnabled, comma = true)
+        appendNumberField(sb, 1, "autoScanIntervalHours", autoScanIntervalHours, comma = true)
+        appendNullableStringField(sb, 1, "latestAutoScanStatus", latestAutoScanStatus, comma = true)
+        appendNullableStringField(sb, 1, "latestAutoScanAtIso", latestAutoScanAtIso, comma = true)
 
         sb.append("  \"survivalChecks\": {\n")
         appendBoolField(sb, 2, "notificationsGranted", survival.notificationsGranted, comma = true)
