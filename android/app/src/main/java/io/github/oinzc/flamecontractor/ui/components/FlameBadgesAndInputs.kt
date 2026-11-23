@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -131,7 +132,7 @@ fun FlameMiniTag(
 }
 
 /**
- * 烈焰橙火花连签徽章：锁定 Ember 品牌色系与等宽数字（tnum），严格用于展示本地累计连签天数。
+ * 火花连签徽章：严格锁定 `FlameSemanticColors.sparkGold*` 色彩与等宽数字（tnum），不受动态取色冲淡。
  */
 @Composable
 fun FlameStreakBadge(
@@ -139,7 +140,7 @@ fun FlameStreakBadge(
     modifier: Modifier = Modifier,
     prefixText: String? = null,
 ) {
-    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     val labelText = if (prefixText.isNullOrEmpty()) {
         days.toString()
     } else {
@@ -148,9 +149,9 @@ fun FlameStreakBadge(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(999.dp),
-        color = palette.emberContainer,
-        contentColor = palette.ember,
-        border = BorderStroke(1.dp, palette.emberBorder),
+        color = semantics.sparkGoldContainer,
+        contentColor = semantics.sparkGold,
+        border = BorderStroke(1.dp, semantics.sparkGoldBorder),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -160,7 +161,7 @@ fun FlameStreakBadge(
             Icon(
                 imageVector = Icons.Filled.LocalFireDepartment,
                 contentDescription = null,
-                tint = palette.ember,
+                tint = semantics.sparkGold,
                 modifier = Modifier.size(13.dp),
             )
             Text(
@@ -170,6 +171,149 @@ fun FlameStreakBadge(
                 maxLines = 1,
                 softWrap = false,
             )
+        }
+    }
+}
+
+/**
+ * 抖音官方火花快照展示徽章（与桌面端 `SparkChip` 口径一致，仅作展示，绝不改写本机 `streak_days`）：
+ * - 有官方火花且天数 > 0：`🔥 {sparkDays}天`（锁定 `sparkGold`）
+ * - 有官方火花文本（如 `重燃中 2/3` / `X天后消失`）：包含「后消失」时使用警告态与时钟图标，否则使用 `sparkGold` 与火焰图标
+ * - 明确无火花：柔和中性胶囊「无火花」
+ * - 尚未扫描：柔和中性胶囊「待扫描」
+ */
+@Composable
+fun FlameOfficialSparkBadge(
+    sparkDays: Int?,
+    sparkKind: String?,
+    sparkLabel: String?,
+    hasOfficialSpark: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val cleanLabel = sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+
+    when {
+        hasOfficialSpark && sparkDays != null && sparkDays > 0 -> {
+            Surface(
+                modifier = modifier,
+                shape = RoundedCornerShape(999.dp),
+                color = semantics.sparkGoldContainer,
+                contentColor = semantics.sparkGold,
+                border = BorderStroke(1.dp, semantics.sparkGoldBorder),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = sparkKind,
+                        tint = semantics.sparkGold,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        text = "${sparkDays}天",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+
+        hasOfficialSpark && cleanLabel != null -> {
+            val isExpiring = cleanLabel.contains("后消失")
+            val containerColor = if (isExpiring) semantics.warningContainer else semantics.sparkGoldContainer
+            val borderColor = if (isExpiring) semantics.warningBorder else semantics.sparkGoldBorder
+            val fgColor = if (isExpiring) semantics.onWarningContainer else semantics.sparkGold
+            val iconColor = if (isExpiring) semantics.warning else semantics.sparkGold
+            val icon = if (isExpiring) Icons.Outlined.Schedule else Icons.Filled.LocalFireDepartment
+
+            Surface(
+                modifier = modifier,
+                shape = RoundedCornerShape(999.dp),
+                color = containerColor,
+                contentColor = fgColor,
+                border = BorderStroke(1.dp, borderColor),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = sparkKind,
+                        tint = iconColor,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        text = cleanLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+
+        hasOfficialSpark -> {
+            Surface(
+                modifier = modifier,
+                shape = RoundedCornerShape(999.dp),
+                color = semantics.sparkGoldContainer,
+                contentColor = semantics.sparkGold,
+                border = BorderStroke(1.dp, semantics.sparkGoldBorder),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = sparkKind,
+                        tint = semantics.sparkGold,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        text = "有火花",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+
+        else -> {
+            val neutralText = when {
+                cleanLabel == "无火花" -> "无火花"
+                cleanLabel != null -> cleanLabel
+                else -> "待扫描"
+            }
+            Surface(
+                modifier = modifier,
+                shape = RoundedCornerShape(999.dp),
+                color = palette.surfaceSubtle,
+                contentColor = palette.inkTertiary,
+                border = BorderStroke(1.dp, palette.hairline),
+            ) {
+                Text(
+                    text = neutralText,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
         }
     }
 }

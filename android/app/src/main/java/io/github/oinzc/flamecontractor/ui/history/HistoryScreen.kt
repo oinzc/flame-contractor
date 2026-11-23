@@ -674,7 +674,7 @@ private fun DailyTrendChartCard(
                     Icon(
                         imageVector = Icons.Filled.LocalFireDepartment,
                         contentDescription = null,
-                        tint = palette.ember,
+                        tint = semantics.sparkGold,
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
@@ -801,7 +801,7 @@ private fun DailyTrendChartCard(
                                     Text(
                                         text = SHORT_DAY_FORMATTER.format(date),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isTickSelected) palette.ember else palette.inkTertiary,
+                                        color = if (isTickSelected) palette.ink else palette.inkTertiary,
                                         fontWeight = if (isTickSelected) FontWeight.Bold else FontWeight.Normal,
                                         maxLines = 1,
                                         softWrap = false,
@@ -854,8 +854,8 @@ private fun DailyTrendChartCard(
                 if (selectedBucket != null) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = palette.emberContainer,
-                        border = BorderStroke(1.dp, palette.emberBorder),
+                        color = palette.surfaceSubtle,
+                        border = BorderStroke(1.dp, palette.hairlineStrong),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Row(
@@ -884,7 +884,7 @@ private fun DailyTrendChartCard(
                                 text = "取消筛选",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = palette.ember,
+                                color = palette.monoCtaContainer,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
                                     .clickable(onClick = onClearDateFilter)
@@ -936,8 +936,8 @@ private fun DayStackedBarColumn(
         label = "history_bar_height_${bucket.date}",
     )
 
-    val containerColor = if (isSelected) palette.emberContainer else Color.Transparent
-    val borderColor = if (isSelected) palette.ember else Color.Transparent
+    val containerColor = if (isSelected) palette.surfaceSubtle else Color.Transparent
+    val borderColor = if (isSelected) palette.monoCtaContainer else Color.Transparent
 
     Column(
         modifier = modifier
@@ -1012,7 +1012,7 @@ private fun DayStackedBarColumn(
             Text(
                 text = if (showLabel) SHORT_DAY_FORMATTER.format(bucket.date) else "",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isSelected) palette.ember else palette.inkTertiary,
+                color = if (isSelected) palette.ink else palette.inkTertiary,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 1,
                 softWrap = false,

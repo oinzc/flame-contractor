@@ -126,10 +126,15 @@ class RoomTodayRepository(
                     )
                 }
 
-            database.targetDao().recordSendConfirmed(job.targetId, nowEpochMs)
-
             val accountDao = database.accountDao()
             val account = accountDao.getAccount(job.accountId)
+            val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
+            database.targetDao().recordSendConfirmedOncePerDay(
+                id = job.targetId,
+                confirmedAt = nowEpochMs,
+                zoneId = zoneId,
+            )
+
             if (account != null) {
                 val updated = AccountHealthReducer.onSingleSendSucceeded(account, nowEpochMs)
                 accountDao.update(updated)
@@ -253,6 +258,7 @@ data class TodayUiState(
     val hasBlockingTodayJob: Boolean = false,
     val isResolvingAction: Boolean = false,
     val maxLocalStreakDays: Int = 0,
+    val maxOfficialSparkDays: Int? = null,
     val pausedTargetCount: Int = 0,
 )
 
@@ -818,6 +824,9 @@ class TodayViewModel(
         val enabledTargets = db.targets.filter { it.enabled }
         val pausedTargetCount = db.targets.count { !it.enabled }
         val maxLocalStreakDays = db.targets.maxOfOrNull { it.streakDays } ?: 0
+        val maxOfficialSparkDays = db.targets
+            .mapNotNull { it.sparkDays?.takeIf { d -> d > 0 } }
+            .maxOrNull()
         val todayJobsByTarget = db.todayJobs.groupBy { it.targetId }
 
         val pendingCount = enabledTargets.count { target ->
@@ -938,6 +947,7 @@ class TodayViewModel(
             hasBlockingTodayJob = SendGuard.hasBlockingUnknownOrInflight(db.todayJobs),
             isResolvingAction = meta.controls.isResolvingAction,
             maxLocalStreakDays = maxLocalStreakDays,
+            maxOfficialSparkDays = maxOfficialSparkDays,
             pausedTargetCount = pausedTargetCount,
         )
     }

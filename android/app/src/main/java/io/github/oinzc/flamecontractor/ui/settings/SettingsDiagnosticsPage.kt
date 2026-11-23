@@ -196,7 +196,7 @@ internal fun SettingsDiagnosticsPage(
                 trailingHeader = {
                     FlameStatusPill(
                         text = if (uiState.hasSelectorOverrides) "已启用本地覆写" else "默认基线",
-                        tone = if (uiState.hasSelectorOverrides) FlameTone.EMBER else FlameTone.HEALTHY,
+                        tone = if (uiState.hasSelectorOverrides) FlameTone.NEUTRAL else FlameTone.HEALTHY,
                         showDot = false,
                     )
                 },

@@ -657,7 +657,7 @@ private fun AccountSheetItemCard(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     if (isActive) {
-                        FlameMiniTag(text = "当前", tone = FlameTone.EMBER)
+                        FlameMiniTag(text = "当前", tone = FlameTone.NEUTRAL)
                     }
                 }
                 val sub = account.douyinNickname?.takeIf { it.isNotBlank() }?.let {

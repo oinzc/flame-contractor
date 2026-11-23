@@ -95,13 +95,7 @@ internal fun SettingsHubScreen(
                     title = SettingsSection.APPEARANCE.title,
                     subtitle = appearanceSummary,
                     leading = {
-                        FlameRowAvatar(
-                            tone = if (dynamicSupported && themePreference.dynamicColorEnabled) {
-                                FlameTone.EMBER
-                            } else {
-                                FlameTone.NEUTRAL
-                            },
-                        ) {
+                        FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                             Icon(
                                 imageVector = Icons.Outlined.Palette,
                                 contentDescription = null,
@@ -241,7 +235,6 @@ internal fun SettingsHubScreen(
             val diagnosticsTone = when {
                 uiState.accountStatus == AccountStatus.DOM_BROKEN -> FlameTone.DANGER
                 probe != null && !probe.coreSkeletonOk -> FlameTone.WARNING
-                uiState.hasSelectorOverrides -> FlameTone.EMBER
                 else -> FlameTone.NEUTRAL
             }
             val diagnosticsSummary = buildString {

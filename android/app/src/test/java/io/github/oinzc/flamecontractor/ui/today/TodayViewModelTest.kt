@@ -16,6 +16,7 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
+import io.github.oinzc.flamecontractor.domain.LocalStreakCounter
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginMode
@@ -599,6 +600,75 @@ class TodayViewModelTest {
         assertEquals(1, state.enabledTargetCount)
         assertEquals(1, state.pausedTargetCount)
         assertEquals(42, state.maxLocalStreakDays)
+        assertNull(state.maxOfficialSparkDays)
+    }
+
+    @Test
+    fun maxOfficialSparkDaysTracksHighestPositiveSparkAcrossActiveTargets() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "好友一", streakDays = 2, enabled = true)
+                    .copy(sparkDays = 128),
+                sampleTarget(id = "t-2", nickname = "好友二", streakDays = 1, enabled = false)
+                    .copy(sparkDays = 912),
+                sampleTarget(id = "t-3", nickname = "好友三", streakDays = 0, enabled = true)
+                    .copy(sparkDays = 0, sparkLabel = "重燃中 2/3"),
+                sampleTarget(id = "t-del", nickname = "已移除", streakDays = 5, enabled = false, deletedAt = 3_000L)
+                    .copy(sparkDays = 1200),
+            ),
+        )
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = FakeTodayExecutionLauncher(),
+            dispatcher = dispatcher,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals(912, state.maxOfficialSparkDays)
+        assertEquals(2, state.maxLocalStreakDays)
+    }
+
+    @Test
+    fun resolvingMultipleUnknownJobsOnSameDayIncrementsStreakAtMostOnce() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "好友甲", streakDays = 0),
+            ),
+            initialJobs = listOf(
+                sampleJob(
+                    id = "job-u1",
+                    targetId = "t-1",
+                    slotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    failureClass = FailureClass.UNKNOWN_OUTCOME,
+                ),
+                sampleJob(
+                    id = "job-u2",
+                    targetId = "t-1",
+                    slotId = SendGuard.manualSlotId(1_700_000_000_001L),
+                    status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    failureClass = FailureClass.UNKNOWN_OUTCOME,
+                ),
+            ),
+        )
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), FakeTodayExecutionLauncher(), dispatcher)
+        advanceUntilIdle()
+
+        vm.resolveUnknownAsSucceeded("job-u1")
+        advanceUntilIdle()
+        vm.resolveUnknownAsSucceeded("job-u2")
+        advanceUntilIdle()
+
+        val updatedTarget = repo.targets.value.single { it.id == "t-1" }
+        assertEquals(1, updatedTarget.streakDays)
+        assertTrue(vm.uiState.value.unknownReviewJobs.isEmpty())
     }
 
     private fun createViewModel(
@@ -789,10 +859,16 @@ class TodayViewModelTest {
                     it
                 }
             }
+            val zoneId = DailySchedulePlanner.resolveZoneId(account.value?.timezone)
             targets.value = targets.value.map {
                 if (it.id == job.targetId) {
+                    val shouldIncrement = LocalStreakCounter.shouldIncrementStreakForConfirmation(
+                        previousConfirmedAtEpochMs = it.lastConfirmedAt,
+                        newConfirmedAtEpochMs = nowEpochMs,
+                        zoneId = zoneId,
+                    )
                     it.copy(
-                        streakDays = it.streakDays + 1,
+                        streakDays = if (shouldIncrement) it.streakDays + 1 else it.streakDays,
                         lastSentAt = nowEpochMs,
                         lastConfirmedAt = nowEpochMs,
                         updatedAt = nowEpochMs,

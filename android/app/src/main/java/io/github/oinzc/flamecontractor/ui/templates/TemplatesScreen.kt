@@ -492,8 +492,8 @@ private fun ReadOnlyPreviewTargetCard(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     FlameMiniTag(
-                        text = "连签 ${previewTarget?.streakDays ?: 7} 天",
-                        tone = FlameTone.EMBER,
+                        text = "本机 ${previewTarget?.streakDays ?: 7} 天",
+                        tone = FlameTone.NEUTRAL,
                     )
                 }
                 Text(
@@ -647,7 +647,7 @@ private fun TemplateListItemRow(
                 }
 
                 TemplateType.POOL -> {
-                    FlameRowAvatar(tone = if (tpl.enabled) FlameTone.EMBER else FlameTone.NEUTRAL) {
+                    FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.FormatListBulleted,
                             contentDescription = null,
@@ -687,7 +687,7 @@ private fun TemplateListItemRow(
                     val enabledItems = card.poolItems.count { it.item.enabled }
                     FlameMiniTag(
                         text = "$enabledItems/${card.poolItems.size} 条",
-                        tone = if (enabledItems > 0 && tpl.enabled) FlameTone.EMBER else FlameTone.NEUTRAL,
+                        tone = FlameTone.NEUTRAL,
                     )
                 }
 
@@ -800,7 +800,7 @@ private fun CreateTemplateTypeSheet(
                 title = "星期轮换文案池",
                 subtitle = "多条候选按星期掩码与最久未用顺序自动轮换",
                 icon = Icons.AutoMirrored.Outlined.FormatListBulleted,
-                tone = FlameTone.EMBER,
+                tone = FlameTone.NEUTRAL,
             ),
             CreateTypeOption(
                 type = TemplateType.IMAGE,

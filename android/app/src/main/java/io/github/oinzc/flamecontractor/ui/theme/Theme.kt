@@ -65,6 +65,7 @@ data class FlameSemanticColors(
     val onNeutralContainer: Color,
     val warningBorder: Color = warning,
     val dangerBorder: Color = danger,
+    val sparkGoldBorder: Color = sparkGold,
 )
 
 private val LightFlamePalette = FlamePaletteTokens(
@@ -125,6 +126,7 @@ private val LightSemanticColors = FlameSemanticColors(
     onNeutralContainer = Color(0xFF111318),
     warningBorder = Color(0xFFFDE68A),
     dangerBorder = Color(0xFFFECACA),
+    sparkGoldBorder = Color(0xFFFED7AA),
 )
 
 private val DarkSemanticColors = FlameSemanticColors(
@@ -145,6 +147,7 @@ private val DarkSemanticColors = FlameSemanticColors(
     onNeutralContainer = Color(0xFFF4F5F7),
     warningBorder = Color(0xFF5C4718),
     dangerBorder = Color(0xFF5F262A),
+    sparkGoldBorder = Color(0xFF5A351E),
 )
 
 private fun deriveDynamicPalette(
@@ -165,11 +168,10 @@ private fun deriveDynamicPalette(
         inkTertiary = dynamic.outline,
         monoCtaContainer = dynamic.primary,
         monoCtaContent = dynamic.onPrimary,
-        // Ember brand tokens stay locked under Material You dynamic color.
-        ember = basePalette.ember,
-        emberBright = basePalette.emberBright,
-        emberContainer = basePalette.emberContainer,
-        emberBorder = basePalette.emberBorder,
+        ember = dynamic.primary,
+        emberBright = dynamic.primary,
+        emberContainer = dynamic.primaryContainer,
+        emberBorder = dynamic.outlineVariant,
         dockContainer = resolvedSurface,
         dockActiveContainer = dynamic.secondaryContainer,
     )

@@ -99,11 +99,11 @@ import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameOfficialSparkBadge
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
-import io.github.oinzc.flamecontractor.ui.components.FlameStreakBadge
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
@@ -539,8 +539,8 @@ private fun ActiveScanProgressBanner(
     FlameCard(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 16.dp,
-        containerColor = palette.emberContainer,
-        borderColor = palette.emberBorder,
+        containerColor = palette.surfaceSubtle,
+        borderColor = palette.hairline,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -552,7 +552,7 @@ private fun ActiveScanProgressBanner(
                 Text(
                     text = taskLabel?.takeIf { it.isNotBlank() } ?: "正在扫描抖音会话…",
                     style = MaterialTheme.typography.labelLarge,
-                    color = palette.ember,
+                    color = palette.ink,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -561,12 +561,12 @@ private fun ActiveScanProgressBanner(
                 Text(
                     text = "已发现 $discoveredCount 条",
                     style = MaterialTheme.typography.labelMedium,
-                    color = palette.ember,
+                    color = palette.inkSecondary,
                 )
             }
             LinearProgressIndicator(
-                color = palette.ember,
-                trackColor = palette.emberBorder.copy(alpha = 0.55f),
+                color = palette.monoCtaContainer,
+                trackColor = palette.hairline,
                 strokeCap = StrokeCap.Round,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -606,7 +606,7 @@ private fun RecentScanReconcileShortcut(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            FlameRowAvatar(tone = FlameTone.EMBER) {
+            FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                 Icon(
                     imageVector = Icons.Outlined.Sync,
                     contentDescription = null,
@@ -674,7 +674,7 @@ private fun TargetGritListRow(
             append(target.sendTimeHhmm)
         }
     }
-    val subtitleLine2 = formatOfficialSparkRowSummary(target, item.hasOfficialSpark)
+    val subtitleLine2 = formatTargetSecondaryLocalSummary(target, item.hasOfficialSpark)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -743,7 +743,12 @@ private fun TargetGritListRow(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                FlameStreakBadge(days = target.streakDays)
+                FlameOfficialSparkBadge(
+                    sparkDays = target.sparkDays,
+                    sparkKind = target.sparkKind,
+                    sparkLabel = target.sparkLabel,
+                    hasOfficialSpark = item.hasOfficialSpark,
+                )
                 item.todayStatusLabel?.let { statusText ->
                     val statusColor = when {
                         item.hasBlockingTodayJob -> semantics.danger
@@ -799,7 +804,7 @@ private fun ScanActionChoiceSheet(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    FlameRowAvatar(tone = FlameTone.EMBER) {
+                    FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                         Icon(
                             imageVector = Icons.Outlined.Sync,
                             contentDescription = null,
@@ -915,7 +920,12 @@ private fun TargetActionDetailSheet(
         title = target.nicknameSnapshot,
         subtitle = headerSubtitle,
         trailingHeader = {
-            FlameStreakBadge(days = target.streakDays, prefixText = "本机 ")
+            FlameOfficialSparkBadge(
+                sparkDays = target.sparkDays,
+                sparkKind = target.sparkKind,
+                sparkLabel = target.sparkLabel,
+                hasOfficialSpark = item.hasOfficialSpark,
+            )
         },
     ) {
         Column(
@@ -924,7 +934,7 @@ private fun TargetActionDetailSheet(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 详情快照卡（本机连续天数与抖音官方火花快照严格分列展示）
+            // 详情快照卡（官方火花快照在先、本机续火记录在后，严格分列展示）
             FlameCard(
                 modifier = Modifier.fillMaxWidth(),
                 cornerRadius = 16.dp,
@@ -933,19 +943,23 @@ private fun TargetActionDetailSheet(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     TargetDetailKeyValueRow(
-                        label = "本机连续续火",
+                        label = "官方火花快照",
+                        value = formatOfficialSparkRowSummary(target, item.hasOfficialSpark),
+                        valueColor = if (item.hasOfficialSpark) semantics.sparkGold else palette.ink,
+                    )
+                    TargetDetailKeyValueRow(
+                        label = "本机续火记录",
                         value = buildString {
-                            append("${target.streakDays} 天")
+                            if (target.streakDays > 0) {
+                                append("已续 ${target.streakDays} 天")
+                            } else {
+                                append("暂未发送（0 天）")
+                            }
                             target.lastConfirmedAt?.let {
                                 append(" · 最近确认 ")
                                 append(formatTargetTimestamp(it))
                             }
                         },
-                        valueColor = palette.ember,
-                    )
-                    TargetDetailKeyValueRow(
-                        label = "官方火花快照",
-                        value = formatOfficialSparkRowSummary(target, item.hasOfficialSpark),
                     )
                     val tplDisplay = item.templateName?.let { name ->
                         val typeTag = item.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
@@ -1603,13 +1617,13 @@ private fun resolveTargetAvatarMeta(item: TargetItemUi): TargetAvatarMeta {
 
         target.conversationType == "group" ->
             TargetAvatarMeta(
-                if (item.hasOfficialSpark) FlameTone.EMBER else FlameTone.HEALTHY,
+                FlameTone.NEUTRAL,
                 Icons.Outlined.Groups,
             )
 
         else ->
             TargetAvatarMeta(
-                if (item.hasOfficialSpark) FlameTone.EMBER else FlameTone.HEALTHY,
+                FlameTone.NEUTRAL,
                 Icons.Outlined.Person,
             )
     }
@@ -1620,6 +1634,25 @@ private fun targetTemplateTypeLabel(type: TemplateType): String = when (type) {
     TemplateType.POOL -> "文案池"
     TemplateType.STICKER -> "表情"
     TemplateType.IMAGE -> "图片"
+}
+
+private fun formatTargetSecondaryLocalSummary(
+    target: ContractTargetEntity,
+    hasOfficialSpark: Boolean,
+): String {
+    val kindPrefix = when {
+        !hasOfficialSpark -> ""
+        target.sparkKind == "couple" -> "合养火花 · "
+        target.sparkKind == "family" -> "家庭火花 · "
+        else -> ""
+    }
+    val localPart = if (target.streakDays > 0) {
+        "本机已续 ${target.streakDays} 天"
+    } else {
+        "本机暂未发送"
+    }
+    val scanPart = target.sparkScannedAt?.let { " · ${formatTargetTimestamp(it)} 扫描" }.orEmpty()
+    return "$kindPrefix$localPart$scanPart"
 }
 
 private fun formatOfficialSparkRowSummary(

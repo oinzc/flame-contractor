@@ -505,7 +505,7 @@ private fun DashedReadOnlyPreviewCard(
                     color = palette.inkSecondary,
                 )
             }
-            FlameMiniTag(text = targetLabel, tone = FlameTone.EMBER)
+            FlameMiniTag(text = targetLabel, tone = FlameTone.NEUTRAL)
         }
 
         if (rendered.isNotBlank()) {
@@ -584,7 +584,7 @@ private fun PoolTemplateEditorSection(
                     )
                     FlameMiniTag(
                         text = TemplatesViewModel.formatWeekdayMask(draft.weekdayMask),
-                        tone = if (draft.enabled) FlameTone.EMBER else FlameTone.NEUTRAL,
+                        tone = FlameTone.NEUTRAL,
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     Switch(
@@ -1254,7 +1254,7 @@ internal fun templateTypeFullLabel(type: TemplateType): String = when (type) {
 }
 
 internal fun templateTypeTone(type: TemplateType): FlameTone = when (type) {
-    TemplateType.POOL -> FlameTone.EMBER
+    TemplateType.POOL -> FlameTone.NEUTRAL
     TemplateType.IMAGE -> FlameTone.HEALTHY
     TemplateType.TEXT -> FlameTone.NEUTRAL
     TemplateType.STICKER -> FlameTone.WARNING

@@ -117,7 +117,11 @@ fun resolveFlameToneColors(tone: FlameTone): FlameToneColors {
 
         FlameTone.EMBER -> FlameToneColors(
             fg = palette.ember,
-            onContainer = palette.ember,
+            onContainer = if (FlameThemeTokens.isDynamicColorActive) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                palette.ember
+            },
             container = palette.emberContainer,
             border = palette.emberBorder,
             accent = palette.ember,

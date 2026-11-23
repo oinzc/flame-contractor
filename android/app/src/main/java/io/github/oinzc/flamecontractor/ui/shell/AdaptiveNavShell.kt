@@ -196,7 +196,7 @@ private fun FlameFloatingPillDock(
                     label = "dock_item_bg_${tab.name}",
                 )
                 val targetContentColor = when {
-                    selected && tab == MainTab.TODAY -> palette.ember
+                    selected && FlameThemeTokens.isDynamicColorActive -> palette.monoCtaContainer
                     selected -> palette.ink
                     else -> palette.inkTertiary
                 }
@@ -328,7 +328,11 @@ private fun FlameWideNavigationRail(
     ) {
         MainTab.entries.forEach { tab ->
             val selected = tab == selectedTab
-            val selectedTint = if (tab == MainTab.TODAY) palette.ember else palette.ink
+            val selectedTint = if (FlameThemeTokens.isDynamicColorActive) {
+                palette.monoCtaContainer
+            } else {
+                palette.ink
+            }
             NavigationRailItem(
                 selected = selected,
                 onClick = { onSelectTab(tab) },

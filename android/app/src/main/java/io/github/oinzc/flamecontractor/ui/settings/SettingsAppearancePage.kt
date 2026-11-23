@@ -134,8 +134,11 @@ internal fun SettingsAppearancePage(
                 ) {
                     SwatchPill(label = "画布", color = palette.canvas)
                     SwatchPill(label = "主操作", color = palette.monoCtaContainer)
-                    SwatchPill(label = "火花", color = palette.ember)
-                    SwatchPill(label = "健康", color = semantics.healthy)
+                    SwatchPill(
+                        label = if (dynamicActive) "主题色" else "续火主钮",
+                        color = palette.ember,
+                    )
+                    SwatchPill(label = "火花", color = semantics.sparkGold)
                 }
             }
 
@@ -157,9 +160,7 @@ internal fun SettingsAppearancePage(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            FlameRowAvatar(
-                                tone = if (selected) FlameTone.EMBER else FlameTone.NEUTRAL,
-                            ) {
+                            FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                                 Icon(
                                     imageVector = option.icon,
                                     contentDescription = null,
@@ -206,7 +207,7 @@ internal fun SettingsAppearancePage(
                 FlameListRow(
                     title = "Material You 壁纸取色",
                     subtitle = if (supportsDynamicColor) {
-                        "开启后画布容器与常规主操作色将跟随系统壁纸主题色；烈焰橙续火按钮、火花徽章与安全告警色保持锁定"
+                        "开启后画布容器、常规主按钮与首页续火主按钮将跟随系统壁纸主题色；火花徽章与安全告警色保持锁定"
                     } else {
                         "需要 Android 12（API 31）及以上系统版本，当前设备暂不支持壁纸动态取色"
                     },
@@ -218,13 +219,7 @@ internal fun SettingsAppearancePage(
                         null
                     },
                     leading = {
-                        FlameRowAvatar(
-                            tone = if (supportsDynamicColor && themePreference.dynamicColorEnabled) {
-                                FlameTone.EMBER
-                            } else {
-                                FlameTone.NEUTRAL
-                            },
-                        ) {
+                        FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                             Icon(
                                 imageVector = Icons.Outlined.ColorLens,
                                 contentDescription = null,

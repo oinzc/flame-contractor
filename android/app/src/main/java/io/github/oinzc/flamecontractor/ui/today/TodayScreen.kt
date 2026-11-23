@@ -801,8 +801,13 @@ private fun HeroFlameCtaButton(
             }
         }
     } else {
+        val ctaContentColor = if (FlameThemeTokens.isDynamicColorActive) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            Color.White
+        }
         val emberBrush = Brush.linearGradient(
-            colors = listOf(palette.emberBright, Color(0xFFEA580C)),
+            colors = listOf(palette.emberBright, palette.ember),
         )
         Box(
             modifier = Modifier
@@ -819,7 +824,7 @@ private fun HeroFlameCtaButton(
                 Icon(
                     imageVector = Icons.Filled.LocalFireDepartment,
                     contentDescription = "立即执行今日续火",
-                    tint = Color.White,
+                    tint = ctaContentColor,
                     modifier = Modifier.size(22.dp),
                 )
                 Spacer(modifier = Modifier.height(2.dp))
@@ -827,7 +832,7 @@ private fun HeroFlameCtaButton(
                     text = "续火",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = ctaContentColor,
                     maxLines = 1,
                     softWrap = false,
                 )
@@ -1026,7 +1031,7 @@ private fun TodayConditionalAlertStrips(
                     FlameAlertStrip(
                         title = "尚未扫码登录抖音网页端",
                         subtitle = "扫码登录一次即可在本地安全自动续火，登录态仅存本机沙盒。",
-                        tone = FlameTone.EMBER,
+                        tone = FlameTone.WARNING,
                         actionLabel = "立即扫码",
                         icon = Icons.Outlined.QrCodeScanner,
                         onClick = onReloginClick,
@@ -1106,7 +1111,7 @@ private fun TodayBentoMetricsRow(
                                 .fillMaxHeight()
                                 .fillMaxWidth(animatedCompletion)
                                 .clip(RoundedCornerShape(999.dp))
-                                .background(if (allCompleted) semantics.healthy else palette.ember),
+                                .background(if (allCompleted) semantics.healthy else palette.monoCtaContainer),
                         )
                     }
                     val detailText = when {
@@ -1133,11 +1138,16 @@ private fun TodayBentoMetricsRow(
             },
         )
 
+        val maxOfficialSpark = state.maxOfficialSparkDays
         FlameBentoCard(
-            label = "最长本地连签",
-            value = state.maxLocalStreakDays.toString(),
+            label = if (maxOfficialSpark != null) "最高官方火花" else "本机续火记录",
+            value = (maxOfficialSpark ?: state.maxLocalStreakDays).toString(),
             valueSuffix = "天",
-            valueColor = palette.ember,
+            valueColor = if (maxOfficialSpark != null || state.maxLocalStreakDays > 0) {
+                semantics.sparkGold
+            } else {
+                palette.ink
+            },
             onClick = onOpenTargets,
             modifier = Modifier
                 .weight(1f)
@@ -1149,7 +1159,11 @@ private fun TodayBentoMetricsRow(
                 ) {
                     Spacer(modifier = Modifier.height(5.dp))
                     Text(
-                        text = "启用 ${state.enabledTargetCount} 位 · 暂停 ${state.pausedTargetCount} 位",
+                        text = if (maxOfficialSpark != null) {
+                            "启用 ${state.enabledTargetCount} 位 · 本机最高已续 ${state.maxLocalStreakDays} 天"
+                        } else {
+                            "启用 ${state.enabledTargetCount} 位 · 暂停 ${state.pausedTargetCount} 位"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.inkTertiary,
                         maxLines = 1,

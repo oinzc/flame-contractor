@@ -422,12 +422,12 @@ private fun ScanCandidateRow(
     val containerColor = when {
         item.isAmbiguous -> semantics.dangerContainer.copy(alpha = 0.65f)
         item.effectivelyAlreadyImported -> palette.surfaceSubtle.copy(alpha = 0.72f)
-        item.selected -> palette.emberContainer.copy(alpha = 0.52f)
+        item.selected -> palette.surface
         else -> palette.surfaceSubtle
     }
     val borderColor = when {
         item.isAmbiguous -> semantics.dangerBorder
-        item.selected -> palette.emberBorder
+        item.selected -> palette.monoCtaContainer.copy(alpha = 0.45f)
         else -> palette.hairline
     }
 
@@ -499,10 +499,9 @@ private fun ScanCandidateRow(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     if (item.hasOfficialSpark) {
-                        val emberTone = resolveFlameToneColors(FlameTone.EMBER)
                         Surface(
-                            color = emberTone.container,
-                            border = BorderStroke(1.dp, emberTone.border),
+                            color = semantics.sparkGoldContainer,
+                            border = BorderStroke(1.dp, semantics.sparkGoldBorder),
                             shape = RoundedCornerShape(999.dp),
                         ) {
                             Row(
@@ -513,13 +512,13 @@ private fun ScanCandidateRow(
                                 Icon(
                                     imageVector = Icons.Filled.LocalFireDepartment,
                                     contentDescription = null,
-                                    tint = emberTone.fg,
+                                    tint = semantics.sparkGold,
                                     modifier = Modifier.size(13.dp),
                                 )
                                 Text(
                                     text = formatCandidateSparkText(c),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = emberTone.fg,
+                                    color = semantics.sparkGold,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                             }
