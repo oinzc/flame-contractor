@@ -47,6 +47,7 @@ from .schemas import (
     TemplatePatch,
     TemplateRead,
 )
+from .streak import should_increment_streak_for_confirmation
 
 TEMPLATE_TOKEN_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 ALLOWED_TEMPLATE_VARIABLES = {"target_name", "streak_days", "weekday", "date"}
@@ -878,14 +879,19 @@ def confirm_job_sent(session: Session, job_id: str, user_id: str) -> JobRead:
     job.updated_at = now
     session.add(job)
 
+    account = session.get(Account, job.account_id)
     target = session.get(ContractTarget, job.target_id)
     if target is not None:
+        if should_increment_streak_for_confirmation(
+            target.last_confirmed_at,
+            now,
+            account.timezone if account is not None else None,
+        ):
+            target.streak_days += 1
         target.last_sent_at = now
         target.last_confirmed_at = now
-        target.streak_days += 1
         target.updated_at = now
         session.add(target)
-    account = session.get(Account, job.account_id)
     if account is not None:
         account.last_success_at = now
         session.add(account)

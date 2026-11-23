@@ -45,6 +45,7 @@ from ..scan_reconciliation import (
     target_snapshot,
 )
 from ..services import create_targets_batch
+from ..streak import should_increment_streak_for_confirmation
 from .browser_runtime import detect_browser_runtime
 from .douyin_chat import (
     SCAN_MAX_ROUNDS,
@@ -3183,14 +3184,19 @@ class BrowserManager:
                     attempt.finished_at = now
                     session.add(attempt)
             if confirmed:
+                account = session.get(Account, account_id)
                 target = session.get(ContractTarget, target_id)
                 if target is not None:
+                    if should_increment_streak_for_confirmation(
+                        target.last_confirmed_at,
+                        now,
+                        account.timezone if account is not None else None,
+                    ):
+                        target.streak_days += 1
                     target.last_sent_at = now
                     target.last_confirmed_at = now
-                    target.streak_days += 1
                     target.updated_at = now
                     session.add(target)
-                account = session.get(Account, account_id)
                 if account is not None:
                     account.last_success_at = now
                     session.add(account)

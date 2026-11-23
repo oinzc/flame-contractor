@@ -802,6 +802,99 @@ def test_manual_job_review(client, engine):
     assert missing.status_code == 404
 
 
+def test_confirm_job_sent_respects_once_per_day_streak_guard(client, engine):
+    """同日已有确认发送后再次人工确认，不重复累加 streak_days；跨日人工确认正常 +1。"""
+    from datetime import date as date_cls, datetime, timedelta, timezone
+
+    account = client.post(
+        "/api/accounts", json={"displayName": "同日去重账号", "timezone": "Asia/Shanghai"}
+    ).json()
+    template = client.post("/api/templates", json={"name": "去重模板", "content": "续火"}).json()
+    target = client.post(
+        "/api/targets",
+        json={
+            "accountId": account["id"],
+            "nicknameSnapshot": "好友去重",
+            "templateId": template["id"],
+            "streakDays": 10,
+        },
+    ).json()
+
+    # 场景 1：今日已确认发送过，再对同日另一条 unknown 任务点「确认已发」
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(timezone.utc)
+    earlier_today = (
+        now.astimezone(ZoneInfo("Asia/Shanghai"))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+    with Session(engine) as session:
+        t = session.get(ContractTarget, target["id"])
+        assert t is not None
+        t.last_sent_at = earlier_today
+        t.last_confirmed_at = earlier_today
+        session.add(t)
+
+        unknown_job = SendJob(
+            account_id=account["id"],
+            target_id=target["id"],
+            template_id=template["id"],
+            business_date=date_cls.today(),
+            message_slot_id="slot-same-day-unknown",
+            status=JobStatus.UNKNOWN_REQUIRES_REVIEW,
+        )
+        session.add(unknown_job)
+        session.commit()
+        session.refresh(unknown_job)
+        same_day_job_id = unknown_job.id
+
+    resp = client.post(f"/api/jobs/{same_day_job_id}/confirm-sent")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "succeeded"
+
+    with Session(engine) as session:
+        t_after = session.get(ContractTarget, target["id"])
+        assert t_after is not None
+        assert t_after.streak_days == 10  # 同日不重复 +1
+        assert t_after.last_sent_at is not None
+        assert t_after.last_confirmed_at is not None
+        confirmed_utc = (
+            t_after.last_confirmed_at.replace(tzinfo=timezone.utc)
+            if t_after.last_confirmed_at.tzinfo is None
+            else t_after.last_confirmed_at
+        )
+        assert confirmed_utc >= earlier_today
+
+    # 场景 2：上次确认在昨天，今日人工确认应正常 +1
+    yesterday = now - timedelta(days=1)
+    with Session(engine) as session:
+        t = session.get(ContractTarget, target["id"])
+        assert t is not None
+        t.last_confirmed_at = yesterday
+        session.add(t)
+
+        next_day_job = SendJob(
+            account_id=account["id"],
+            target_id=target["id"],
+            template_id=template["id"],
+            business_date=date_cls.today(),
+            message_slot_id="slot-next-day-unknown",
+            status=JobStatus.UNKNOWN_REQUIRES_REVIEW,
+        )
+        session.add(next_day_job)
+        session.commit()
+        session.refresh(next_day_job)
+        next_day_job_id = next_day_job.id
+
+    resp2 = client.post(f"/api/jobs/{next_day_job_id}/confirm-sent")
+    assert resp2.status_code == 200, resp2.text
+    with Session(engine) as session:
+        t_next = session.get(ContractTarget, target["id"])
+        assert t_next is not None
+        assert t_next.streak_days == 11
+
+
 def test_list_jobs_pagination_and_filters(client, engine):
     """GET /api/jobs：分页、状态与账号筛选、跨账号隔离、未知状态 422。"""
     from datetime import date as date_cls

@@ -1,13 +1,14 @@
 """M3：消息渲染、发送预览与发送终态确认的测试。"""
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from app.execution.message_renderer import render_message
 from app.execution.selectors import CHAT_EDITOR
-from app.models import JobStatus, SendAttempt, SendJob
+from app.models import ContractTarget, JobStatus, SendAttempt, SendJob
+from app.streak import should_increment_streak_for_confirmation
 from tests.fakes import FakePage, create_account, make_app
 
 
@@ -222,7 +223,8 @@ def test_force_send_ignores_same_day_success(settings):
             assert all(job.status == JobStatus.SUCCEEDED for job in jobs)
             assert len({job.message_slot_id for job in jobs}) == 2
             assert any(":force:" in job.message_slot_id for job in jobs)
-        assert client.get("/api/targets").json()[0]["streakDays"] == 7
+        # 同一自然日内强制重发不应重复累加 streak_days（5 -> 6，仅加一次）
+        assert client.get("/api/targets").json()[0]["streakDays"] == 6
 
 
 def test_regular_send_after_force_success_is_duplicate(settings):
@@ -675,7 +677,74 @@ def test_send_target_again_same_day_creates_new_slot(settings):
             assert len(jobs) == 2
             assert len({job.message_slot_id for job in jobs}) == 2
             assert all(":force:" in job.message_slot_id for job in jobs)
-        assert client.get("/api/targets").json()[0]["streakDays"] == 2
+        # 同一自然日内单好友连续两次强制发送，streak_days 只自增一次（0 -> 1）
+        assert client.get("/api/targets").json()[0]["streakDays"] == 1
+
+
+def test_streak_guard_timezone_and_boundary_cases():
+    """自然日去重判定：首次确认、同日去重、跨账号本地午夜、naive UTC 与非法时区回退。"""
+    t1 = datetime(2026, 11, 23, 15, 59, 59, tzinfo=timezone.utc)  # 2026-11-23 23:59:59 CST
+    t2 = datetime(2026, 11, 23, 16, 0, 1, tzinfo=timezone.utc)  # 2026-11-24 00:00:01 CST
+    same_cst = datetime(2026, 11, 23, 2, 0, 0, tzinfo=timezone.utc)  # 2026-11-23 10:00:00 CST
+
+    assert should_increment_streak_for_confirmation(None, t1, "Asia/Shanghai") is True
+    assert should_increment_streak_for_confirmation(same_cst, t1, "Asia/Shanghai") is False
+    assert should_increment_streak_for_confirmation(t1, t2, "Asia/Shanghai") is True
+    # UTC 时区下 t1 与 t2 仍属同一天
+    assert should_increment_streak_for_confirmation(t1, t2, "UTC") is False
+    # SQLite 读出的 naive UTC datetime 同样按 UTC 解析
+    assert (
+        should_increment_streak_for_confirmation(
+            t1.replace(tzinfo=None), t2, "Asia/Shanghai"
+        )
+        is True
+    )
+    # 空或无效时区安全回退 UTC，不抛异常
+    assert should_increment_streak_for_confirmation(t1, t2, "Mars/Olympus") is False
+    assert should_increment_streak_for_confirmation(t1, t2, None) is False
+    assert (
+        should_increment_streak_for_confirmation(
+            t1, t1 + timedelta(days=1), "Invalid/Zone"
+        )
+        is True
+    )
+
+
+def test_next_day_send_increments_streak_and_same_day_force_refreshes_timestamps(settings):
+    """跨日发送正常 +1；同日强制重发不重复 +1，但仍刷新 last_sent_at 与 last_confirmed_at。"""
+    app = make_app(settings, [_page_for_send(), _page_for_send()])
+    with TestClient(app) as client:
+        account = _account_with_targets(client)
+        target_id = client.get("/api/targets").json()[0]["id"]
+
+        # 模拟昨天已确认过，今天首次发送应 +1（5 -> 6）
+        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        with Session(app.state.engine) as session:
+            target = session.get(ContractTarget, target_id)
+            assert target is not None
+            target.last_sent_at = yesterday
+            target.last_confirmed_at = yesterday
+            session.add(target)
+            session.commit()
+
+        first = client.post(f"/api/accounts/{account['id']}/send")
+        assert first.status_code == 200, first.text
+        assert first.json()["results"][0]["status"] == "succeeded"
+
+        after_first = client.get("/api/targets").json()[0]
+        assert after_first["streakDays"] == 6
+        first_confirmed_at = after_first["lastConfirmedAt"]
+        assert first_confirmed_at is not None
+
+        # 同一天再次强制发送：streakDays 保持 6，时间戳刷新
+        forced = client.post(f"/api/accounts/{account['id']}/send?force=true")
+        assert forced.status_code == 200, forced.text
+        assert forced.json()["results"][0]["status"] == "succeeded"
+
+        after_forced = client.get("/api/targets").json()[0]
+        assert after_forced["streakDays"] == 6
+        assert after_forced["lastSentAt"] is not None
+        assert after_forced["lastConfirmedAt"] >= first_confirmed_at
 
 
 def test_send_target_blocks_unknown_outcome(settings):

@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.database import build_engine
 from app.core.migrations import run_migrations
 from app.models import Account, ContractTarget, JobStatus, SendJob
+from app.streak import should_increment_streak_for_confirmation
 
 
 def main() -> None:
@@ -38,18 +39,23 @@ def main() -> None:
             job.updated_at = now
             session.add(job)
 
+            account = session.get(Account, job.account_id)
             target = session.get(ContractTarget, job.target_id)
             if target is not None:
+                if should_increment_streak_for_confirmation(
+                    target.last_confirmed_at,
+                    now,
+                    account.timezone if account is not None else None,
+                ):
+                    target.streak_days += 1
                 target.last_sent_at = now
                 target.last_confirmed_at = now
-                target.streak_days += 1
                 target.updated_at = now
                 session.add(target)
                 print(
                     f"  target {target.nickname_snapshot}: streak_days -> {target.streak_days}"
                 )
 
-            account = session.get(Account, job.account_id)
             if account is not None:
                 account.last_success_at = now
                 session.add(account)
