@@ -16,6 +16,7 @@ import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
@@ -23,6 +24,7 @@ import io.github.oinzc.flamecontractor.core.notify.NotifyLevel
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -96,6 +98,7 @@ class ExecutionForegroundService : Service() {
     private lateinit var barkNotifier: BarkNotifier
     private lateinit var localNotifier: LocalNotifier
     private lateinit var templateImageStore: AndroidTemplateImageStore
+    private lateinit var diagnosticScreenshotStore: DiagnosticScreenshotStore
     private lateinit var executor: DouyinWebExecutor
 
     @Volatile
@@ -119,6 +122,10 @@ class ExecutionForegroundService : Service() {
         barkNotifier = BarkNotifier(baseUrlProvider = { secretStore.readBarkUrl() })
         localNotifier = LocalNotifier(appCtx)
         templateImageStore = AndroidTemplateImageStore(appCtx)
+        diagnosticScreenshotStore = (application as? FlameApplication)
+            ?.container
+            ?.diagnosticScreenshotStore
+            ?: DiagnosticScreenshotStore(appCtx)
         executor = DouyinWebExecutor(appCtx, selectorStore)
         ensureProgressChannel()
     }
@@ -1636,6 +1643,13 @@ class ExecutionForegroundService : Service() {
                             finishedAt = cancelMs,
                         ),
                     )
+                    runCatching {
+                        diagnosticScreenshotStore.captureFromWebView(
+                            webView = session.webView,
+                            jobId = currentJob.id,
+                            attemptId = currentAttempt.id,
+                        )
+                    }
                 }
             }
             throw ce
@@ -1671,6 +1685,16 @@ class ExecutionForegroundService : Service() {
                 finishedAt = doneMs,
             ),
         )
+
+        if (finalStatus != JobStatus.SUCCEEDED) {
+            runCatching {
+                diagnosticScreenshotStore.captureFromWebView(
+                    webView = session.webView,
+                    jobId = currentJob.id,
+                    attemptId = currentAttempt.id,
+                )
+            }
+        }
 
         return when (finalStatus) {
             JobStatus.SUCCEEDED -> {

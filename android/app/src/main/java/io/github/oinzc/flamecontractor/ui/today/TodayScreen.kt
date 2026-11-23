@@ -106,6 +106,7 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
+import io.github.oinzc.flamecontractor.ui.components.DiagnosticScreenshotCard
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
@@ -127,6 +128,7 @@ import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.shell.accountStatusStyle
 import io.github.oinzc.flamecontractor.ui.shell.accountStatusTone
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -220,6 +222,12 @@ fun TodayRoute(
         onOpenSettings = onOpenSettings,
         onOpenAccountSwitcher = onOpenAccountSwitcher,
         otherAccountAlertBadge = otherAccountAlertBadge,
+        resolveJobScreenshotFile = { jobId ->
+            container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+        },
+        resolveAttemptScreenshotFile = { attemptId ->
+            container.diagnosticScreenshotStore.resolveAttemptFile(attemptId)
+        },
         modifier = modifier,
     )
 }
@@ -249,6 +257,8 @@ fun TodayScreen(
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
+    resolveJobScreenshotFile: (String) -> File? = { null },
+    resolveAttemptScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
@@ -388,6 +398,8 @@ fun TodayScreen(
     if (activeTimelineItem != null) {
         TaskTimelineSheet(
             item = activeTimelineItem,
+            resolveJobScreenshotFile = resolveJobScreenshotFile,
+            resolveAttemptScreenshotFile = resolveAttemptScreenshotFile,
             onDismiss = {
                 if (activeTimelineItem.expanded) {
                     onToggleJobExpanded(activeTimelineItem.job.id)
@@ -415,6 +427,9 @@ fun TodayScreen(
     state.activeUnknownReviewJob?.let { reviewItem ->
         UnknownReviewSheet(
             item = reviewItem,
+            screenshotFile = remember(reviewItem.job.id, reviewItem.job.updatedAt) {
+                resolveJobScreenshotFile(reviewItem.job.id)
+            },
             isResolving = state.isResolvingAction,
             onConfirmSucceeded = { onResolveUnknownAsSucceeded(reviewItem.job.id) },
             onConfirmCancelled = { onResolveUnknownAsCancelled(reviewItem.job.id) },
@@ -1293,6 +1308,8 @@ private fun TodayRecentJobsSection(
 @Composable
 private fun TaskTimelineSheet(
     item: RecentJobItem,
+    resolveJobScreenshotFile: (String) -> File?,
+    resolveAttemptScreenshotFile: (String) -> File?,
     onDismiss: () -> Unit,
     onOpenUnknownReview: () -> Unit,
 ) {
@@ -1300,6 +1317,26 @@ private fun TaskTimelineSheet(
     val semantics = FlameThemeTokens.semanticColors
     val job = item.job
     val meta = resolveJobVisualMeta(job.status)
+    val attemptScreenshots = remember(item.attempts, job.status) {
+        item.attempts.associate { attempt ->
+            val file = if (attempt.status != AttemptStatus.SUCCEEDED || job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                resolveAttemptScreenshotFile(attempt.id)
+            } else {
+                null
+            }
+            attempt.id to file
+        }
+    }
+    val hasAnyAttemptScreenshot = remember(attemptScreenshots) {
+        attemptScreenshots.values.any { it != null }
+    }
+    val fallbackJobScreenshot = remember(job.id, job.status, job.updatedAt, item.attemptsLoaded, hasAnyAttemptScreenshot) {
+        if (item.attemptsLoaded && job.status != JobStatus.SUCCEEDED && !hasAnyAttemptScreenshot) {
+            resolveJobScreenshotFile(job.id)
+        } else {
+            null
+        }
+    }
 
     FlameModalSheet(
         onDismissRequest = onDismiss,
@@ -1379,17 +1416,29 @@ private fun TaskTimelineSheet(
                 )
             }
         } else if (item.attempts.isEmpty()) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = palette.surfaceSubtle,
+            Column(
                 modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = "暂无发送尝试明细记录",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkSecondary,
-                    modifier = Modifier.padding(14.dp),
-                )
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = palette.surfaceSubtle,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "暂无发送尝试明细记录",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                        modifier = Modifier.padding(14.dp),
+                    )
+                }
+                if (fallbackJobScreenshot != null) {
+                    DiagnosticScreenshotCard(
+                        file = fallbackJobScreenshot,
+                        title = "现场诊断截图",
+                        refreshKey = job.updatedAt,
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -1400,7 +1449,19 @@ private fun TaskTimelineSheet(
                 contentPadding = PaddingValues(bottom = 8.dp),
             ) {
                 items(items = item.attempts, key = { it.id }) { attempt ->
-                    AttemptTimelineRow(attempt = attempt)
+                    AttemptTimelineRow(
+                        attempt = attempt,
+                        screenshotFile = attemptScreenshots[attempt.id],
+                    )
+                }
+                if (fallbackJobScreenshot != null) {
+                    item(key = "job_fallback_screenshot") {
+                        DiagnosticScreenshotCard(
+                            file = fallbackJobScreenshot,
+                            title = "现场诊断截图",
+                            refreshKey = job.updatedAt,
+                        )
+                    }
                 }
             }
         }
@@ -1425,7 +1486,10 @@ private fun TaskTimelineSheet(
 }
 
 @Composable
-private fun AttemptTimelineRow(attempt: SendAttemptEntity) {
+private fun AttemptTimelineRow(
+    attempt: SendAttemptEntity,
+    screenshotFile: File? = null,
+) {
     val palette = FlameThemeTokens.palette
     val (statusText, tone) = when (attempt.status) {
         AttemptStatus.SUCCEEDED -> "成功" to FlameTone.HEALTHY
@@ -1465,50 +1529,63 @@ private fun AttemptTimelineRow(attempt: SendAttemptEntity) {
         color = palette.surfaceSubtle,
         border = BorderStroke(1.dp, palette.hairline),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(
-                    text = "第 ${attempt.attemptNo} 次 · $stageText · $methodText",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = palette.ink,
-                )
-                val failHint = attempt.failureClass?.let(::failureClassLabel)
-                val metaLine = buildString {
-                    append(formatEpochTimeOnly(attempt.startedAt))
-                    attempt.finishedAt?.let {
-                        append(" – ")
-                        append(formatEpochTimeOnly(it))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        text = "第 ${attempt.attemptNo} 次 · $stageText · $methodText",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = palette.ink,
+                    )
+                    val failHint = attempt.failureClass?.let(::failureClassLabel)
+                    val metaLine = buildString {
+                        append(formatEpochTimeOnly(attempt.startedAt))
+                        attempt.finishedAt?.let {
+                            append(" – ")
+                            append(formatEpochTimeOnly(it))
+                        }
+                        if (durationLabel != null) {
+                            append(" (")
+                            append(durationLabel)
+                            append(")")
+                        }
+                        if (failHint != null) {
+                            append(" · ")
+                            append(failHint)
+                        }
                     }
-                    if (durationLabel != null) {
-                        append(" (")
-                        append(durationLabel)
-                        append(")")
-                    }
-                    if (failHint != null) {
-                        append(" · ")
-                        append(failHint)
-                    }
+                    Text(
+                        text = metaLine,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                    )
                 }
-                Text(
-                    text = metaLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkSecondary,
+                FlameStatusPill(
+                    text = statusText,
+                    tone = tone,
+                    showDot = false,
                 )
             }
-            FlameStatusPill(
-                text = statusText,
-                tone = tone,
-                showDot = false,
-            )
+
+            if (screenshotFile != null) {
+                DiagnosticScreenshotCard(
+                    file = screenshotFile,
+                    title = "第 ${attempt.attemptNo} 次尝试现场截图",
+                    refreshKey = attempt.finishedAt ?: attempt.startedAt,
+                )
+            }
         }
     }
 }
@@ -1626,6 +1703,7 @@ private fun ReloginChoiceSheet(
 @Composable
 private fun UnknownReviewSheet(
     item: UnknownJobReviewItem,
+    screenshotFile: File?,
     isResolving: Boolean,
     onConfirmSucceeded: () -> Unit,
     onConfirmCancelled: () -> Unit,
@@ -1643,7 +1721,13 @@ private fun UnknownReviewSheet(
             FlameStatusPill(text = "待人工核对", tone = FlameTone.DANGER)
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             FlameCard(
                 modifier = Modifier.fillMaxWidth(),
                 cornerRadius = 16.dp,
@@ -1685,6 +1769,17 @@ private fun UnknownReviewSheet(
                 )
             }
 
+            DiagnosticScreenshotCard(
+                file = screenshotFile,
+                title = "现场诊断截图",
+                refreshKey = item.job.updatedAt,
+                showMissingHint = true,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Surface(
                 onClick = onConfirmSucceeded,
                 enabled = !isResolving,

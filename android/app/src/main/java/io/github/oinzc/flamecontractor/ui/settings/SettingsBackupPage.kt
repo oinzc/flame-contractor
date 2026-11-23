@@ -56,7 +56,8 @@ import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 internal fun SettingsBackupPage(
     uiState: SettingsUiState,
     isBackupSafBusy: Boolean,
-    onLaunchBackupExport: () -> Unit,
+    onLaunchZipBackupExport: () -> Unit,
+    onLaunchJsonBackupExport: () -> Unit,
     onLaunchBackupImport: () -> Unit,
     onSelectBackupAccount: (String) -> Unit,
     onIncludeBackupHistoryChanged: (Boolean) -> Unit,
@@ -96,19 +97,19 @@ internal fun SettingsBackupPage(
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         Text(
-                            text = "跨机 JSON 脱敏互迁",
+                            text = "跨端配置与图片模板互迁",
                             style = MaterialTheme.typography.titleSmall,
                             color = palette.ink,
                         )
                         Text(
-                            text = "支持 Android 与 Windows / Docker 端 JSON schema v1 双向无损互迁",
+                            text = "支持 Android 与 Windows / Docker 端 .zip（含图）及 .json（schema v1）双向无损互通",
                             style = MaterialTheme.typography.bodySmall,
                             color = palette.inkSecondary,
                         )
                     }
                 }
                 Text(
-                    text = "导出内容包含账号调度配置、文案模板、好友目标与历史记录；严格脱敏，绝不包含抖音 Cookie、LocalStorage、self_uid、Bark 密钥以及本地图片路径（image_path）。导入时不会覆盖本地登录态与 Bark 密钥。",
+                    text = "完整备份 (.zip) 会一并打包图片模板本地真图；所有导出均严格脱敏，绝不包含抖音 Cookie、LocalStorage、self_uid、Bark 密钥或本机绝对路径（image_path）。导入时不会覆盖本地登录态与 Bark 密钥。",
                     style = MaterialTheme.typography.bodySmall,
                     color = palette.inkSecondary,
                     modifier = Modifier.padding(top = 10.dp),
@@ -145,13 +146,19 @@ internal fun SettingsBackupPage(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         SettingsPrimaryButton(
-                            text = if (uiState.isExportingBackup || isBackupSafBusy) "正在处理…" else "导出脱敏 JSON",
+                            text = if (uiState.isExportingBackup || isBackupSafBusy) "正在处理…" else "导出完整备份 (.zip 含图)",
                             leadingIcon = Icons.Outlined.Upload,
                             enabled = !busy,
-                            onClick = onLaunchBackupExport,
+                            onClick = onLaunchZipBackupExport,
                         )
                         SettingsSecondaryButton(
-                            text = if (uiState.isInspectingBackup) "解析中…" else "导入 JSON 备份",
+                            text = "仅导出 JSON",
+                            leadingIcon = Icons.Outlined.Upload,
+                            enabled = !busy,
+                            onClick = onLaunchJsonBackupExport,
+                        )
+                        SettingsSecondaryButton(
+                            text = if (uiState.isInspectingBackup) "解析中…" else "选择备份文件导入",
                             leadingIcon = Icons.Outlined.Download,
                             enabled = !busy,
                             onClick = onLaunchBackupImport,
@@ -212,6 +219,13 @@ private fun BackupImportReportSection(report: BackupImportReport) {
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.ink,
             )
+            if (report.restoredImagesCount > 0) {
+                Text(
+                    text = "图片模板：已自动还原 ${report.restoredImagesCount} 张随包图片",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = FlameThemeTokens.semanticColors.healthy,
+                )
+            }
             if (report.missingImageTemplateCount > 0) {
                 SettingsFeedbackBanner(
                     message = "待补选图片：已保留 ${report.missingImageTemplateCount} 个图片模板及好友绑定，请前往「模板」页重新选择本地图片",
@@ -292,6 +306,26 @@ internal fun BackupImportPreviewSheet(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        FlameMiniTag(
+                            text = if (inspection.isZipArchive) "完整备份包 .zip" else "纯配置 .json",
+                            tone = if (inspection.isZipArchive && inspection.bundledImageCount > 0) {
+                                FlameTone.HEALTHY
+                            } else {
+                                FlameTone.NEUTRAL
+                            },
+                        )
+                        if (inspection.isZipArchive) {
+                            FlameMiniTag(
+                                text = "随包图片 ${inspection.bundledImageCount} 张",
+                                tone = if (inspection.bundledImageCount > 0) FlameTone.HEALTHY else FlameTone.NEUTRAL,
+                            )
+                        }
+                    }
                     if (inspection.parsed.exportedAtEpochMs > 0L) {
                         Text(
                             text = "导出时间：${formatSettingsEpochMs(inspection.parsed.exportedAtEpochMs)}",
@@ -309,11 +343,23 @@ internal fun BackupImportPreviewSheet(
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.ink,
                     )
+                    if (inspection.isZipArchive && inspection.bundledImageCount > 0) {
+                        Text(
+                            text = "导入后将自动还原 ${inspection.bundledImageCount} 张随包图片并绑定至对应图片模板。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlameThemeTokens.semanticColors.healthy,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
                     if (inspection.missingImageTemplateCount > 0) {
                         Text(
-                            text = "提示：备份含 ${inspection.missingImageTemplateCount} 个图片（image）模板，导入将保留模板定义与好友绑定；若本地尚无对应图片文件，导入后需前往「模板」页补选本地图片。",
+                            text = if (inspection.isZipArchive) {
+                                "提示：另有 ${inspection.missingImageTemplateCount} 个图片模板未随包附带图片，若本地尚无对应图片文件，导入后需前往「模板」页补选。"
+                            } else {
+                                "提示：备份含 ${inspection.missingImageTemplateCount} 个图片（image）模板，导入将保留模板定义与好友绑定；若本地尚无对应图片文件，导入后需前往「模板」页补选本地图片。"
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = palette.ember,
+                            color = FlameThemeTokens.semanticColors.warning,
                             modifier = Modifier.padding(top = 2.dp),
                         )
                     }

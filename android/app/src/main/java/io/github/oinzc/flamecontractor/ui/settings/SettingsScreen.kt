@@ -77,6 +77,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.oinzc.flamecontractor.core.backup.BackupArchiveCodec
 import io.github.oinzc.flamecontractor.core.backup.BackupCodec
 import io.github.oinzc.flamecontractor.core.backup.BackupManager
 import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
@@ -221,6 +222,38 @@ fun SettingsRoute(
         }
     }
 
+    val exportZipBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            isSafIoBusy = true
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val outputStream = try {
+                        context.contentResolver.openOutputStream(uri, "wt")
+                    } catch (_: Throwable) {
+                        null
+                    } ?: context.contentResolver.openOutputStream(uri)
+                        ?: throw IOException("无法打开目标文件输出流")
+                    outputStream.use { stream ->
+                        viewModel.exportBackupZipToStream(stream)
+                    }
+                }
+                viewModel.onBackupZipExportCompleted(result)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (exc: Throwable) {
+                viewModel.onBackupExportFailed(
+                    exc.message?.takeIf { it.isNotBlank() }
+                        ?: "导出完整备份失败（${exc.javaClass.simpleName}）",
+                )
+            } finally {
+                isSafIoBusy = false
+            }
+        }
+    }
+
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
@@ -262,12 +295,12 @@ fun SettingsRoute(
         coroutineScope.launch {
             isSafIoBusy = true
             try {
-                val rawJson = withContext(Dispatchers.IO) {
+                val payload = withContext(Dispatchers.IO) {
                     context.contentResolver.openInputStream(uri)?.use { stream ->
-                        readUtf8StreamWithLimit(stream, BackupCodec.MAX_BACKUP_BYTES)
+                        BackupArchiveCodec.readArchiveOrJson(stream)
                     } ?: throw IOException("无法读取所选备份文件")
                 }
-                viewModel.inspectBackupFile(rawJson)
+                viewModel.inspectBackupPayload(payload)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (exc: Throwable) {
@@ -281,7 +314,17 @@ fun SettingsRoute(
         }
     }
 
-    val launchBackupExport: () -> Unit = {
+    val launchZipBackupExport: () -> Unit = {
+        val zoneId = DailySchedulePlanner.resolveZoneId(uiState.accountTimezone)
+        val suggestedName = BackupArchiveCodec.defaultZipBackupFileName(LocalDate.now(zoneId))
+        try {
+            exportZipBackupLauncher.launch(suggestedName)
+        } catch (_: ActivityNotFoundException) {
+            viewModel.onBackupExportFailed("未找到系统文件保存选择器")
+        }
+    }
+
+    val launchJsonBackupExport: () -> Unit = {
         val zoneId = DailySchedulePlanner.resolveZoneId(uiState.accountTimezone)
         val suggestedName = BackupCodec.defaultBackupFileName(LocalDate.now(zoneId))
         try {
@@ -293,7 +336,15 @@ fun SettingsRoute(
 
     val launchBackupImport: () -> Unit = {
         try {
-            importBackupLauncher.launch(arrayOf("*/*"))
+            importBackupLauncher.launch(
+                arrayOf(
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/json",
+                    "text/plain",
+                    "*/*",
+                ),
+            )
         } catch (_: ActivityNotFoundException) {
             viewModel.onBackupReadFailed("未找到系统文件选择器")
         }
@@ -377,7 +428,8 @@ fun SettingsRoute(
             SettingsSection.BACKUP -> SettingsBackupPage(
                 uiState = uiState,
                 isBackupSafBusy = isSafIoBusy,
-                onLaunchBackupExport = launchBackupExport,
+                onLaunchZipBackupExport = launchZipBackupExport,
+                onLaunchJsonBackupExport = launchJsonBackupExport,
                 onLaunchBackupImport = launchBackupImport,
                 onSelectBackupAccount = viewModel::onSelectBackupAccount,
                 onIncludeBackupHistoryChanged = viewModel::onIncludeBackupHistoryChanged,

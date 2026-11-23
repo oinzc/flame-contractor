@@ -7,10 +7,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.webkit.WebViewCompat
+import io.github.oinzc.flamecontractor.core.backup.BackupArchivePayload
 import io.github.oinzc.flamecontractor.core.backup.BackupCodec
 import io.github.oinzc.flamecontractor.core.backup.BackupImportReport
 import io.github.oinzc.flamecontractor.core.backup.BackupInspection
 import io.github.oinzc.flamecontractor.core.backup.BackupManager
+import io.github.oinzc.flamecontractor.core.backup.BackupZipExportResult
 import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.BarkProbeResult
@@ -19,6 +21,7 @@ import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.NotifyLevel
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundle
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -35,6 +38,7 @@ import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZonedDateTime
@@ -75,12 +79,26 @@ interface SettingsScheduleGateway {
 
 interface SettingsBackupGateway {
     suspend fun exportBackupJson(): String
+    suspend fun exportBackupZip(outputStream: OutputStream): BackupZipExportResult {
+        throw UnsupportedOperationException("当前备份网关不支持 ZIP 完整归档导出")
+    }
     fun inspectBackup(rawJson: String): BackupInspection
+    fun inspectBackupPayload(payload: BackupArchivePayload): BackupInspection =
+        inspectBackup(payload.rawJson)
     suspend fun importBackup(
         rawJson: String,
         selectedSourceAccountId: String,
         includeHistory: Boolean,
     ): BackupImportReport
+    suspend fun importBackupPayload(
+        payload: BackupArchivePayload,
+        selectedSourceAccountId: String,
+        includeHistory: Boolean,
+    ): BackupImportReport = importBackup(
+        rawJson = payload.rawJson,
+        selectedSourceAccountId = selectedSourceAccountId,
+        includeHistory = includeHistory,
+    )
 }
 
 interface SettingsSelectorGateway {
@@ -224,7 +242,7 @@ class SettingsViewModel(
 
     private var scheduleFormDirty = false
     private var autoScanFormDirty = false
-    private var pendingBackupRawJson: String? = null
+    private var pendingBackupPayload: BackupArchivePayload? = null
     private var initialProbeSeen = false
     private var initialProbeReportRef: StructureProbeReport? = null
     private var awaitingProbeResult = false
@@ -736,12 +754,60 @@ class SettingsViewModel(
         }
     }
 
+    suspend fun exportBackupZipToStream(outputStream: OutputStream): BackupZipExportResult {
+        _uiState.update {
+            it.copy(
+                isExportingBackup = true,
+                backupError = null,
+                backupMessage = null,
+            )
+        }
+        return try {
+            val result = withContext(ioDispatcher) {
+                backupGateway.exportBackupZip(outputStream)
+            }
+            _uiState.update { it.copy(isExportingBackup = false) }
+            result
+        } catch (ce: CancellationException) {
+            _uiState.update { it.copy(isExportingBackup = false) }
+            throw ce
+        } catch (exc: Throwable) {
+            _uiState.update {
+                it.copy(
+                    isExportingBackup = false,
+                    backupError = "导出完整备份失败：${exc.message ?: exc.javaClass.simpleName}",
+                )
+            }
+            throw exc
+        }
+    }
+
     fun onBackupExportCompleted() {
         _uiState.update {
             it.copy(
                 isExportingBackup = false,
                 backupError = null,
                 backupMessage = "已导出脱敏 JSON 备份文件（不包含抖音登录态与 Bark 密钥）",
+            )
+        }
+    }
+
+    fun onBackupZipExportCompleted(result: BackupZipExportResult) {
+        val message = when {
+            result.bundledImageCount > 0 && result.skippedImageCount > 0 ->
+                "已导出完整备份包 (.zip)，打包 ${result.bundledImageCount} 张模板图片（另有 ${result.skippedImageCount} 个缺图模板已跳过；不含抖音登录态与 Bark 密钥）"
+            result.bundledImageCount > 0 ->
+                "已导出完整备份包 (.zip)，含 ${result.bundledImageCount} 张模板图片（不含抖音登录态与 Bark 密钥）"
+            result.skippedImageCount > 0 ->
+                "已导出备份包 (.zip)，其中 ${result.skippedImageCount} 个图片模板因本地文件缺失未随包打包（不含抖音登录态与 Bark 密钥）"
+            else ->
+                "已导出完整备份包 (.zip，当前无本地图片模板；不含抖音登录态与 Bark 密钥)"
+        }
+        _uiState.update {
+            it.copy(
+                isExportingBackup = false,
+                backupError = null,
+                backupMessage = message,
             )
         }
     }
@@ -757,7 +823,7 @@ class SettingsViewModel(
     }
 
     fun onBackupReadFailed(message: String) {
-        pendingBackupRawJson = null
+        pendingBackupPayload = null
         _uiState.update {
             it.copy(
                 isInspectingBackup = false,
@@ -771,6 +837,16 @@ class SettingsViewModel(
     }
 
     fun inspectBackupFile(rawJson: String) {
+        inspectBackupPayload(
+            BackupArchivePayload(
+                rawJson = rawJson,
+                bundledImagesByTemplateId = emptyMap(),
+                isZipArchive = false,
+            ),
+        )
+    }
+
+    fun inspectBackupPayload(payload: BackupArchivePayload) {
         _uiState.update {
             it.copy(
                 isInspectingBackup = true,
@@ -781,9 +857,9 @@ class SettingsViewModel(
         scope.launch {
             try {
                 val inspection = withContext(ioDispatcher) {
-                    backupGateway.inspectBackup(rawJson)
+                    backupGateway.inspectBackupPayload(payload)
                 }
-                pendingBackupRawJson = rawJson
+                pendingBackupPayload = payload
                 _uiState.update {
                     it.copy(
                         isInspectingBackup = false,
@@ -797,7 +873,7 @@ class SettingsViewModel(
             } catch (ce: CancellationException) {
                 throw ce
             } catch (exc: Throwable) {
-                pendingBackupRawJson = null
+                pendingBackupPayload = null
                 _uiState.update {
                     it.copy(
                         isInspectingBackup = false,
@@ -820,7 +896,7 @@ class SettingsViewModel(
     }
 
     fun dismissBackupPreviewDialog() {
-        pendingBackupRawJson = null
+        pendingBackupPayload = null
         _uiState.update {
             it.copy(
                 showBackupPreviewDialog = false,
@@ -831,10 +907,10 @@ class SettingsViewModel(
     }
 
     fun confirmImportBackup() {
-        val rawJson = pendingBackupRawJson
+        val payload = pendingBackupPayload
         val stateSnapshot = _uiState.value
         val selectedAccountId = stateSnapshot.selectedBackupAccountId
-        if (rawJson.isNullOrEmpty() || selectedAccountId.isNullOrBlank()) {
+        if (payload == null || payload.rawJson.isEmpty() || selectedAccountId.isNullOrBlank()) {
             _uiState.update {
                 it.copy(
                     showBackupPreviewDialog = false,
@@ -855,8 +931,8 @@ class SettingsViewModel(
         scope.launch {
             try {
                 val (report, refreshedAccount, nextAutoScan) = withContext(ioDispatcher) {
-                    val importReport = backupGateway.importBackup(
-                        rawJson = rawJson,
+                    val importReport = backupGateway.importBackupPayload(
+                        payload = payload,
                         selectedSourceAccountId = selectedAccountId,
                         includeHistory = includeHistory,
                     )
@@ -865,7 +941,7 @@ class SettingsViewModel(
                     Triple(importReport, latestAcc, nextScan)
                 }
 
-                pendingBackupRawJson = null
+                pendingBackupPayload = null
                 scheduleFormDirty = false
                 autoScanFormDirty = false
 
@@ -905,7 +981,7 @@ class SettingsViewModel(
             } catch (ce: CancellationException) {
                 throw ce
             } catch (exc: Throwable) {
-                pendingBackupRawJson = null
+                pendingBackupPayload = null
                 _uiState.update {
                     it.copy(
                         isImportingBackup = false,
@@ -933,6 +1009,9 @@ class SettingsViewModel(
         append("模板 +${report.templatesInserted}/更新${report.templatesUpdated}，")
         append("好友 +${report.targetsInserted}/更新${report.targetsUpdated}，")
         append("任务 +${report.jobsInserted}/更新${report.jobsUpdated}")
+        if (report.restoredImagesCount > 0) {
+            append("；已恢复 ${report.restoredImagesCount} 张模板图片")
+        }
         if (report.missingImageTemplateCount > 0) {
             append("；已保留 ${report.missingImageTemplateCount} 个图片模板及好友绑定，请前往「模板」页补选本地图片")
         }
@@ -1415,6 +1494,7 @@ class SettingsViewModel(
             backupManager: BackupManager = BackupManager(
                 store = RoomBackupStore(database),
                 onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
+                templateImageStore = AndroidTemplateImageStore(context.applicationContext ?: context),
             ),
             accountId: String = DEFAULT_ACCOUNT_ID,
         ): ViewModelProvider.Factory {
@@ -1524,7 +1604,13 @@ internal class AndroidBackupGateway(
 
     override suspend fun exportBackupJson(): String = backupManager.exportJson(accountId)
 
+    override suspend fun exportBackupZip(outputStream: OutputStream): BackupZipExportResult =
+        backupManager.exportZipToStream(accountId = accountId, outputStream = outputStream)
+
     override fun inspectBackup(rawJson: String): BackupInspection = backupManager.inspectJson(rawJson)
+
+    override fun inspectBackupPayload(payload: BackupArchivePayload): BackupInspection =
+        backupManager.inspectArchive(payload)
 
     override suspend fun importBackup(
         rawJson: String,
@@ -1537,6 +1623,21 @@ internal class AndroidBackupGateway(
             selectedSourceAccountId = selectedSourceAccountId,
             includeHistory = includeHistory,
             targetAccountId = accountId,
+        )
+    }
+
+    override suspend fun importBackupPayload(
+        payload: BackupArchivePayload,
+        selectedSourceAccountId: String,
+        includeHistory: Boolean,
+    ): BackupImportReport {
+        val parsed = backupManager.inspectArchive(payload).parsed
+        return backupManager.importBackup(
+            parsed = parsed,
+            selectedSourceAccountId = selectedSourceAccountId,
+            includeHistory = includeHistory,
+            targetAccountId = accountId,
+            bundledImagesByTemplateId = payload.bundledImagesByTemplateId,
         )
     }
 }

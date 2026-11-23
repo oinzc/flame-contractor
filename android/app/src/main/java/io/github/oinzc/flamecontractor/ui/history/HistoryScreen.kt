@@ -86,6 +86,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
@@ -94,6 +95,7 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.domain.DailyJobBucket
 import io.github.oinzc.flamecontractor.domain.HistoryStatsSummary
+import io.github.oinzc.flamecontractor.ui.components.DiagnosticScreenshotCard
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
@@ -115,6 +117,7 @@ import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import java.io.File
 import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
@@ -135,9 +138,13 @@ fun HistoryRoute(
     onOpenSettings: (SettingsSection?) -> Unit = {},
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
+    diagnosticScreenshotStore: DiagnosticScreenshotStore? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val resolvedScreenshotStore = diagnosticScreenshotStore ?: remember(context) {
+        DiagnosticScreenshotStore(context)
+    }
     val factory = remember(database, accountId) {
         HistoryViewModel.factory(database = database, accountId = accountId)
     }
@@ -214,6 +221,12 @@ fun HistoryRoute(
         onDismissJobDetail = viewModel::dismissJobDetail,
         onNavigateToTodayReview = onNavigateToTodayReview,
         onOpenSettings = { onOpenSettings(null) },
+        resolveAttemptScreenshotFile = { attemptId ->
+            resolvedScreenshotStore.resolveAttemptFile(attemptId)
+        },
+        resolveJobScreenshotFile = { jobId ->
+            resolvedScreenshotStore.resolveJobLatestFile(jobId)
+        },
         modifier = modifier,
     )
 }
@@ -233,6 +246,8 @@ fun HistoryScreen(
     onDismissJobDetail: () -> Unit,
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: () -> Unit = {},
+    resolveAttemptScreenshotFile: (String) -> File? = { null },
+    resolveJobScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
@@ -518,6 +533,8 @@ fun HistoryScreen(
     state.selectedJobDetail?.let { detail ->
         HistoryJobTimelineSheet(
             detail = detail,
+            resolveAttemptScreenshotFile = resolveAttemptScreenshotFile,
+            resolveJobScreenshotFile = resolveJobScreenshotFile,
             onDismiss = onDismissJobDetail,
             onNavigateToTodayReview = {
                 onDismissJobDetail()
@@ -1218,6 +1235,8 @@ private fun HistoryJobListRow(
 @Composable
 private fun HistoryJobTimelineSheet(
     detail: HistoryJobDetailUiState,
+    resolveAttemptScreenshotFile: (String) -> File?,
+    resolveJobScreenshotFile: (String) -> File?,
     onDismiss: () -> Unit,
     onNavigateToTodayReview: () -> Unit,
 ) {
@@ -1230,6 +1249,26 @@ private fun HistoryJobTimelineSheet(
         "${item.targetName}（已删除）"
     } else {
         item.targetName
+    }
+    val attemptScreenshots = remember(detail.attempts) {
+        detail.attempts.associate { attempt ->
+            val file = if (attempt.status != AttemptStatus.SUCCEEDED || job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                resolveAttemptScreenshotFile(attempt.id)
+            } else {
+                null
+            }
+            attempt.id to file
+        }
+    }
+    val hasAnyAttemptScreenshot = remember(attemptScreenshots) {
+        attemptScreenshots.values.any { it != null }
+    }
+    val fallbackJobScreenshot = remember(job.id, job.status, job.updatedAt, detail.isLoadingAttempts, hasAnyAttemptScreenshot) {
+        if (!detail.isLoadingAttempts && job.status != JobStatus.SUCCEEDED && !hasAnyAttemptScreenshot) {
+            resolveJobScreenshotFile(job.id)
+        } else {
+            null
+        }
     }
 
     FlameModalSheet(
@@ -1349,10 +1388,21 @@ private fun HistoryJobTimelineSheet(
                 else -> {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         detail.attempts.forEach { attempt ->
-                            HistoryAttemptTimelineItem(attempt = attempt)
+                            HistoryAttemptTimelineItem(
+                                attempt = attempt,
+                                screenshotFile = attemptScreenshots[attempt.id],
+                            )
                         }
                     }
                 }
+            }
+
+            if (fallbackJobScreenshot != null) {
+                DiagnosticScreenshotCard(
+                    file = fallbackJobScreenshot,
+                    title = "现场诊断截图",
+                    refreshKey = job.updatedAt,
+                )
             }
         }
 
@@ -1403,7 +1453,10 @@ private fun TimelineMetaRow(
 }
 
 @Composable
-private fun HistoryAttemptTimelineItem(attempt: SendAttemptEntity) {
+private fun HistoryAttemptTimelineItem(
+    attempt: SendAttemptEntity,
+    screenshotFile: File? = null,
+) {
     val palette = FlameThemeTokens.palette
     val (statusLabel, statusTone) = when (attempt.status) {
         AttemptStatus.SUCCEEDED -> "成功" to FlameTone.HEALTHY
@@ -1486,6 +1539,15 @@ private fun HistoryAttemptTimelineItem(attempt: SendAttemptEntity) {
             style = MaterialTheme.typography.labelSmall,
             color = palette.inkTertiary,
         )
+
+        if (screenshotFile != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            DiagnosticScreenshotCard(
+                file = screenshotFile,
+                title = "第 ${attempt.attemptNo} 次尝试现场截图",
+                refreshKey = attempt.finishedAt ?: attempt.startedAt,
+            )
+        }
     }
 }
 

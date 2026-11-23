@@ -12,6 +12,7 @@ import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
@@ -45,6 +46,7 @@ class AppContainer(context: Context) {
     val localNotifier: LocalNotifier = LocalNotifier(appContext)
     val scheduleCoordinator: ScheduleCoordinator = ScheduleCoordinator(appContext, database)
     val templateImageStore: AndroidTemplateImageStore = AndroidTemplateImageStore(appContext)
+    val diagnosticScreenshotStore: DiagnosticScreenshotStore = DiagnosticScreenshotStore(appContext)
     val pendingProfileCleanupStore: PendingProfileCleanupStore = PendingProfileCleanupStore(appContext)
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
     val themePreferencesStore: ThemePreferencesStore = ThemePreferencesStore.fromContext(appContext)
@@ -74,6 +76,7 @@ class AppContainer(context: Context) {
         store = RoomBackupStore(database),
         onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
         imageExists = { path -> templateImageStore.isImageAvailable(path) },
+        templateImageStore = templateImageStore,
     )
     val webExecutor: DouyinWebExecutor = DouyinWebExecutor(appContext, selectorBundleStore)
 
@@ -90,6 +93,9 @@ class AppContainer(context: Context) {
                 context = appContext,
                 database = database,
             )
+            runCatching {
+                diagnosticScreenshotStore.pruneExpiredAndExcess()
+            }
         }
     }
 }

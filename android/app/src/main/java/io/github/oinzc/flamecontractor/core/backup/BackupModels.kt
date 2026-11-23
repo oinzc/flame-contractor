@@ -155,6 +155,8 @@ data class BackupInspection(
     val targetCount: Int,
     val jobCount: Int,
     val attemptCount: Int,
+    val isZipArchive: Boolean = false,
+    val bundledImageCount: Int = 0,
 )
 
 data class BackupImportReport(
@@ -168,6 +170,7 @@ data class BackupImportReport(
     val jobsInserted: Int = 0,
     val jobsUpdated: Int = 0,
     val missingImageTemplateCount: Int = 0,
+    val restoredImagesCount: Int = 0,
     val skippedProtectedJobs: Int = 0,
     val warnings: List<String> = emptyList(),
 )

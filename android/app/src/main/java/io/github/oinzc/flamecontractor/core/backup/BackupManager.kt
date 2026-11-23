@@ -1,6 +1,7 @@
 package io.github.oinzc.flamecontractor.core.backup
 
 import androidx.room.withTransaction
+import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -15,10 +16,13 @@ import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.OutputStream
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 
 interface BackupStore {
     suspend fun <T> runInTransaction(block: suspend () -> T): T
@@ -45,6 +49,8 @@ interface BackupStore {
     suspend fun listAllAttemptsForAccount(accountId: String): List<SendAttemptEntity>
     suspend fun attemptIdExistsGlobally(attemptId: String): Boolean = false
     suspend fun upsertAttempt(attempt: SendAttemptEntity)
+
+    suspend fun listAllReferencedImagePaths(): Set<String> = emptySet()
 }
 
 class RoomBackupStore(private val database: FlameDatabase) : BackupStore {
@@ -114,6 +120,12 @@ class RoomBackupStore(private val database: FlameDatabase) : BackupStore {
     override suspend fun upsertAttempt(attempt: SendAttemptEntity) {
         database.sendJobDao().upsertAttempt(attempt)
     }
+
+    override suspend fun listAllReferencedImagePaths(): Set<String> =
+        database.accountDao().listAll()
+            .flatMap { acc -> database.templateDao().listTemplates(acc.id) }
+            .mapNotNull { tpl -> tpl.imagePath?.trim()?.takeIf { it.isNotEmpty() } }
+            .toSet()
 }
 
 /**
@@ -127,9 +139,43 @@ class BackupManager(
         val cleaned = path?.trim()?.takeIf { it.isNotEmpty() }
         cleaned != null && File(cleaned).let { it.isFile && it.length() > 0L }
     },
+    private val templateImageStore: TemplateImageStorage? = null,
 ) {
 
     suspend fun exportJson(accountId: String = DEFAULT_ACCOUNT_ID): String {
+        val snapshot = collectExportSnapshot(accountId)
+        return BackupCodec.encode(
+            snapshot = snapshot,
+            exportedAtEpochMs = clockMillis(),
+        )
+    }
+
+    suspend fun exportZipToStream(
+        accountId: String = DEFAULT_ACCOUNT_ID,
+        outputStream: OutputStream,
+    ): BackupZipExportResult {
+        val snapshot = collectExportSnapshot(accountId)
+        val jsonContent = BackupCodec.encode(
+            snapshot = snapshot,
+            exportedAtEpochMs = clockMillis(),
+        )
+        return BackupArchiveCodec.exportZip(
+            outputStream = outputStream,
+            jsonContent = jsonContent,
+            templates = snapshot.templates,
+            resolveImageFile = { storedPath ->
+                if (templateImageStore != null) {
+                    templateImageStore.resolveExistingFile(storedPath)
+                } else {
+                    storedPath?.trim()?.takeIf { it.isNotEmpty() }
+                        ?.let(::File)
+                        ?.takeIf { it.isFile && it.length() > 0L }
+                }
+            },
+        )
+    }
+
+    private suspend fun collectExportSnapshot(accountId: String): BackupExportSnapshot {
         val account = store.getAccount(accountId)
             ?: throw IllegalStateException("未找到本地账号：$accountId")
         val templates = store.listTemplates(accountId)
@@ -137,97 +183,209 @@ class BackupManager(
         val targets = store.listAllTargetsIncludingDeleted(accountId)
         val jobs = store.listAllJobs(accountId)
         val attempts = store.listAllAttemptsForAccount(accountId)
-
-        return BackupCodec.encode(
-            snapshot = BackupExportSnapshot(
-                account = account,
-                templates = templates,
-                poolItems = poolItems,
-                targets = targets,
-                jobs = jobs,
-                attempts = attempts,
-            ),
-            exportedAtEpochMs = clockMillis(),
+        return BackupExportSnapshot(
+            account = account,
+            templates = templates,
+            poolItems = poolItems,
+            targets = targets,
+            jobs = jobs,
+            attempts = attempts,
         )
     }
 
     fun inspectJson(rawJson: String): BackupInspection = BackupCodec.inspect(rawJson)
+
+    fun inspectArchive(payload: BackupArchivePayload): BackupInspection {
+        val base = BackupCodec.inspect(payload.rawJson)
+        if (!payload.isZipArchive) {
+            return base
+        }
+        val imageTemplates = base.parsed.templates.filter { it.isImageTemplate }
+        val matchedBundledCount = imageTemplates.count { tpl ->
+            payload.bundledImagesByTemplateId.containsKey(tpl.sourceId)
+        }
+        val missingCount = (imageTemplates.size - matchedBundledCount).coerceAtLeast(0)
+        return base.copy(
+            missingImageTemplateCount = missingCount,
+            isZipArchive = true,
+            bundledImageCount = matchedBundledCount,
+        )
+    }
 
     suspend fun importBackup(
         parsed: ParsedBackup,
         selectedSourceAccountId: String,
         includeHistory: Boolean = true,
         targetAccountId: String = DEFAULT_ACCOUNT_ID,
+        bundledImagesByTemplateId: Map<String, BundledTemplateImage> = emptyMap(),
     ): BackupImportReport {
         val selectedAccount = parsed.accounts.firstOrNull { it.sourceId == selectedSourceAccountId }
             ?: throw IllegalArgumentException("备份中未找到选定账号：$selectedSourceAccountId")
 
-        val report = store.runInTransaction {
-            val nowMs = clockMillis()
-            val warnings = mutableListOf<String>()
+        val newlyImportedPaths = mutableListOf<String>()
+        val (report, replacedOldPaths) = try {
+            store.runInTransaction {
+                val nowMs = clockMillis()
+                val warnings = mutableListOf<String>()
 
-            mergeAccount(
-                targetAccountId = targetAccountId,
-                selectedAccount = selectedAccount,
-                ext = parsed.androidAccountExt,
-                nowMs = nowMs,
-                warnings = warnings,
-            )
-
-            val templateMerge = mergeTemplates(
-                targetAccountId = targetAccountId,
-                importedTemplates = parsed.templates,
-                nowMs = nowMs,
-                warnings = warnings,
-            )
-
-            val poolItemsMerged = mergePoolItems(
-                importedPoolItems = parsed.poolItems,
-                templateMerge = templateMerge,
-                nowMs = nowMs,
-            )
-
-            val targetMerge = mergeTargets(
-                targetAccountId = targetAccountId,
-                selectedSourceAccountId = selectedSourceAccountId,
-                importedTargets = parsed.targets,
-                templateMerge = templateMerge,
-                nowMs = nowMs,
-                warnings = warnings,
-            )
-
-            val historyMerge = if (includeHistory) {
-                mergeJobsAndAttempts(
+                mergeAccount(
                     targetAccountId = targetAccountId,
-                    selectedSourceAccountId = selectedSourceAccountId,
-                    parsed = parsed,
-                    templateIdRemap = templateMerge.templateIdRemap,
-                    targetIdRemap = targetMerge.targetIdRemap,
+                    selectedAccount = selectedAccount,
+                    ext = parsed.androidAccountExt,
                     nowMs = nowMs,
                     warnings = warnings,
                 )
-            } else {
-                HistoryMergeResult()
-            }
 
-            BackupImportReport(
-                sourceAccountName = selectedAccount.displayName,
-                templatesInserted = templateMerge.inserted,
-                templatesUpdated = templateMerge.updated,
-                poolItemsMerged = poolItemsMerged,
-                targetsInserted = targetMerge.inserted,
-                targetsUpdated = targetMerge.updated,
-                targetsSkipped = targetMerge.skipped,
-                jobsInserted = historyMerge.jobsInserted,
-                jobsUpdated = historyMerge.jobsUpdated,
-                missingImageTemplateCount = templateMerge.missingImageCount,
-                skippedProtectedJobs = historyMerge.skippedProtectedJobs,
-                warnings = warnings,
-            )
+                val templateMerge = mergeTemplates(
+                    targetAccountId = targetAccountId,
+                    importedTemplates = parsed.templates,
+                    nowMs = nowMs,
+                    warnings = warnings,
+                )
+
+                val imageRestore = restoreBundledTemplateImages(
+                    templateMerge = templateMerge,
+                    bundledImagesByTemplateId = bundledImagesByTemplateId,
+                    nowMs = nowMs,
+                    newlyImportedPaths = newlyImportedPaths,
+                    warnings = warnings,
+                )
+
+                val poolItemsMerged = mergePoolItems(
+                    importedPoolItems = parsed.poolItems,
+                    templateMerge = templateMerge,
+                    nowMs = nowMs,
+                )
+
+                val targetMerge = mergeTargets(
+                    targetAccountId = targetAccountId,
+                    selectedSourceAccountId = selectedSourceAccountId,
+                    importedTargets = parsed.targets,
+                    templateMerge = templateMerge,
+                    nowMs = nowMs,
+                    warnings = warnings,
+                )
+
+                val historyMerge = if (includeHistory) {
+                    mergeJobsAndAttempts(
+                        targetAccountId = targetAccountId,
+                        selectedSourceAccountId = selectedSourceAccountId,
+                        parsed = parsed,
+                        templateIdRemap = templateMerge.templateIdRemap,
+                        targetIdRemap = targetMerge.targetIdRemap,
+                        nowMs = nowMs,
+                        warnings = warnings,
+                    )
+                } else {
+                    HistoryMergeResult()
+                }
+
+                BackupImportReport(
+                    sourceAccountName = selectedAccount.displayName,
+                    templatesInserted = templateMerge.inserted,
+                    templatesUpdated = templateMerge.updated,
+                    poolItemsMerged = poolItemsMerged,
+                    targetsInserted = targetMerge.inserted,
+                    targetsUpdated = targetMerge.updated,
+                    targetsSkipped = targetMerge.skipped,
+                    jobsInserted = historyMerge.jobsInserted,
+                    jobsUpdated = historyMerge.jobsUpdated,
+                    missingImageTemplateCount = imageRestore.missingImageCount,
+                    restoredImagesCount = imageRestore.restoredImagesCount,
+                    skippedProtectedJobs = historyMerge.skippedProtectedJobs,
+                    warnings = warnings,
+                ) to imageRestore.replacedOldPaths
+            }
+        } catch (exc: Throwable) {
+            val imageStore = templateImageStore
+            if (imageStore != null && newlyImportedPaths.isNotEmpty()) {
+                for (path in newlyImportedPaths) {
+                    runCatching { imageStore.deleteIfUnreferenced(path, emptySet()) }
+                }
+            }
+            throw exc
+        }
+
+        val imageStore = templateImageStore
+        if (imageStore != null && replacedOldPaths.isNotEmpty()) {
+            val allReferenced = buildSet {
+                addAll(runCatching { store.listAllReferencedImagePaths() }.getOrDefault(emptySet()))
+                runCatching { store.listTemplates(targetAccountId) }.getOrDefault(emptyList())
+                    .mapNotNullTo(this) { it.imagePath?.trim()?.takeIf { p -> p.isNotEmpty() } }
+            }
+            for (oldPath in replacedOldPaths) {
+                runCatching { imageStore.deleteIfUnreferenced(oldPath, allReferenced) }
+            }
         }
 
         onScheduleChanged()
         return report
+    }
+
+    private fun isImageLocallyAvailable(path: String?): Boolean =
+        if (templateImageStore != null) {
+            templateImageStore.isImageAvailable(path)
+        } else {
+            imageExists(path)
+        }
+
+    private suspend fun restoreBundledTemplateImages(
+        templateMerge: TemplateMergeResult,
+        bundledImagesByTemplateId: Map<String, BundledTemplateImage>,
+        nowMs: Long,
+        newlyImportedPaths: MutableList<String>,
+        warnings: MutableList<String>,
+    ): ImageRestoreResult {
+        var restoredImagesCount = 0
+        var missingImageCount = 0
+        val replacedOldPaths = mutableListOf<String>()
+
+        for ((sourceTemplateId, persistedTemplate) in templateMerge.imageTemplatesBySourceId) {
+            val bundled = bundledImagesByTemplateId[sourceTemplateId]
+            if (bundled != null && templateImageStore != null) {
+                val stored = try {
+                    templateImageStore.importFromStream(
+                        input = ByteArrayInputStream(bundled.bytes),
+                        mimeTypeHint = bundled.mimeType,
+                    )
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    warnings += "图片模板「${persistedTemplate.name}」随包图片还原失败，已保留模板定义与好友绑定"
+                    null
+                }
+
+                if (stored != null) {
+                    newlyImportedPaths += stored.storedPath
+                    val previousPath = templateMerge.previousImagePathByLocalTemplateId[persistedTemplate.id]
+                    if (!previousPath.isNullOrBlank() && previousPath != stored.storedPath) {
+                        replacedOldPaths += previousPath
+                    }
+                    store.upsertTemplate(
+                        persistedTemplate.copy(
+                            imagePath = stored.storedPath,
+                            updatedAt = nowMs,
+                        ),
+                    )
+                    restoredImagesCount++
+                    continue
+                }
+            }
+
+            if (!isImageLocallyAvailable(persistedTemplate.imagePath)) {
+                missingImageCount++
+            }
+        }
+
+        if (missingImageCount > 0) {
+            warnings += "已保留 $missingImageCount 个图片模板及好友绑定，请前往「模板」页重新选择本地图片"
+        }
+
+        return ImageRestoreResult(
+            restoredImagesCount = restoredImagesCount,
+            missingImageCount = missingImageCount,
+            replacedOldPaths = replacedOldPaths,
+        )
     }
 
     private suspend fun mergeAccount(
@@ -315,13 +473,14 @@ class BackupManager(
         val byName = existingTemplates.associateBy { it.name }.toMutableMap()
         val templateIdRemap = linkedMapOf<String, String>()
         val keptPoolTemplateIds = linkedSetOf<String>()
+        val imageTemplatesBySourceId = linkedMapOf<String, MessageTemplateEntity>()
+        val previousImagePathByLocalTemplateId = linkedMapOf<String, String?>()
         val allKnownPoolTemplateIds = existingTemplates
             .filter { it.type == TemplateType.POOL }
             .mapTo(linkedSetOf()) { it.id }
 
         var inserted = 0
         var updated = 0
-        var missingImageCount = 0
 
         for (tpl in importedTemplates) {
             val importedType = tpl.type
@@ -344,12 +503,11 @@ class BackupManager(
                     byName.remove(matched.name)
                 }
 
+                val previousLocalPath = matched.imagePath?.trim()?.takeIf { it.isNotEmpty() }
                 val resolvedImagePath = if (isImage) {
-                    val localPath = matched.imagePath?.trim()?.takeIf { it.isNotEmpty() }
-                    if (localPath != null && imageExists(localPath)) {
-                        localPath
+                    if (previousLocalPath != null && isImageLocallyAvailable(previousLocalPath)) {
+                        previousLocalPath
                     } else {
-                        missingImageCount++
                         null
                     }
                 } else {
@@ -371,6 +529,10 @@ class BackupManager(
                 byId[next.id] = next
                 byName[next.name] = next
                 templateIdRemap[tpl.sourceId] = next.id
+                if (isImage) {
+                    imageTemplatesBySourceId[tpl.sourceId] = next
+                    previousImagePathByLocalTemplateId[next.id] = previousLocalPath
+                }
                 if (next.type == TemplateType.POOL) {
                     keptPoolTemplateIds += next.id
                     allKnownPoolTemplateIds += next.id
@@ -402,10 +564,6 @@ class BackupManager(
                 UUID.randomUUID().toString()
             }
 
-            if (isImage) {
-                missingImageCount++
-            }
-
             val created = MessageTemplateEntity(
                 id = newId,
                 accountId = targetAccountId,
@@ -425,6 +583,9 @@ class BackupManager(
             byId[created.id] = created
             byName[created.name] = created
             templateIdRemap[tpl.sourceId] = created.id
+            if (isImage) {
+                imageTemplatesBySourceId[tpl.sourceId] = created
+            }
             if (created.type == TemplateType.POOL) {
                 keptPoolTemplateIds += created.id
                 allKnownPoolTemplateIds += created.id
@@ -432,17 +593,14 @@ class BackupManager(
             inserted++
         }
 
-        if (missingImageCount > 0) {
-            warnings += "已保留 $missingImageCount 个图片模板及好友绑定，请前往「模板」页重新选择本地图片"
-        }
-
         return TemplateMergeResult(
             inserted = inserted,
             updated = updated,
-            missingImageCount = missingImageCount,
             templateIdRemap = templateIdRemap,
             keptPoolTemplateIds = keptPoolTemplateIds,
             allPoolTemplateIds = allKnownPoolTemplateIds,
+            imageTemplatesBySourceId = imageTemplatesBySourceId,
+            previousImagePathByLocalTemplateId = previousImagePathByLocalTemplateId,
         )
     }
 
@@ -1250,10 +1408,17 @@ class BackupManager(
     private data class TemplateMergeResult(
         val inserted: Int,
         val updated: Int,
-        val missingImageCount: Int,
         val templateIdRemap: Map<String, String>,
         val keptPoolTemplateIds: Set<String>,
         val allPoolTemplateIds: Set<String>,
+        val imageTemplatesBySourceId: Map<String, MessageTemplateEntity>,
+        val previousImagePathByLocalTemplateId: Map<String, String?>,
+    )
+
+    private data class ImageRestoreResult(
+        val restoredImagesCount: Int,
+        val missingImageCount: Int,
+        val replacedOldPaths: List<String>,
     )
 
     private data class TargetMergeResult(
