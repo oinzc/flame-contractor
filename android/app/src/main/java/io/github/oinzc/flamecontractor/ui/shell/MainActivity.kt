@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
+import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.execution.LoginMode
@@ -37,6 +38,7 @@ import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import io.github.oinzc.flamecontractor.ui.today.TodayRoute
+import io.github.oinzc.flamecontractor.widget.FlameStatusWidgetUpdater
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -167,6 +169,7 @@ class MainActivity : AppCompatActivity() {
                 val urgentCategoryForActive = launchSignal
                     ?.takeIf { it.accountId == null || it.accountId == activeAccountId }
                     ?.category
+                    ?.takeIf { cat -> UrgentCategory.entries.any { it.name == cat } }
                 val urgentNonceForActive = if (urgentCategoryForActive != null) {
                     launchSignal.nonce
                 } else {
@@ -291,6 +294,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        FlameStatusWidgetUpdater.requestUpdate(applicationContext)
     }
 
     override fun onNewIntent(intent: Intent) {

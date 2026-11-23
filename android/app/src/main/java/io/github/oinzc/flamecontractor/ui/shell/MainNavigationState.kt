@@ -84,10 +84,15 @@ data class MainNavState(
         val cleanCategory = category?.trim()?.takeIf { it.isNotEmpty() }
         return when {
             cleanCategory != null -> {
-                val targetTab = if (cleanCategory == UrgentCategory.SPARK_DETERIORATING.name) {
-                    MainTab.TARGETS
-                } else {
-                    MainTab.TODAY
+                val targetTab = when (cleanCategory) {
+                    UrgentCategory.SPARK_DETERIORATING.name,
+                    SHORTCUT_TARGETS,
+                    -> MainTab.TARGETS
+
+                    SHORTCUT_TEMPLATES -> MainTab.TEMPLATES
+                    SHORTCUT_HISTORY -> MainTab.HISTORY
+                    SHORTCUT_TODAY -> MainTab.TODAY
+                    else -> MainTab.TODAY
                 }
                 MainNavState(
                     selectedTab = targetTab,
@@ -104,6 +109,13 @@ data class MainNavState(
 
             else -> this
         }
+    }
+
+    companion object {
+        const val SHORTCUT_TODAY = "shortcut_today"
+        const val SHORTCUT_TARGETS = "shortcut_targets"
+        const val SHORTCUT_TEMPLATES = "shortcut_templates"
+        const val SHORTCUT_HISTORY = "shortcut_history"
     }
 }
 

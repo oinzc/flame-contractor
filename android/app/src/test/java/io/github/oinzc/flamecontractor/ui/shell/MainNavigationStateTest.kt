@@ -102,6 +102,36 @@ class MainNavigationStateTest {
     }
 
     @Test
+    fun `shortcut launch categories route to matching tabs and dismiss settings overlay`() {
+        val nested = MainNavState(
+            selectedTab = MainTab.TODAY,
+            isSettingsOpen = true,
+            activeSettingsSection = SettingsSection.SCHEDULE,
+        )
+
+        assertEquals(
+            MainNavState(MainTab.TODAY, isSettingsOpen = false, activeSettingsSection = null),
+            nested.applyLaunchIntent(category = MainNavState.SHORTCUT_TODAY, hasAccountTarget = false),
+        )
+        assertEquals(
+            MainNavState(MainTab.TARGETS, isSettingsOpen = false, activeSettingsSection = null),
+            nested.applyLaunchIntent(category = MainNavState.SHORTCUT_TARGETS, hasAccountTarget = false),
+        )
+        assertEquals(
+            MainNavState(MainTab.TEMPLATES, isSettingsOpen = false, activeSettingsSection = null),
+            nested.applyLaunchIntent(category = MainNavState.SHORTCUT_TEMPLATES, hasAccountTarget = false),
+        )
+        assertEquals(
+            MainNavState(MainTab.HISTORY, isSettingsOpen = false, activeSettingsSection = null),
+            nested.applyLaunchIntent(category = MainNavState.SHORTCUT_HISTORY, hasAccountTarget = false),
+        )
+        assertEquals(
+            MainNavState(MainTab.TARGETS, isSettingsOpen = false, activeSettingsSection = null),
+            nested.applyLaunchIntent(category = "  shortcut_targets  ", hasAccountTarget = true),
+        )
+    }
+
+    @Test
     fun `account delete notice distinguishes single account default account and extra profile`() {
         assertFalse(buildAccountDeleteNotice(DEFAULT_ACCOUNT_ID, totalAccountCount = 1).canDelete)
         assertFalse(buildAccountDeleteNotice("acc_2", totalAccountCount = 1).canDelete)

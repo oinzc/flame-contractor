@@ -1,3 +1,20 @@
 <resources>
     <string name="app_name">抖音续火工</string>
+
+    <string name="shortcut_today_short">今日续火</string>
+    <string name="shortcut_today_long">打开今日续火状态</string>
+    <string name="shortcut_targets_short">扫描对账</string>
+    <string name="shortcut_targets_long">前往好友与扫描对账</string>
+    <string name="shortcut_templates_short">消息模板</string>
+    <string name="shortcut_templates_long">管理续火消息模板</string>
+
+    <string name="widget_flame_status_label">续火状态</string>
+    <string name="widget_flame_status_description">在桌面查看今日续火进度、账号状态与下次排程</string>
+    <string name="widget_refresh_content_description">刷新今日续火状态</string>
+    <string name="widget_placeholder_account">默认抖音号</string>
+    <string name="widget_placeholder_status">● 运行正常</string>
+    <string name="widget_placeholder_progress">今日已完成 0 / 0 位</string>
+    <string name="widget_placeholder_footer">点击打开应用查看</string>
+    <string name="widget_action_scan_targets">扫描对账 →</string>
+    <string name="widget_action_handle_now">立即处理 →</string>
 </resources>

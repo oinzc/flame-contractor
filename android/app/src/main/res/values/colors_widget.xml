@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="widget_surface">#FFFFFFFF</color>
+    <color name="widget_border">#FFE6E8EE</color>
+    <color name="widget_ink">#FF111318</color>
+    <color name="widget_ink_secondary">#FF4B5262</color>
+    <color name="widget_refresh_bg">#FFF0F2F5</color>
+    <color name="widget_refresh_icon">#FF4B5262</color>
+
+    <color name="widget_status_healthy_bg">#FFECFDF5</color>
+    <color name="widget_status_healthy_text">#FF065F46</color>
+    <color name="widget_status_warning_bg">#FFFFFBEB</color>
+    <color name="widget_status_warning_text">#FF78350F</color>
+    <color name="widget_status_danger_bg">#FFFEF2F2</color>
+    <color name="widget_status_danger_text">#FF991B1B</color>
+    <color name="widget_status_neutral_bg">#FFF0F2F5</color>
+    <color name="widget_status_neutral_text">#FF4B5262</color>
+    <color name="widget_status_running_bg">#FFFFF4EC</color>
+    <color name="widget_status_running_text">#FF9A3412</color>
+
+    <color name="widget_action_normal_bg">#FFF0F2F5</color>
+    <color name="widget_action_normal_border">#FFE6E8EE</color>
+    <color name="widget_action_normal_text">#FF111318</color>
+    <color name="widget_action_alert_bg">#FFDC2626</color>
+    <color name="widget_action_alert_text">#FFFFFFFF</color>
+</resources>

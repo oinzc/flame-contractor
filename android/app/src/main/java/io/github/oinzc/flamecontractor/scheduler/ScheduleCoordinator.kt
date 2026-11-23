@@ -22,6 +22,7 @@ import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TargetDao
 import io.github.oinzc.flamecontractor.domain.SendGuard
+import io.github.oinzc.flamecontractor.widget.FlameStatusWidgetUpdater
 import java.time.Duration
 import java.time.Instant
 import java.time.ZonedDateTime
@@ -331,6 +332,12 @@ class ScheduleCoordinator private constructor(
     }
 
     suspend fun rescheduleAll(now: Instant = Instant.now()): Instant? {
+        val nextWakeAt = rescheduleAllAlarms(now)
+        FlameStatusWidgetUpdater.requestUpdate(appContext)
+        return nextWakeAt
+    }
+
+    private suspend fun rescheduleAllAlarms(now: Instant): Instant? {
         val db = databaseProvider()
         val aggregation = MultiAccountSchedulePlanner.evaluateAllAccounts(
             accountDao = db.accountDao(),
