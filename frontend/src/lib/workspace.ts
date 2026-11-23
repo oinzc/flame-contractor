@@ -1,5 +1,6 @@
 import type {
   Account,
+  BackupImportResult,
   ContractTarget,
   DrawerState,
   JobStatus,
@@ -780,4 +781,73 @@ export function parseSelectorOverridesDraft(
   }
 
   return { ok: true, overrides: deltas }
+}
+
+export const MAX_BACKUP_UPLOAD_BYTES = 60 * 1024 * 1024
+
+export interface BackupImportSummaryView {
+  tone: 'ok' | 'warn'
+  headline: string
+  countsDetail: string
+  imagesDetail: string | null
+  missingImagesHint: string | null
+}
+
+const BACKUP_ENTITY_LABELS: ReadonlyArray<readonly [string, string]> = [
+  ['accounts', '账号'],
+  ['targets', '好友'],
+  ['templates', '模板'],
+  ['pool_items', '文案池项'],
+  ['jobs', '任务'],
+  ['attempts', '尝试'],
+  ['schedules', '排程'],
+]
+
+export function formatBackupImportSummary(
+  result: BackupImportResult,
+): BackupImportSummaryView {
+  const inserted = result.inserted ?? {}
+  const updated = result.updated ?? {}
+
+  let totalInserted = 0
+  let totalUpdated = 0
+  const parts: string[] = []
+
+  for (const [key, label] of BACKUP_ENTITY_LABELS) {
+    const ins = inserted[key] ?? 0
+    const upd = updated[key] ?? 0
+    totalInserted += ins
+    totalUpdated += upd
+    const total = ins + upd
+    if (total > 0) {
+      parts.push(`${label} ${total}`)
+    }
+  }
+
+  const restoredImages = result.restoredImages ?? 0
+  const missingImageTemplates = result.missingImageTemplates ?? 0
+
+  const headline =
+    totalInserted + totalUpdated > 0
+      ? `备份恢复完成（新增 ${totalInserted}，合并更新 ${totalUpdated}）`
+      : '备份校验完成，当前数据已为最新'
+
+  const countsDetail =
+    parts.length > 0 ? `处理范围：${parts.join(' · ')}` : '未发现需要新增或更新的记录'
+
+  const imagesDetail =
+    restoredImages > 0 ? `已恢复图片模板：${restoredImages} 张` : null
+
+  const missingImagesHint =
+    missingImageTemplates > 0
+      ? `另有 ${missingImageTemplates} 个图片模板未包含图片文件，请导入完整 .zip 备份或在模板页重新绑定图片。`
+      : null
+
+  return {
+    tone: missingImageTemplates > 0 ? 'warn' : 'ok',
+    headline,
+    countsDetail,
+    imagesDetail,
+    missingImagesHint,
+  }
 }

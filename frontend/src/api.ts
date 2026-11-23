@@ -402,7 +402,7 @@ export const api = {
   },
   downloadBackup: async () => {
     const response = await fetch(apiUrl('/api/backup'), { headers: authHeaders() })
-    if (!response.ok) throw new ApiError(response.status, '备份导出失败')
+    if (!response.ok) throw new ApiError(response.status, await readDetail(response))
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -410,5 +410,31 @@ export const api = {
     anchor.download = `flame-backup-${new Date().toISOString().slice(0, 10)}.json`
     anchor.click()
     URL.revokeObjectURL(url)
+  },
+  downloadBackupArchive: async () => {
+    const response = await fetch(apiUrl('/api/backup/archive'), { headers: authHeaders() })
+    if (!response.ok) throw new ApiError(response.status, await readDetail(response))
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `flame-backup-${new Date().toISOString().slice(0, 10)}.zip`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
+  importBackupArchive: async (file: File): Promise<import('./types').BackupImportResult> => {
+    const isJson = file.name.toLowerCase().endsWith('.json')
+    const response = await fetch(apiUrl('/api/backup/import-archive'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': isJson ? 'application/json' : 'application/octet-stream',
+        ...authHeaders(),
+      },
+      body: file,
+    })
+    if (!response.ok) {
+      throw new ApiError(response.status, await readDetail(response))
+    }
+    return (await response.json()) as import('./types').BackupImportResult
   },
 }

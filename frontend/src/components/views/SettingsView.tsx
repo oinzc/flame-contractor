@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { api, ApiError } from '../../api.ts'
 import {
   getDesktopAutostart,
@@ -14,13 +14,16 @@ import {
 import { paginateItems } from '../../lib/pagination.ts'
 import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
 import {
+  MAX_BACKUP_UPLOAD_BYTES,
   describeBarkCardState,
+  formatBackupImportSummary,
   parseBarkInputPreview,
   parseSchedulerSettingsForm,
   validateBarkUrlInput,
+  type BackupImportSummaryView,
 } from '../../lib/workspace.ts'
 import type { Account, AuthSessionRead, SchedulerStatus, User } from '../../types.ts'
-import { DownloadIcon, SendIcon } from '../ui/Icons.tsx'
+import { CloseIcon, DownloadIcon, SendIcon, UploadIcon } from '../ui/Icons.tsx'
 import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -86,6 +89,15 @@ export function SettingsView({
 
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Local backup & restore (.zip / .json)
+  const [backupAction, setBackupAction] = useState<'idle' | 'export-zip' | 'export-json' | 'import'>('idle')
+  const [backupImportResult, setBackupImportResult] = useState<{
+    fileName: string
+    summary: BackupImportSummaryView
+  } | null>(null)
+  const [backupError, setBackupError] = useState<string | null>(null)
+  const backupFileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (!schedulerStatus) return
@@ -248,6 +260,63 @@ export function SettingsView({
     () => (barkUrlInput.trim() ? parseBarkInputPreview(barkUrlInput) : null),
     [barkUrlInput],
   )
+
+  const backupBusy = backupAction !== 'idle'
+
+  async function handleExportBackupArchive() {
+    if (backupBusy) return
+    setBackupAction('export-zip')
+    setBackupError(null)
+    try {
+      await api.downloadBackupArchive()
+    } catch (err) {
+      setBackupError(err instanceof ApiError ? err.message : '完整备份导出失败')
+    } finally {
+      setBackupAction('idle')
+    }
+  }
+
+  async function handleExportBackupJson() {
+    if (backupBusy) return
+    setBackupAction('export-json')
+    setBackupError(null)
+    try {
+      await api.downloadBackup()
+    } catch (err) {
+      setBackupError(err instanceof ApiError ? err.message : 'JSON 备份导出失败')
+    } finally {
+      setBackupAction('idle')
+    }
+  }
+
+  async function handleImportBackupFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || backupBusy) return
+    if (file.size <= 0) {
+      setBackupError('所选备份文件为空，请重新选择')
+      return
+    }
+    if (file.size > MAX_BACKUP_UPLOAD_BYTES) {
+      setBackupError('备份文件超过 60 MB 上限，无法导入')
+      return
+    }
+    setBackupAction('import')
+    setBackupError(null)
+    setBackupImportResult(null)
+    try {
+      const result = await api.importBackupArchive(file)
+      setBackupImportResult({
+        fileName: file.name,
+        summary: formatBackupImportSummary(result),
+      })
+      await onChanged()
+    } catch (err) {
+      setBackupError(err instanceof ApiError ? err.message : '备份导入恢复失败')
+    } finally {
+      setBackupAction('idle')
+    }
+  }
 
   async function handleSaveProfile(e: FormEvent) {
     e.preventDefault()
@@ -529,25 +598,91 @@ export function SettingsView({
               )}
 
               <section className="fc-card">
-                <div className="fc-settings-row" style={{ flexWrap: 'wrap' }}>
-                  <div>
-                    <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>本地配置备份</h2>
-                    <p className="fc-hint">
-                      导出账号窗口、好友契约与全部消息模板（JSON，不含浏览器 Cookie）
-                    </p>
-                  </div>
+                <div>
+                  <h2 style={{ fontSize: 15.5, fontWeight: 600 }}>本地配置备份</h2>
+                  <p className="fc-hint" style={{ marginTop: 3 }}>
+                    支持导出与导入账号窗口、好友契约、全部消息模板（含图片模板）与历史记录；兼容跨端 .zip 与 .json，不含登录 Cookie 或密钥
+                  </p>
+                </div>
+
+                <div className="fc-backup-actions">
                   <button
                     type="button"
-                    className="fc-btn fc-btn-secondary"
-                    onClick={() =>
-                      void api.downloadBackup().catch((err) =>
-                        setError(err instanceof ApiError ? err.message : '备份导出失败'),
-                      )
-                    }
+                    className="fc-btn fc-btn-primary fc-btn-sm"
+                    disabled={backupBusy}
+                    onClick={() => void handleExportBackupArchive()}
                   >
-                    <DownloadIcon /> 导出 JSON 备份
+                    <DownloadIcon />
+                    {backupAction === 'export-zip' ? '打包导出中…' : '导出完整备份 (.zip 含图)'}
                   </button>
+                  <button
+                    type="button"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
+                    disabled={backupBusy}
+                    onClick={() => void handleExportBackupJson()}
+                  >
+                    <DownloadIcon />
+                    {backupAction === 'export-json' ? '导出中…' : '仅导出 JSON'}
+                  </button>
+                  <button
+                    type="button"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
+                    disabled={backupBusy}
+                    onClick={() => backupFileInputRef.current?.click()}
+                  >
+                    <UploadIcon />
+                    {backupAction === 'import' ? '正在导入恢复…' : '导入备份恢复'}
+                  </button>
+                  <input
+                    ref={backupFileInputRef}
+                    type="file"
+                    accept=".zip,.json,application/zip,application/json"
+                    aria-label="选择备份文件（支持 .zip 或 .json）"
+                    style={{ display: 'none' }}
+                    onChange={(e) => void handleImportBackupFile(e)}
+                  />
                 </div>
+
+                {backupError && (
+                  <div className="fc-alert is-error" role="alert">
+                    {backupError}
+                  </div>
+                )}
+
+                {backupImportResult && (
+                  <div
+                    className={`fc-backup-result is-${backupImportResult.summary.tone}`}
+                    role="status"
+                  >
+                    <div className="fc-backup-result-head">
+                      <div className="fc-backup-result-title">
+                        <span>{backupImportResult.summary.headline}</span>
+                        <span className="fc-mono fc-backup-result-file">
+                          {backupImportResult.fileName}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="fc-btn fc-btn-ghost fc-btn-icon"
+                        aria-label="关闭导入结果提示"
+                        onClick={() => setBackupImportResult(null)}
+                      >
+                        <CloseIcon width={14} height={14} />
+                      </button>
+                    </div>
+                    <div className="fc-backup-result-meta">
+                      <div>{backupImportResult.summary.countsDetail}</div>
+                      {backupImportResult.summary.imagesDetail && (
+                        <div>{backupImportResult.summary.imagesDetail}</div>
+                      )}
+                      {backupImportResult.summary.missingImagesHint && (
+                        <div className="fc-backup-result-warn">
+                          {backupImportResult.summary.missingImagesHint}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </section>
             </div>
 

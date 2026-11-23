@@ -8,6 +8,7 @@ import {
   deriveTargetDayMap,
   describeBarkCardState,
   filterScanReconciliationItems,
+  formatBackupImportSummary,
   hasObservedSpark,
   mergeAccountSendPreview,
   parseBarkInputPreview,
@@ -672,4 +673,31 @@ test('parseSelectorOverridesDraft extracts changed keys and rejects invalid type
     ).ok,
     false,
   )
+})
+
+test('formatBackupImportSummary formats counts, restored images, and missing-image guidance', () => {
+  const fullZip = formatBackupImportSummary({
+    inserted: { accounts: 1, targets: 3, templates: 2, pool_items: 0, jobs: 4, attempts: 4, schedules: 0 },
+    updated: { accounts: 0, targets: 1, templates: 1, pool_items: 0, jobs: 0, attempts: 0, schedules: 0 },
+    restoredImages: 2,
+    missingImageTemplates: 0,
+  })
+  assert.equal(fullZip.tone, 'ok')
+  assert.match(fullZip.headline, /新增 14/)
+  assert.match(fullZip.headline, /合并更新 2/)
+  assert.match(fullZip.countsDetail, /账号 1/)
+  assert.match(fullZip.countsDetail, /好友 4/)
+  assert.match(fullZip.countsDetail, /模板 3/)
+  assert.equal(fullZip.imagesDetail, '已恢复图片模板：2 张')
+  assert.equal(fullZip.missingImagesHint, null)
+
+  const jsonMissing = formatBackupImportSummary({
+    inserted: { accounts: 1, templates: 1 },
+    updated: {},
+    restoredImages: 0,
+    missingImageTemplates: 1,
+  })
+  assert.equal(jsonMissing.tone, 'warn')
+  assert.equal(jsonMissing.imagesDetail, null)
+  assert.match(jsonMissing.missingImagesHint ?? '', /1 个图片模板/)
 })

@@ -610,6 +610,13 @@ export interface SendProgress {
   finishedAt: string | null
 }
 
+export interface BackupImportResult {
+  inserted: Record<string, number>
+  updated: Record<string, number>
+  restoredImages: number
+  missingImageTemplates: number
+}
+
 export type WorkspaceView = 'targets' | 'jobs' | 'templates' | 'settings'
 
 export type DrawerState =

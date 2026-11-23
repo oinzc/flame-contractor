@@ -396,6 +396,12 @@ def _import_templates(
                 and by_name[incoming_name].id != existing.id
             ):
                 row["name"] = _unique_template_name(incoming_name, set(by_name))
+            if (
+                existing.type == TemplateType.IMAGE
+                and existing.image_path is not None
+                and row.get("image_path") is None
+            ):
+                row["image_path"] = existing.image_path
             _apply_row_updates(existing, row, skip_fields={"id", "user_id"})
             session.add(existing)
             session.flush()
@@ -409,6 +415,12 @@ def _import_templates(
 
         same_name = by_name.get(incoming_name) if incoming_name else None
         if same_name is not None and same_name.type == incoming_type:
+            if (
+                same_name.type == TemplateType.IMAGE
+                and same_name.image_path is not None
+                and row.get("image_path") is None
+            ):
+                row["image_path"] = same_name.image_path
             _apply_row_updates(same_name, row, skip_fields={"id", "user_id"})
             session.add(same_name)
             session.flush()
@@ -1025,7 +1037,14 @@ def _import_attempts(
         inserted["attempts"] += 1
 
 
-def import_backup(session: Session, backup: BackupRead, user_id: str) -> BackupImportResult:
+def import_backup(
+    session: Session,
+    backup: BackupRead,
+    user_id: str,
+    *,
+    template_id_map_out: dict[str, str] | None = None,
+    commit: bool = True,
+) -> BackupImportResult:
     if backup.schema_version != BACKUP_SCHEMA_VERSION:
         raise ValueError(f"不支持的备份版本: {backup.schema_version}")
 
@@ -1040,6 +1059,8 @@ def import_backup(session: Session, backup: BackupRead, user_id: str) -> BackupI
     template_id_map = _import_templates(
         session, payload.get("templates") or [], user_id, scope, inserted, updated
     )
+    if template_id_map_out is not None:
+        template_id_map_out.update(template_id_map)
     _import_pool_items(
         session, payload.get("pool_items") or [], template_id_map, scope, inserted, updated
     )
@@ -1069,5 +1090,8 @@ def import_backup(session: Session, backup: BackupRead, user_id: str) -> BackupI
         session, payload.get("attempts") or [], job_id_map, scope, inserted, updated
     )
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return BackupImportResult(inserted=inserted, updated=updated)

@@ -1033,3 +1033,5 @@ class BackupRead(APIBase):
 class BackupImportResult(APIBase):
     inserted: dict[str, int]
     updated: dict[str, int]
+    restored_images: int = 0
+    missing_image_templates: int = 0
