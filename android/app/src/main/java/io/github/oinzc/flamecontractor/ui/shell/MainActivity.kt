@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity() {
                             hasAccountTarget = targetAccountId != null,
                         )
                         isFullscreenEditorOpen = false
+                        showAccountManagerSheet = false
                         lastHandledLaunchNonce = launchSignal.nonce
                     }
                 }

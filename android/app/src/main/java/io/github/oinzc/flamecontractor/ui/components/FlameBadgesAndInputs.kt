@@ -412,7 +412,7 @@ fun FlameSheetActionRow(
     }
     val contentColor = when {
         !enabled -> palette.inkTertiary
-        danger && primary -> Color.White
+        danger && primary -> MaterialTheme.colorScheme.onError
         danger -> semantics.danger
         primary -> palette.monoCtaContent
         else -> palette.ink

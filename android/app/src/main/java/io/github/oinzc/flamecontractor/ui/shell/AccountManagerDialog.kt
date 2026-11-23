@@ -553,7 +553,7 @@ fun AccountManagerSheet(
                     enabled = !isBusy && deleteNotice.canDelete,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = semantics.danger,
-                        contentColor = Color.White,
+                        contentColor = MaterialTheme.colorScheme.onError,
                     ),
                     onClick = {
                         isBusy = true
