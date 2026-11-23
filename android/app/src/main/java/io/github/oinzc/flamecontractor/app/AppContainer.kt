@@ -12,6 +12,7 @@ import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
 import io.github.oinzc.flamecontractor.domain.SendGuard
@@ -42,6 +43,7 @@ class AppContainer(context: Context) {
     val templateImageStore: AndroidTemplateImageStore = AndroidTemplateImageStore(appContext)
     val pendingProfileCleanupStore: PendingProfileCleanupStore = PendingProfileCleanupStore(appContext)
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
+    val themePreferencesStore: ThemePreferencesStore = ThemePreferencesStore.fromContext(appContext)
     val accountManager: AccountManager = AccountManager(
         database = database,
         activeAccountStore = activeAccountStore,
