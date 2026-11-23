@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,23 +22,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -59,6 +57,13 @@ import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.core.account.AccountManager
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -84,8 +89,24 @@ internal fun hasAccountAttention(
     unknownCount: Int,
 ): Boolean = unknownCount > 0 || isAccountAlertStatus(account.status)
 
+internal fun accountStatusTone(status: AccountStatus): FlameTone = when (status) {
+    AccountStatus.HEALTHY -> FlameTone.HEALTHY
+    AccountStatus.RUNNING -> FlameTone.EMBER
+    AccountStatus.PENDING_LOGIN,
+    AccountStatus.VERIFICATION_REQUIRED,
+    AccountStatus.COOLDOWN,
+    -> FlameTone.WARNING
+
+    AccountStatus.PAUSED -> FlameTone.NEUTRAL
+
+    AccountStatus.AUTH_EXPIRED,
+    AccountStatus.DOM_BROKEN,
+    -> FlameTone.DANGER
+}
+
 @Composable
 internal fun accountStatusStyle(status: AccountStatus): AccountStatusStyle {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     return when (status) {
         AccountStatus.HEALTHY -> AccountStatusStyle(
@@ -94,42 +115,49 @@ internal fun accountStatusStyle(status: AccountStatus): AccountStatusStyle {
             fg = semantics.onHealthyContainer,
             bg = semantics.healthyContainer,
         )
+
         AccountStatus.RUNNING -> AccountStatusStyle(
             label = "执行中",
-            dotColor = MaterialTheme.colorScheme.primary,
-            fg = MaterialTheme.colorScheme.onPrimaryContainer,
-            bg = MaterialTheme.colorScheme.primaryContainer,
+            dotColor = palette.ember,
+            fg = palette.ember,
+            bg = palette.emberContainer,
         )
+
         AccountStatus.PENDING_LOGIN -> AccountStatusStyle(
             label = "待扫码",
             dotColor = semantics.warning,
             fg = semantics.onWarningContainer,
             bg = semantics.warningContainer,
         )
+
         AccountStatus.PAUSED -> AccountStatusStyle(
             label = "已暂停",
             dotColor = semantics.neutral,
             fg = semantics.onNeutralContainer,
             bg = semantics.neutralContainer,
         )
+
         AccountStatus.AUTH_EXPIRED -> AccountStatusStyle(
             label = "登录失效",
             dotColor = semantics.danger,
             fg = semantics.onDangerContainer,
             bg = semantics.dangerContainer,
         )
+
         AccountStatus.VERIFICATION_REQUIRED -> AccountStatusStyle(
             label = "需验证",
             dotColor = semantics.warning,
             fg = semantics.onWarningContainer,
             bg = semantics.warningContainer,
         )
+
         AccountStatus.DOM_BROKEN -> AccountStatusStyle(
             label = "结构异常",
             dotColor = semantics.danger,
             fg = semantics.onDangerContainer,
             bg = semantics.dangerContainer,
         )
+
         AccountStatus.COOLDOWN -> AccountStatusStyle(
             label = "已熔断",
             dotColor = semantics.warning,
@@ -150,7 +178,33 @@ fun AccountManagerDialog(
     onOpenLoginForAccount: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    AccountManagerSheet(
+        accounts = accounts,
+        activeAccountId = activeAccountId,
+        unknownCountByAccount = unknownCountByAccount,
+        isMultiProfileSupported = isMultiProfileSupported,
+        accountManager = accountManager,
+        onSelectAccount = onSelectAccount,
+        onOpenLoginForAccount = onOpenLoginForAccount,
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+fun AccountManagerSheet(
+    accounts: List<AccountEntity>,
+    activeAccountId: String,
+    unknownCountByAccount: Map<String, Int>,
+    isMultiProfileSupported: Boolean,
+    accountManager: AccountManager,
+    onSelectAccount: (String) -> Unit,
+    onOpenLoginForAccount: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     val coroutineScope = rememberCoroutineScope()
+
     var isBusy by remember { mutableStateOf(false) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -165,207 +219,186 @@ fun AccountManagerDialog(
 
     var deletingAccount by remember { mutableStateOf<AccountEntity?>(null) }
 
-    AlertDialog(
+    FlameModalSheet(
         onDismissRequest = { if (!isBusy) onDismiss() },
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("多账号管理与切换")
-                    Text(
-                        text = "共 ${accounts.size} 个账号 · WebView Profile 隔离运行",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        title = "多账号管理与切换",
+        subtitle = "共 ${accounts.size} 个账号 · WebView Profile 隔离运行",
+        trailingHeader = {
+            FlameTopPillButton(
+                text = "新增",
+                leadingIcon = Icons.Default.Add,
+                primary = true,
+                enabled = !isBusy && isMultiProfileSupported,
+                onClick = {
+                    createNameInput = "抖音号 ${accounts.size + 1}"
+                    createError = null
+                    showCreateDialog = true
+                },
+            )
         },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (isBusy) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+            )
+        }
+
+        if (errorMessage != null) {
+            Surface(
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
             ) {
-                if (isBusy) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
+                Text(
+                    text = errorMessage.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onDangerContainer,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
+        }
 
-                if (errorMessage != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = errorMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(10.dp),
-                        )
-                    }
-                }
+        if (feedbackMessage != null) {
+            Surface(
+                color = semantics.healthyContainer,
+                border = BorderStroke(1.dp, semantics.healthy.copy(alpha = 0.28f)),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+            ) {
+                Text(
+                    text = feedbackMessage.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onHealthyContainer,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
+        }
 
-                if (feedbackMessage != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = feedbackMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(10.dp),
-                        )
-                    }
-                }
-
-                if (!isMultiProfileSupported) {
-                    Surface(
-                        color = FlameThemeTokens.semanticColors.warningContainer,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = FlameThemeTokens.semanticColors.warning,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                text = "当前系统 WebView 不支持多环境隔离，已禁用新增抖音号，仅保留默认账号运行。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = FlameThemeTokens.semanticColors.onWarningContainer,
-                            )
-                        }
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(items = accounts, key = { it.id }) { acc ->
-                        val unknownCount = unknownCountByAccount[acc.id] ?: 0
-                        AccountCardRow(
-                            account = acc,
-                            isActive = acc.id == activeAccountId,
-                            unknownCount = unknownCount,
-                            canDelete = accounts.size > 1,
-                            busy = isBusy,
-                            onSelect = {
-                                onSelectAccount(acc.id)
-                                onDismiss()
-                            },
-                            onToggleEnabled = { nextEnabled ->
-                                errorMessage = null
-                                feedbackMessage = null
-                                isBusy = true
-                                coroutineScope.launch {
-                                    try {
-                                        withContext(Dispatchers.IO) {
-                                            accountManager.setAccountEnabled(acc.id, nextEnabled)
-                                        }
-                                        feedbackMessage = if (nextEnabled) {
-                                            "已启用「${acc.displayName}」自动调度"
-                                        } else {
-                                            "已停用「${acc.displayName}」自动调度"
-                                        }
-                                    } catch (ce: CancellationException) {
-                                        throw ce
-                                    } catch (ex: Throwable) {
-                                        errorMessage = ex.message ?: "更新账号状态失败"
-                                    } finally {
-                                        isBusy = false
-                                    }
-                                }
-                            },
-                            onOpenLogin = {
-                                onSelectAccount(acc.id)
-                                onDismiss()
-                                onOpenLoginForAccount(acc.id)
-                            },
-                            onRequestRename = {
-                                renamingAccount = acc
-                                renameInput = acc.displayName
-                                renameError = null
-                            },
-                            onRequestDelete = {
-                                deletingAccount = acc
-                            },
-                        )
-                    }
-                }
-
-                if (accounts.size <= 1) {
-                    Text(
-                        text = "至少保留 1 个抖音账号；新增账号后可按需删除其他账号。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                HorizontalDivider()
-
+        if (!isMultiProfileSupported) {
+            Surface(
+                color = semantics.warningContainer,
+                border = BorderStroke(1.dp, semantics.warningBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FilledTonalButton(
-                        onClick = {
-                            createNameInput = "抖音号 ${accounts.size + 1}"
-                            createError = null
-                            showCreateDialog = true
-                        },
-                        enabled = !isBusy && isMultiProfileSupported,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("添加抖音号")
-                    }
+                    Icon(
+                        imageVector = Icons.Outlined.WarningAmber,
+                        contentDescription = null,
+                        tint = semantics.warning,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = "当前系统 WebView 不支持多环境隔离，已禁用新增抖音号，仅保留默认账号运行。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onWarningContainer,
+                    )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = !isBusy,
-            ) {
-                Text("关闭")
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(bottom = 4.dp),
+        ) {
+            items(items = accounts, key = { it.id }) { acc ->
+                val unknownCount = unknownCountByAccount[acc.id] ?: 0
+                val deleteNotice = buildAccountDeleteNotice(acc.id, accounts.size)
+                AccountSheetItemCard(
+                    account = acc,
+                    isActive = acc.id == activeAccountId,
+                    unknownCount = unknownCount,
+                    canDelete = deleteNotice.canDelete,
+                    busy = isBusy,
+                    onSelect = {
+                        onSelectAccount(acc.id)
+                        onDismiss()
+                    },
+                    onToggleEnabled = { nextEnabled ->
+                        errorMessage = null
+                        feedbackMessage = null
+                        isBusy = true
+                        coroutineScope.launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    accountManager.setAccountEnabled(acc.id, nextEnabled)
+                                }
+                                feedbackMessage = if (nextEnabled) {
+                                    "已启用「${acc.displayName}」自动调度"
+                                } else {
+                                    "已停用「${acc.displayName}」自动调度"
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (ex: Throwable) {
+                                errorMessage = ex.message ?: "更新账号状态失败"
+                            } finally {
+                                isBusy = false
+                            }
+                        }
+                    },
+                    onOpenLogin = {
+                        onSelectAccount(acc.id)
+                        onDismiss()
+                        onOpenLoginForAccount(acc.id)
+                    },
+                    onRequestRename = {
+                        renamingAccount = acc
+                        renameInput = acc.displayName
+                        renameError = null
+                    },
+                    onRequestDelete = {
+                        deletingAccount = acc
+                    },
+                )
             }
-        },
-    )
+        }
+
+        if (accounts.size <= 1) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = buildAccountDeleteNotice(DEFAULT_ACCOUNT_ID, accounts.size).detailMessage,
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.inkTertiary,
+            )
+        }
+    }
 
     if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { if (!isBusy) showCreateDialog = false },
+            containerColor = palette.surface,
+            titleContentColor = palette.ink,
+            textContentColor = palette.inkSecondary,
             title = { Text("添加抖音号") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "系统将为新账号分配独立 WebView 环境，并自动初始化默认续火文本与 3 个表情模板。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = palette.inkSecondary,
                     )
                     if (createError != null) {
                         Text(
                             text = createError.orEmpty(),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            color = semantics.danger,
                         )
                     }
                     OutlinedTextField(
@@ -384,6 +417,10 @@ fun AccountManagerDialog(
             confirmButton = {
                 Button(
                     enabled = !isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.monoCtaContainer,
+                        contentColor = palette.monoCtaContent,
+                    ),
                     onClick = {
                         isBusy = true
                         createError = null
@@ -422,6 +459,9 @@ fun AccountManagerDialog(
     renamingAccount?.let { target ->
         AlertDialog(
             onDismissRequest = { if (!isBusy) renamingAccount = null },
+            containerColor = palette.surface,
+            titleContentColor = palette.ink,
+            textContentColor = palette.inkSecondary,
             title = { Text("重命名账号") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -429,7 +469,7 @@ fun AccountManagerDialog(
                         Text(
                             text = renameError.orEmpty(),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            color = semantics.danger,
                         )
                     }
                     OutlinedTextField(
@@ -447,6 +487,10 @@ fun AccountManagerDialog(
             confirmButton = {
                 Button(
                     enabled = !isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.monoCtaContainer,
+                        contentColor = palette.monoCtaContent,
+                    ),
                     onClick = {
                         isBusy = true
                         renameError = null
@@ -483,12 +527,15 @@ fun AccountManagerDialog(
     }
 
     deletingAccount?.let { target ->
-        val semantics = FlameThemeTokens.semanticColors
+        val deleteNotice = buildAccountDeleteNotice(target.id, accounts.size)
         AlertDialog(
             onDismissRequest = { if (!isBusy) deletingAccount = null },
+            containerColor = palette.surface,
+            titleContentColor = palette.ink,
+            textContentColor = palette.inkSecondary,
             icon = {
                 Icon(
-                    imageVector = Icons.Default.Warning,
+                    imageVector = Icons.Outlined.WarningAmber,
                     contentDescription = null,
                     tint = semantics.danger,
                 )
@@ -496,13 +543,14 @@ fun AccountManagerDialog(
             title = { Text("确认删除账号「${target.displayName}」？") },
             text = {
                 Text(
-                    "删除后将立即清空该账号下的所有好友、模板、发送历史、登录态 Cookie，并回收无引用本地图片；独立 WebView Profile 将在下次冷启动彻底销毁。此操作不可恢复。",
+                    text = deleteNotice.detailMessage,
                     style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
                 )
             },
             confirmButton = {
                 Button(
-                    enabled = !isBusy,
+                    enabled = !isBusy && deleteNotice.canDelete,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = semantics.danger,
                         contentColor = Color.White,
@@ -546,7 +594,7 @@ fun AccountManagerDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AccountCardRow(
+private fun AccountSheetItemCard(
     account: AccountEntity,
     isActive: Boolean,
     unknownCount: Int,
@@ -558,134 +606,141 @@ private fun AccountCardRow(
     onRequestRename: () -> Unit,
     onRequestDelete: () -> Unit,
 ) {
-    val style = accountStatusStyle(account.status)
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = !busy, onClick = onSelect),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isActive) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.32f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            },
-        ),
-        border = if (isActive) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
-        } else {
-            null
-        },
+    val style = accountStatusStyle(account.status)
+    val tone = accountStatusTone(account.status)
+
+    FlameCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 18.dp,
+        containerColor = if (isActive) palette.surfaceSubtle else palette.surface,
+        borderColor = if (isActive) palette.monoCtaContainer.copy(alpha = 0.45f) else palette.hairline,
+        contentPadding = PaddingValues(13.dp),
+        onClick = if (!busy) onSelect else null,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+            Icon(
+                imageVector = if (isActive) {
+                    Icons.Filled.CheckCircle
+                } else {
+                    Icons.Outlined.RadioButtonUnchecked
+                },
+                contentDescription = if (isActive) "当前激活账号" else "切换至该账号",
+                tint = if (isActive) palette.monoCtaContainer else palette.hairlineStrong,
+                modifier = Modifier.size(21.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                RadioButton(
-                    selected = isActive,
-                    onClick = if (!busy) onSelect else null,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(style.dotColor),
-                        )
-                        Text(
-                            text = account.displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                    }
-                    val sub = account.douyinNickname?.takeIf { it.isNotBlank() }?.let {
-                        "已绑：$it"
-                    } ?: "尚未绑定抖音账号昵称"
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(style.dotColor),
+                    )
                     Text(
-                        text = sub,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = account.displayName,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.ink,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
+                    if (isActive) {
+                        FlameMiniTag(text = "当前", tone = FlameTone.EMBER)
+                    }
                 }
-                Switch(
-                    checked = account.enabled,
-                    enabled = !busy,
-                    onCheckedChange = onToggleEnabled,
+                val sub = account.douyinNickname?.takeIf { it.isNotBlank() }?.let {
+                    "已绑：$it"
+                } ?: "尚未绑定抖音账号昵称"
+                Text(
+                    text = sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Switch(
+                checked = account.enabled,
+                enabled = !busy,
+                onCheckedChange = onToggleEnabled,
+            )
+        }
 
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (isActive) {
-                    AccountChipPill(
-                        text = "当前",
-                        fg = MaterialTheme.colorScheme.onPrimaryContainer,
-                        bg = MaterialTheme.colorScheme.primaryContainer,
-                    )
-                }
-                AccountChipPill(
-                    text = style.label,
-                    fg = style.fg,
-                    bg = style.bg,
-                )
-                if (!account.enabled) {
-                    AccountChipPill(
-                        text = "已停用",
-                        fg = semantics.onNeutralContainer,
-                        bg = semantics.neutralContainer,
-                    )
-                }
-                if (unknownCount > 0) {
-                    AccountChipPill(
-                        text = "$unknownCount 待核对",
-                        fg = semantics.onDangerContainer,
-                        bg = semantics.dangerContainer,
-                    )
-                }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FlameStatusPill(
+                text = style.label,
+                tone = tone,
+            )
+            if (!account.enabled) {
+                FlameMiniTag(text = "自动调度已停用", tone = FlameTone.NEUTRAL)
             }
+            if (unknownCount > 0) {
+                FlameMiniTag(text = "$unknownCount 条待核对", tone = FlameTone.DANGER)
+            }
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
+        Spacer(modifier = Modifier.height(10.dp))
+        HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(enabled = !busy, onClick = onOpenLogin),
+                shape = RoundedCornerShape(999.dp),
+                color = palette.surface,
+                contentColor = palette.ink,
+                border = BorderStroke(1.dp, palette.hairline),
             ) {
-                TextButton(
-                    onClick = onOpenLogin,
-                    enabled = !busy,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        imageVector = Icons.Default.QrCodeScanner,
+                        imageVector = Icons.Outlined.QrCodeScanner,
                         contentDescription = null,
                         modifier = Modifier.size(15.dp),
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("扫码", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "扫码登录",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                     onClick = onRequestRename,
                     enabled = !busy,
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Edit,
+                        imageVector = Icons.Outlined.Edit,
                         contentDescription = "重命名账号",
+                        tint = palette.inkSecondary,
                         modifier = Modifier.size(18.dp),
                     )
                 }
@@ -694,33 +749,13 @@ private fun AccountCardRow(
                     enabled = !busy && canDelete,
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Delete,
+                        imageVector = Icons.Outlined.Delete,
                         contentDescription = "删除账号",
-                        tint = if (canDelete) semantics.danger else MaterialTheme.colorScheme.outline,
+                        tint = if (canDelete) semantics.danger else palette.hairlineStrong,
                         modifier = Modifier.size(18.dp),
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun AccountChipPill(
-    text: String,
-    fg: Color,
-    bg: Color,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = bg,
-        contentColor = fg,
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-        )
     }
 }

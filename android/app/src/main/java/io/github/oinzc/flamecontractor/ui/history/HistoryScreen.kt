@@ -99,6 +99,7 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.domain.DailyJobBucket
 import io.github.oinzc.flamecontractor.domain.HistoryStatsSummary
+import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.io.IOException
 import java.time.Instant
@@ -117,6 +118,7 @@ import kotlinx.coroutines.withContext
 fun HistoryRoute(
     database: FlameDatabase,
     onNavigateToTodayReview: () -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
 ) {

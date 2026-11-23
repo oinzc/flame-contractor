@@ -105,6 +105,7 @@ import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
@@ -112,6 +113,8 @@ import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
+import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -129,6 +132,10 @@ fun SettingsRoute(
     secretStore: EncryptedSecretStore,
     barkNotifier: BarkNotifier,
     scheduleCoordinator: ScheduleCoordinator,
+    themePreferencesStore: ThemePreferencesStore? = null,
+    activeSection: SettingsSection? = null,
+    onSelectSection: (SettingsSection?) -> Unit = {},
+    onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
     backupManager: BackupManager = BackupManager(
         store = RoomBackupStore(database),
@@ -286,76 +293,82 @@ fun SettingsRoute(
         }
     }
 
-    SettingsScreen(
-        uiState = uiState,
-        isBackupSafBusy = isSafIoBusy,
-        onAccountEnabledChanged = viewModel::onAccountEnabledChanged,
-        onSendWindowStartChanged = viewModel::onSendWindowStartChanged,
-        onSendWindowEndChanged = viewModel::onSendWindowEndChanged,
-        onSendTimeHhmmChanged = viewModel::onSendTimeHhmmChanged,
-        onJitterMaxMinutesChanged = viewModel::onJitterMaxMinutesChanged,
-        onCooldownMinSecChanged = viewModel::onCooldownMinSecChanged,
-        onCooldownMaxSecChanged = viewModel::onCooldownMaxSecChanged,
-        onSaveScheduleConfig = viewModel::saveScheduleConfig,
-        onResetScheduleDraft = viewModel::resetScheduleDraftFromSaved,
-        onAutoScanEnabledChanged = viewModel::onAutoScanEnabledChanged,
-        onAutoScanIntervalHoursChanged = viewModel::onAutoScanIntervalHoursChanged,
-        onSelectAutoScanPresetHours = viewModel::selectAutoScanPresetHours,
-        onSaveAutoScanConfig = viewModel::saveAutoScanConfig,
-        onResetAutoScanDraft = viewModel::resetAutoScanDraftFromSaved,
-        onLaunchBackupExport = {
-            val zoneId = DailySchedulePlanner.resolveZoneId(uiState.accountTimezone)
-            val suggestedName = BackupCodec.defaultBackupFileName(LocalDate.now(zoneId))
-            try {
-                exportBackupLauncher.launch(suggestedName)
-            } catch (_: ActivityNotFoundException) {
-                viewModel.onBackupExportFailed("未找到系统文件保存选择器")
-            }
-        },
-        onLaunchBackupImport = {
-            try {
-                importBackupLauncher.launch(arrayOf("*/*"))
-            } catch (_: ActivityNotFoundException) {
-                viewModel.onBackupReadFailed("未找到系统文件选择器")
-            }
-        },
-        onSelectBackupAccount = viewModel::onSelectBackupAccount,
-        onIncludeBackupHistoryChanged = viewModel::onIncludeBackupHistoryChanged,
-        onConfirmImportBackup = viewModel::confirmImportBackup,
-        onDismissBackupPreview = viewModel::dismissBackupPreviewDialog,
-        onBarkInputChanged = viewModel::onBarkInputChanged,
-        onSaveBarkConfig = viewModel::saveBarkConfig,
-        onClearBarkConfig = viewModel::clearBarkConfig,
-        onSendBarkTestProbe = viewModel::sendBarkTestProbe,
-        onRequestOrOpenNotifications = requestOrOpenNotifications,
-        onOpenChannelSettings = { channelId ->
-            if (!RomSurvivalChecker.openNotificationChannelSettings(context, channelId)) {
-                Toast.makeText(context, "未能打开通知通道设置页", Toast.LENGTH_SHORT).show()
-            }
-        },
-        onOpenSurvivalAction = handleSurvivalAction,
-        onOpenMiuiPowerHideSettings = {
-            if (!RomSurvivalChecker.openMiuiPowerHideSettings(context)) {
-                Toast.makeText(context, "未能打开神隐/省电设置页", Toast.LENGTH_SHORT).show()
-            }
-        },
-        onAutostartConfirmedChanged = viewModel::setAutostartGuidanceConfirmed,
-        onRefreshSurvivalChecks = viewModel::refreshSurvivalChecks,
-        onTriggerStructureProbe = viewModel::triggerStructureProbe,
-        onOpenProbeReportDialog = viewModel::openProbeReportDialog,
-        onDismissProbeDialog = viewModel::dismissProbeDialog,
-        onConfirmRecoverDomBroken = viewModel::confirmRecoverDomBrokenFromProbe,
-        onOpenOverrideEditor = viewModel::openOverrideEditor,
-        onDismissOverrideDialog = viewModel::dismissOverrideDialog,
-        onOverrideJsonInputChanged = viewModel::onOverrideJsonInputChanged,
-        onSaveSelectorOverrides = viewModel::saveSelectorOverrides,
-        onClearSelectorOverrides = viewModel::clearSelectorOverrides,
-        onGenerateDiagnosticsReport = viewModel::generateDiagnosticsReport,
-        onDismissDiagnosticsDialog = viewModel::dismissDiagnosticsDialog,
-        onCopyDiagnostics = { text -> copyDiagnosticsToClipboard(context, text) },
-        onShareDiagnostics = { text -> shareDiagnosticsText(context, text) },
+    FlameSubpageScaffold(
+        title = activeSection?.title ?: "设置与维护",
+        onBack = onBack,
         modifier = modifier,
-    )
+    ) { innerPadding ->
+        SettingsScreen(
+            uiState = uiState,
+            isBackupSafBusy = isSafIoBusy,
+            onAccountEnabledChanged = viewModel::onAccountEnabledChanged,
+            onSendWindowStartChanged = viewModel::onSendWindowStartChanged,
+            onSendWindowEndChanged = viewModel::onSendWindowEndChanged,
+            onSendTimeHhmmChanged = viewModel::onSendTimeHhmmChanged,
+            onJitterMaxMinutesChanged = viewModel::onJitterMaxMinutesChanged,
+            onCooldownMinSecChanged = viewModel::onCooldownMinSecChanged,
+            onCooldownMaxSecChanged = viewModel::onCooldownMaxSecChanged,
+            onSaveScheduleConfig = viewModel::saveScheduleConfig,
+            onResetScheduleDraft = viewModel::resetScheduleDraftFromSaved,
+            onAutoScanEnabledChanged = viewModel::onAutoScanEnabledChanged,
+            onAutoScanIntervalHoursChanged = viewModel::onAutoScanIntervalHoursChanged,
+            onSelectAutoScanPresetHours = viewModel::selectAutoScanPresetHours,
+            onSaveAutoScanConfig = viewModel::saveAutoScanConfig,
+            onResetAutoScanDraft = viewModel::resetAutoScanDraftFromSaved,
+            onLaunchBackupExport = {
+                val zoneId = DailySchedulePlanner.resolveZoneId(uiState.accountTimezone)
+                val suggestedName = BackupCodec.defaultBackupFileName(LocalDate.now(zoneId))
+                try {
+                    exportBackupLauncher.launch(suggestedName)
+                } catch (_: ActivityNotFoundException) {
+                    viewModel.onBackupExportFailed("未找到系统文件保存选择器")
+                }
+            },
+            onLaunchBackupImport = {
+                try {
+                    importBackupLauncher.launch(arrayOf("*/*"))
+                } catch (_: ActivityNotFoundException) {
+                    viewModel.onBackupReadFailed("未找到系统文件选择器")
+                }
+            },
+            onSelectBackupAccount = viewModel::onSelectBackupAccount,
+            onIncludeBackupHistoryChanged = viewModel::onIncludeBackupHistoryChanged,
+            onConfirmImportBackup = viewModel::confirmImportBackup,
+            onDismissBackupPreview = viewModel::dismissBackupPreviewDialog,
+            onBarkInputChanged = viewModel::onBarkInputChanged,
+            onSaveBarkConfig = viewModel::saveBarkConfig,
+            onClearBarkConfig = viewModel::clearBarkConfig,
+            onSendBarkTestProbe = viewModel::sendBarkTestProbe,
+            onRequestOrOpenNotifications = requestOrOpenNotifications,
+            onOpenChannelSettings = { channelId ->
+                if (!RomSurvivalChecker.openNotificationChannelSettings(context, channelId)) {
+                    Toast.makeText(context, "未能打开通知通道设置页", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onOpenSurvivalAction = handleSurvivalAction,
+            onOpenMiuiPowerHideSettings = {
+                if (!RomSurvivalChecker.openMiuiPowerHideSettings(context)) {
+                    Toast.makeText(context, "未能打开神隐/省电设置页", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onAutostartConfirmedChanged = viewModel::setAutostartGuidanceConfirmed,
+            onRefreshSurvivalChecks = viewModel::refreshSurvivalChecks,
+            onTriggerStructureProbe = viewModel::triggerStructureProbe,
+            onOpenProbeReportDialog = viewModel::openProbeReportDialog,
+            onDismissProbeDialog = viewModel::dismissProbeDialog,
+            onConfirmRecoverDomBroken = viewModel::confirmRecoverDomBrokenFromProbe,
+            onOpenOverrideEditor = viewModel::openOverrideEditor,
+            onDismissOverrideDialog = viewModel::dismissOverrideDialog,
+            onOverrideJsonInputChanged = viewModel::onOverrideJsonInputChanged,
+            onSaveSelectorOverrides = viewModel::saveSelectorOverrides,
+            onClearSelectorOverrides = viewModel::clearSelectorOverrides,
+            onGenerateDiagnosticsReport = viewModel::generateDiagnosticsReport,
+            onDismissDiagnosticsDialog = viewModel::dismissDiagnosticsDialog,
+            onCopyDiagnostics = { text -> copyDiagnosticsToClipboard(context, text) },
+            onShareDiagnostics = { text -> shareDiagnosticsText(context, text) },
+            modifier = Modifier.padding(innerPadding),
+        )
+    }
 }
 
 @Composable

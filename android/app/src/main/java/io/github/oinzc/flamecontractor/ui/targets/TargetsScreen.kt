@@ -96,12 +96,14 @@ import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 
 @Composable
 fun TargetsRoute(
     database: FlameDatabase,
     scheduleCoordinator: ScheduleCoordinator,
     onNavigateToTodayReview: () -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     imageStore: TemplateImageStorage? = null,

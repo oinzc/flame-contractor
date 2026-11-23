@@ -96,6 +96,7 @@ import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.ui.shell.MainTab
+import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
 import java.time.LocalDate
@@ -107,6 +108,9 @@ import java.time.format.DateTimeFormatter
 fun TodayRoute(
     container: AppContainer,
     onOpenTab: (MainTab) -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenAccountSwitcher: () -> Unit = {},
+    otherAccountAlertBadge: Boolean = false,
     initialUrgentCategory: String? = null,
     modifier: Modifier = Modifier,
     urgentSignalNonce: Long = 0L,
@@ -183,6 +187,7 @@ fun TodayRoute(
         onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
         onToggleJobExpanded = viewModel::toggleJobExpanded,
         onOpenTab = onOpenTab,
+        onOpenSettings = onOpenSettings,
         modifier = modifier,
     )
 }
@@ -209,6 +214,7 @@ fun TodayScreen(
     onDismissManualBatchFeedback: () -> Unit,
     onToggleJobExpanded: (String) -> Unit,
     onOpenTab: (MainTab) -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -244,6 +250,7 @@ fun TodayScreen(
                             onClearCooldown = onClearCooldown,
                             onTriggerManualBatch = onTriggerManualBatch,
                             onOpenTab = onOpenTab,
+                            onOpenSettings = onOpenSettings,
                         )
                     }
 
@@ -290,6 +297,7 @@ fun TodayScreen(
                             onClearCooldown = onClearCooldown,
                             onTriggerManualBatch = onTriggerManualBatch,
                             onOpenTab = onOpenTab,
+                            onOpenSettings = onOpenSettings,
                         )
                     }
 
@@ -364,7 +372,7 @@ fun TodayScreen(
                 Button(
                     onClick = {
                         onDismissDomBrokenDialog()
-                        onOpenTab(MainTab.SETTINGS)
+                        onOpenSettings(SettingsSection.DIAGNOSTICS)
                     },
                 ) {
                     Text("前往设置体检")
@@ -436,7 +444,7 @@ fun TodayScreen(
             },
             onOpenSettings = {
                 onDismissManualBatchFeedback()
-                onOpenTab(MainTab.SETTINGS)
+                onOpenSettings(SettingsSection.SCHEDULE)
             },
             onOpenTargets = {
                 onDismissManualBatchFeedback()
@@ -455,6 +463,7 @@ private fun TodayOverviewSection(
     onClearCooldown: () -> Unit,
     onTriggerManualBatch: () -> Unit,
     onOpenTab: (MainTab) -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         AccountHealthCapsuleCard(
@@ -499,7 +508,7 @@ private fun TodayOverviewSection(
 
                 AccountStatus.DOM_BROKEN -> {
                     DomBrokenBanner(
-                        onFixClick = { onOpenTab(MainTab.SETTINGS) },
+                        onFixClick = { onOpenSettings(SettingsSection.DIAGNOSTICS) },
                     )
                 }
 

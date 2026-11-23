@@ -1,12 +1,20 @@
 package io.github.oinzc.flamecontractor.ui.shell
 
 import android.content.Intent
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -14,10 +22,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
-import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
@@ -26,6 +35,7 @@ import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
 import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
 import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
+import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import io.github.oinzc.flamecontractor.ui.today.TodayRoute
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
@@ -55,9 +65,31 @@ class MainActivity : AppCompatActivity() {
         val container = (application as FlameApplication).container
 
         setContent {
-            FlameTheme {
-                var selectedTab by rememberSaveable { mutableStateOf(MainTab.TODAY) }
-                var showAccountManagerDialog by rememberSaveable { mutableStateOf(false) }
+            val themePreference by container.themePreferencesStore.preference.collectAsState()
+            val isDarkTheme = ThemePreferencesStore.resolveIsDark(
+                mode = themePreference.mode,
+                systemDark = isSystemInDarkTheme(),
+            )
+
+            DisposableEffect(isDarkTheme) {
+                val barStyle = if (isDarkTheme) {
+                    SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                }
+                enableEdgeToEdge(
+                    statusBarStyle = barStyle,
+                    navigationBarStyle = barStyle,
+                )
+                onDispose {}
+            }
+
+            FlameTheme(preference = themePreference) {
+                var navState by rememberSaveable(stateSaver = MainNavStateSaver) {
+                    mutableStateOf(MainNavState())
+                }
+                var isFullscreenEditorOpen by rememberSaveable { mutableStateOf(false) }
+                var showAccountManagerSheet by rememberSaveable { mutableStateOf(false) }
                 var lastHandledLaunchNonce by rememberSaveable { mutableStateOf(0L) }
                 val launchSignal = pendingLaunchSignal
 
@@ -102,17 +134,24 @@ class MainActivity : AppCompatActivity() {
                         ) {
                             container.activeAccountStore.selectAccount(targetAccountId)
                         }
-                        if (launchSignal.category != null) {
-                            selectedTab = if (launchSignal.category == UrgentCategory.SPARK_DETERIORATING.name) {
-                                MainTab.TARGETS
-                            } else {
-                                MainTab.TODAY
-                            }
-                        } else if (targetAccountId != null) {
-                            selectedTab = MainTab.TODAY
-                        }
+                        navState = navState.applyLaunchIntent(
+                            category = launchSignal.category,
+                            hasAccountTarget = targetAccountId != null,
+                        )
+                        isFullscreenEditorOpen = false
                         lastHandledLaunchNonce = launchSignal.nonce
                     }
+                }
+
+                LaunchedEffect(navState.selectedTab, navState.isSettingsOpen) {
+                    if (navState.selectedTab != MainTab.TEMPLATES || navState.isSettingsOpen) {
+                        isFullscreenEditorOpen = false
+                    }
+                }
+
+                BackHandler(enabled = navState.isSettingsOpen) {
+                    val (next, _) = navState.navigateBack()
+                    navState = next
                 }
 
                 val currentAccount = accounts.firstOrNull { it.id == activeAccountId }
@@ -133,61 +172,104 @@ class MainActivity : AppCompatActivity() {
                     0L
                 }
 
-                AdaptiveNavShell(
-                    selectedTab = selectedTab,
-                    onSelectTab = { selectedTab = it },
-                    todayAlertBadge = hasTodayAlert,
-                    currentAccount = currentAccount,
-                    totalAccountCount = accounts.size.coerceAtLeast(1),
-                    otherAccountAlertBadge = hasOtherAccountAlert,
-                    onOpenAccountSwitcher = { showAccountManagerDialog = true },
-                    todayContent = {
-                        TodayRoute(
-                            container = container,
-                            onOpenTab = { targetTab -> selectedTab = targetTab },
-                            initialUrgentCategory = urgentCategoryForActive,
-                            urgentSignalNonce = urgentNonceForActive,
-                            accountId = activeAccountId,
-                        )
-                    },
-                    targetsContent = {
-                        TargetsRoute(
-                            database = container.database,
-                            scheduleCoordinator = container.scheduleCoordinator,
-                            onNavigateToTodayReview = { selectedTab = MainTab.TODAY },
-                            accountId = activeAccountId,
-                            imageStore = container.templateImageStore,
-                        )
-                    },
-                    templatesContent = {
-                        TemplatesRoute(
-                            database = container.database,
-                            accountId = activeAccountId,
-                            imageStore = container.templateImageStore,
-                        )
-                    },
-                    historyContent = {
-                        HistoryRoute(
-                            database = container.database,
-                            onNavigateToTodayReview = { selectedTab = MainTab.TODAY },
-                            accountId = activeAccountId,
-                        )
-                    },
-                    settingsContent = {
-                        SettingsRoute(
-                            database = container.database,
-                            selectorBundleStore = container.selectorBundleStore,
-                            secretStore = container.secretStore,
-                            barkNotifier = container.barkNotifier,
-                            scheduleCoordinator = container.scheduleCoordinator,
-                            backupManager = container.backupManager,
-                            accountId = activeAccountId,
-                        )
-                    },
-                )
+                val openSettings: (SettingsSection?) -> Unit = { section ->
+                    isFullscreenEditorOpen = false
+                    navState = navState.openSettings(section)
+                }
 
-                if (showAccountManagerDialog) {
-                    AccountManagerDialog(
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AdaptiveNavShell(
+                        selectedTab = navState.selectedTab,
+                        onSelectTab = { tab ->
+                            isFullscreenEditorOpen = false
+                            navState = navState.selectTab(tab)
+                        },
+                        todayAlertBadge = hasTodayAlert,
+                        hideNavigationChrome = navState.isSettingsOpen || isFullscreenEditorOpen,
+                        currentAccount = currentAccount,
+                        totalAccountCount = accounts.size.coerceAtLeast(1),
+                        otherAccountAlertBadge = hasOtherAccountAlert,
+                        onOpenAccountSwitcher = { showAccountManagerSheet = true },
+                        onOpenSettings = { openSettings(null) },
+                        todayContent = {
+                            TodayRoute(
+                                container = container,
+                                onOpenTab = { targetTab ->
+                                    isFullscreenEditorOpen = false
+                                    navState = navState.selectTab(targetTab)
+                                },
+                                onOpenSettings = openSettings,
+                                onOpenAccountSwitcher = { showAccountManagerSheet = true },
+                                otherAccountAlertBadge = hasOtherAccountAlert,
+                                initialUrgentCategory = urgentCategoryForActive,
+                                urgentSignalNonce = urgentNonceForActive,
+                                accountId = activeAccountId,
+                            )
+                        },
+                        targetsContent = {
+                            TargetsRoute(
+                                database = container.database,
+                                scheduleCoordinator = container.scheduleCoordinator,
+                                onNavigateToTodayReview = {
+                                    isFullscreenEditorOpen = false
+                                    navState = navState.selectTab(MainTab.TODAY)
+                                },
+                                onOpenSettings = openSettings,
+                                accountId = activeAccountId,
+                                imageStore = container.templateImageStore,
+                            )
+                        },
+                        templatesContent = {
+                            TemplatesRoute(
+                                database = container.database,
+                                onOpenSettings = openSettings,
+                                onEditorVisibleChanged = { visible -> isFullscreenEditorOpen = visible },
+                                accountId = activeAccountId,
+                                imageStore = container.templateImageStore,
+                            )
+                        },
+                        historyContent = {
+                            HistoryRoute(
+                                database = container.database,
+                                onNavigateToTodayReview = {
+                                    isFullscreenEditorOpen = false
+                                    navState = navState.selectTab(MainTab.TODAY)
+                                },
+                                onOpenSettings = openSettings,
+                                accountId = activeAccountId,
+                            )
+                        },
+                    )
+
+                    if (navState.isSettingsOpen) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = FlameThemeTokens.palette.canvas,
+                        ) {
+                            SettingsRoute(
+                                database = container.database,
+                                selectorBundleStore = container.selectorBundleStore,
+                                secretStore = container.secretStore,
+                                barkNotifier = container.barkNotifier,
+                                scheduleCoordinator = container.scheduleCoordinator,
+                                themePreferencesStore = container.themePreferencesStore,
+                                activeSection = navState.activeSettingsSection,
+                                onSelectSection = { section ->
+                                    navState = navState.openSettings(section)
+                                },
+                                onBack = {
+                                    val (next, _) = navState.navigateBack()
+                                    navState = next
+                                },
+                                backupManager = container.backupManager,
+                                accountId = activeAccountId,
+                            )
+                        }
+                    }
+                }
+
+                if (showAccountManagerSheet) {
+                    AccountManagerSheet(
                         accounts = accounts,
                         activeAccountId = activeAccountId,
                         unknownCountByAccount = unknownCountsByAccount,
@@ -203,7 +285,7 @@ class MainActivity : AppCompatActivity() {
                                 ),
                             )
                         },
-                        onDismiss = { showAccountManagerDialog = false },
+                        onDismiss = { showAccountManagerSheet = false },
                     )
                 }
             }

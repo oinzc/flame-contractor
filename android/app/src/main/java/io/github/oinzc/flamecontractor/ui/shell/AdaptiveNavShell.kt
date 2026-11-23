@@ -1,7 +1,16 @@
 package io.github.oinzc.flamecontractor.ui.shell
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,47 +20,38 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Forum
-import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.outlined.Group
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
+import androidx.compose.material.icons.outlined.SwitchAccount
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,204 +59,102 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
-enum class MainTab(
-    val label: String,
-    val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector,
-) {
-    TODAY(
-        label = "今日",
-        selectedIcon = Icons.Filled.LocalFireDepartment,
-        unselectedIcon = Icons.Outlined.LocalFireDepartment,
-    ),
-    TARGETS(
-        label = "好友",
-        selectedIcon = Icons.Filled.Group,
-        unselectedIcon = Icons.Outlined.Group,
-    ),
-    TEMPLATES(
-        label = "模板",
-        selectedIcon = Icons.Filled.Forum,
-        unselectedIcon = Icons.Outlined.Forum,
-    ),
-    HISTORY(
-        label = "记录",
-        selectedIcon = Icons.Filled.History,
-        unselectedIcon = Icons.Outlined.History,
-    ),
-    SETTINGS(
-        label = "设置",
-        selectedIcon = Icons.Filled.Settings,
-        unselectedIcon = Icons.Outlined.Settings,
-    ),
-}
-
 /**
  * 手机 / 平板自适应导航外壳：
- * - `< 600.dp` 采用底部 5 栏 [NavigationBar]；
- * - `>= 600.dp` 采用左侧常驻 [NavigationRail]。
+ * - `< 600.dp` 采用底部 4 Tab 悬浮圆角胶囊底栏，在进入二级设置或全屏编辑器时自动淡出隐藏；
+ * - `>= 600.dp` 采用左侧常驻简洁 [NavigationRail]（顶部账号切换 + 中部 4 Tab + 底部设置齿轮）。
  */
 @Composable
 fun AdaptiveNavShell(
     selectedTab: MainTab,
     onSelectTab: (MainTab) -> Unit,
-    todayContent: @Composable () -> Unit,
-    targetsContent: @Composable () -> Unit,
-    templatesContent: @Composable () -> Unit,
-    historyContent: @Composable () -> Unit,
-    settingsContent: @Composable () -> Unit,
-    modifier: Modifier = Modifier,
     todayAlertBadge: Boolean = false,
+    hideNavigationChrome: Boolean = false,
     currentAccount: AccountEntity? = null,
     totalAccountCount: Int = 1,
     otherAccountAlertBadge: Boolean = false,
     onOpenAccountSwitcher: (() -> Unit)? = null,
+    onOpenSettings: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    todayContent: @Composable () -> Unit,
+    targetsContent: @Composable () -> Unit,
+    templatesContent: @Composable () -> Unit,
+    historyContent: @Composable () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
     val activeContent: @Composable () -> Unit = {
         when (selectedTab) {
             MainTab.TODAY -> todayContent()
             MainTab.TARGETS -> targetsContent()
             MainTab.TEMPLATES -> templatesContent()
             MainTab.HISTORY -> historyContent()
-            MainTab.SETTINGS -> settingsContent()
         }
     }
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(palette.canvas),
     ) {
         val useRail = maxWidth >= 600.dp
         if (useRail) {
-            val contentInsets = WindowInsets.safeDrawing.only(
-                WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.End,
-            )
+            val endInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.End)
             Row(modifier = Modifier.fillMaxSize()) {
-                NavigationRail(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    windowInsets = WindowInsets.safeDrawing.only(
-                        WindowInsetsSides.Vertical + WindowInsetsSides.Start,
-                    ),
-                    header = {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 12.dp, bottom = 8.dp)
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.LocalFireDepartment,
-                                contentDescription = "抖音续火工",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                    },
-                ) {
-                    MainTab.entries.forEach { tab ->
-                        val selected = tab == selectedTab
-                        NavigationRailItem(
-                            selected = selected,
-                            onClick = { onSelectTab(tab) },
-                            icon = {
-                                TabIconWithBadge(
-                                    tab = tab,
-                                    selected = selected,
-                                    showBadge = tab == MainTab.TODAY && todayAlertBadge,
-                                )
-                            },
-                            label = { Text(text = tab.label, maxLines = 1) },
-                            alwaysShowLabel = true,
-                        )
-                    }
+                if (!hideNavigationChrome) {
+                    FlameWideNavigationRail(
+                        selectedTab = selectedTab,
+                        onSelectTab = onSelectTab,
+                        todayAlertBadge = todayAlertBadge,
+                        currentAccount = currentAccount,
+                        totalAccountCount = totalAccountCount,
+                        otherAccountAlertBadge = otherAccountAlertBadge,
+                        onOpenAccountSwitcher = onOpenAccountSwitcher,
+                        onOpenSettings = onOpenSettings,
+                    )
+                    VerticalDivider(thickness = 1.dp, color = palette.hairline)
                 }
-                Surface(
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
-                    color = MaterialTheme.colorScheme.background,
+                        .fillMaxHeight()
+                        .background(palette.canvas)
+                        .windowInsetsPadding(endInsets),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .windowInsetsPadding(contentInsets)
-                            .consumeWindowInsets(contentInsets),
-                    ) {
-                        if (onOpenAccountSwitcher != null) {
-                            CompactAccountSwitcherBar(
-                                currentAccount = currentAccount,
-                                totalAccountCount = totalAccountCount,
-                                otherAccountAlertBadge = otherAccountAlertBadge,
-                                onClick = onOpenAccountSwitcher,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 20.dp, vertical = 6.dp),
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth(),
-                        ) {
-                            activeContent()
-                        }
-                    }
+                    activeContent()
                 }
             }
         } else {
-            Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                containerColor = MaterialTheme.colorScheme.background,
-                bottomBar = {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    ) {
-                        MainTab.entries.forEach { tab ->
-                            val selected = tab == selectedTab
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = { onSelectTab(tab) },
-                                icon = {
-                                    TabIconWithBadge(
-                                        tab = tab,
-                                        selected = selected,
-                                        showBadge = tab == MainTab.TODAY && todayAlertBadge,
-                                    )
-                                },
-                                label = { Text(text = tab.label, maxLines = 1) },
-                                alwaysShowLabel = true,
-                            )
-                        }
-                    }
-                },
-            ) { innerPadding ->
-                Column(
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(palette.canvas),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    activeContent()
+                }
+
+                AnimatedVisibility(
+                    visible = !hideNavigationChrome,
+                    enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                        slideInVertically(
+                            animationSpec = tween(200, easing = FastOutSlowInEasing),
+                            initialOffsetY = { it / 2 },
+                        ),
+                    exit = fadeOut(animationSpec = tween(150, easing = FastOutSlowInEasing)) +
+                        slideOutVertically(
+                            animationSpec = tween(170, easing = FastOutSlowInEasing),
+                            targetOffsetY = { it / 2 },
+                        ),
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                        .consumeWindowInsets(innerPadding),
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(start = 18.dp, end = 18.dp, bottom = 12.dp),
                 ) {
-                    if (onOpenAccountSwitcher != null) {
-                        CompactAccountSwitcherBar(
-                            currentAccount = currentAccount,
-                            totalAccountCount = totalAccountCount,
-                            otherAccountAlertBadge = otherAccountAlertBadge,
-                            onClick = onOpenAccountSwitcher,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                    ) {
-                        activeContent()
-                    }
+                    FlameFloatingPillDock(
+                        selectedTab = selectedTab,
+                        onSelectTab = onSelectTab,
+                        todayAlertBadge = todayAlertBadge,
+                    )
                 }
             }
         }
@@ -264,122 +162,229 @@ fun AdaptiveNavShell(
 }
 
 @Composable
-private fun CompactAccountSwitcherBar(
-    currentAccount: AccountEntity?,
-    totalAccountCount: Int,
-    otherAccountAlertBadge: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun FlameFloatingPillDock(
+    selectedTab: MainTab,
+    onSelectTab: (MainTab) -> Unit,
+    todayAlertBadge: Boolean,
 ) {
-    val status = currentAccount?.status ?: AccountStatus.PENDING_LOGIN
-    val style = accountStatusStyle(status)
-    val semantics = FlameThemeTokens.semanticColors
-    val enabledText = if (currentAccount?.enabled == false) "已停用" else "已启用"
+    val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
 
     Surface(
-        modifier = modifier
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (otherAccountAlertBadge) {
-                semantics.danger.copy(alpha = 0.55f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
-            },
-        ),
+        modifier = Modifier
+            .widthIn(max = 460.dp)
+            .fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        color = palette.dockContainer,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairline),
+        shadowElevation = if (isDark) 10.dp else 8.dp,
+        tonalElevation = 0.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(style.dotColor),
-            )
-            Text(
-                text = currentAccount?.displayName ?: "默认抖音号",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = style.bg,
-                contentColor = style.fg,
-            ) {
-                Text(
-                    text = style.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            MainTab.entries.forEach { tab ->
+                val selected = tab == selectedTab
+                val itemContainer by animateColorAsState(
+                    targetValue = if (selected) palette.dockActiveContainer else Color.Transparent,
+                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                    label = "dock_item_bg_${tab.name}",
                 )
-            }
-            Text(
-                text = enabledText,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (currentAccount?.enabled == false) {
-                    semantics.danger
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            if (otherAccountAlertBadge) {
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = semantics.dangerContainer,
-                    contentColor = semantics.onDangerContainer,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(semantics.danger),
-                        )
-                        Text(
-                            text = "他号异常",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                val targetContentColor = when {
+                    selected && tab == MainTab.TODAY -> palette.ember
+                    selected -> palette.ink
+                    else -> palette.inkTertiary
                 }
-            } else if (totalAccountCount > 1) {
-                Text(
-                    text = "共${totalAccountCount}号",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                val itemTint by animateColorAsState(
+                    targetValue = targetContentColor,
+                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                    label = "dock_item_fg_${tab.name}",
                 )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(itemContainer)
+                        .clickable(
+                            role = Role.Tab,
+                            onClick = { onSelectTab(tab) },
+                        )
+                        .padding(vertical = 7.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    TabIconWithBadge(
+                        tab = tab,
+                        selected = selected,
+                        tint = itemTint,
+                        showBadge = tab == MainTab.TODAY && todayAlertBadge,
+                        badgeRingColor = if (selected) palette.dockActiveContainer else palette.dockContainer,
+                    )
+                    Text(
+                        text = tab.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = itemTint,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
             }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "切换",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
-                )
-                Icon(
-                    imageVector = Icons.Filled.KeyboardArrowDown,
-                    contentDescription = "切换或管理账号",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
+        }
+    }
+}
+
+@Composable
+private fun FlameWideNavigationRail(
+    selectedTab: MainTab,
+    onSelectTab: (MainTab) -> Unit,
+    todayAlertBadge: Boolean,
+    currentAccount: AccountEntity?,
+    totalAccountCount: Int,
+    otherAccountAlertBadge: Boolean,
+    onOpenAccountSwitcher: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val statusStyle = accountStatusStyle(currentAccount?.status ?: AccountStatus.PENDING_LOGIN)
+
+    NavigationRail(
+        containerColor = palette.surface,
+        contentColor = palette.ink,
+        windowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Vertical + WindowInsetsSides.Start,
+        ),
+        header = {
+            if (onOpenAccountSwitcher != null) {
+                Column(
+                    modifier = Modifier.padding(top = 12.dp, bottom = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box {
+                        Surface(
+                            onClick = onOpenAccountSwitcher,
+                            modifier = Modifier.size(44.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            color = palette.surfaceSubtle,
+                            contentColor = palette.ink,
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (otherAccountAlertBadge) semantics.dangerBorder else palette.hairline,
+                            ),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Outlined.SwitchAccount,
+                                    contentDescription = "切换或管理账号",
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(6.dp)
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(statusStyle.dotColor),
+                                )
+                            }
+                        }
+                        if (otherAccountAlertBadge) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 2.dp, y = (-2).dp)
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(semantics.danger)
+                                    .border(1.5.dp, palette.surface, CircleShape),
+                            )
+                        }
+                    }
+                    Text(
+                        text = currentAccount?.displayName
+                            ?.takeIf { it.isNotBlank() }
+                            ?: if (totalAccountCount > 1) "共${totalAccountCount}号" else "账号",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .widthIn(max = 64.dp)
+                            .padding(horizontal = 4.dp),
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.height(12.dp))
             }
+        },
+    ) {
+        MainTab.entries.forEach { tab ->
+            val selected = tab == selectedTab
+            val selectedTint = if (tab == MainTab.TODAY) palette.ember else palette.ink
+            NavigationRailItem(
+                selected = selected,
+                onClick = { onSelectTab(tab) },
+                icon = {
+                    TabIconWithBadge(
+                        tab = tab,
+                        selected = selected,
+                        tint = if (selected) selectedTint else palette.inkTertiary,
+                        showBadge = tab == MainTab.TODAY && todayAlertBadge,
+                        badgeRingColor = if (selected) palette.dockActiveContainer else palette.surface,
+                    )
+                },
+                label = {
+                    Text(
+                        text = tab.label,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                },
+                alwaysShowLabel = true,
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = selectedTint,
+                    selectedTextColor = selectedTint,
+                    indicatorColor = palette.dockActiveContainer,
+                    unselectedIconColor = palette.inkTertiary,
+                    unselectedTextColor = palette.inkTertiary,
+                ),
+            )
+        }
+
+        if (onOpenSettings != null) {
+            Spacer(modifier = Modifier.weight(1f))
+            NavigationRailItem(
+                selected = false,
+                onClick = onOpenSettings,
+                icon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        modifier = Modifier.size(21.dp),
+                    )
+                },
+                label = {
+                    Text(
+                        text = "设置",
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                },
+                alwaysShowLabel = true,
+                colors = NavigationRailItemDefaults.colors(
+                    unselectedIconColor = palette.inkSecondary,
+                    unselectedTextColor = palette.inkSecondary,
+                ),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -388,20 +393,29 @@ private fun CompactAccountSwitcherBar(
 private fun TabIconWithBadge(
     tab: MainTab,
     selected: Boolean,
+    tint: Color,
     showBadge: Boolean,
+    badgeRingColor: Color,
 ) {
+    val semantics = FlameThemeTokens.semanticColors
     val icon = if (selected) tab.selectedIcon else tab.unselectedIcon
-    if (showBadge) {
-        BadgedBox(
-            badge = {
-                Badge(
-                    containerColor = FlameThemeTokens.semanticColors.danger,
-                )
-            },
-        ) {
-            Icon(imageVector = icon, contentDescription = tab.label)
+    Box(contentAlignment = Alignment.Center) {
+        Icon(
+            imageVector = icon,
+            contentDescription = tab.label,
+            tint = tint,
+            modifier = Modifier.size(20.dp),
+        )
+        if (showBadge) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 3.dp, y = (-2).dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(semantics.danger)
+                    .border(1.5.dp, badgeRingColor, CircleShape),
+            )
         }
-    } else {
-        Icon(imageVector = icon, contentDescription = tab.label)
     }
 }

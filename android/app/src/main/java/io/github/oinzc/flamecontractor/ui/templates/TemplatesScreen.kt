@@ -98,6 +98,7 @@ import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
+import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -106,6 +107,8 @@ import kotlinx.coroutines.withContext
 @Composable
 fun TemplatesRoute(
     database: FlameDatabase,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
+    onEditorVisibleChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     imageStore: TemplateImageStorage? = null,
