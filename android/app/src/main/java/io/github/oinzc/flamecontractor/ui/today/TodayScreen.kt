@@ -3,23 +3,37 @@ package io.github.oinzc.flamecontractor.ui.today
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -27,53 +41,50 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.PersonSearch
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -95,14 +106,33 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
+import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
+import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
+import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
+import io.github.oinzc.flamecontractor.ui.components.FlameListRow
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
+import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
+import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
+import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.MainTab
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
+import io.github.oinzc.flamecontractor.ui.shell.accountStatusStyle
+import io.github.oinzc.flamecontractor.ui.shell.accountStatusTone
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @Composable
 fun TodayRoute(
@@ -188,6 +218,8 @@ fun TodayRoute(
         onToggleJobExpanded = viewModel::toggleJobExpanded,
         onOpenTab = onOpenTab,
         onOpenSettings = onOpenSettings,
+        onOpenAccountSwitcher = onOpenAccountSwitcher,
+        otherAccountAlertBadge = otherAccountAlertBadge,
         modifier = modifier,
     )
 }
@@ -215,119 +247,165 @@ fun TodayScreen(
     onToggleJobExpanded: (String) -> Unit,
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenAccountSwitcher: () -> Unit = {},
+    otherAccountAlertBadge: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-    ) { innerPadding ->
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-        ) {
-            val isWideScreen = maxWidth >= 600.dp
+    val palette = FlameThemeTokens.palette
+    val dockBottomClearance = flameDockBottomPadding()
+    var timelineJobId by remember { mutableStateOf<String?>(null) }
+
+    val openJobTimeline: (RecentJobItem) -> Unit = { item ->
+        timelineJobId = item.job.id
+        if (!item.expanded) {
+            onToggleJobExpanded(item.job.id)
+        }
+    }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .background(palette.canvas),
+    ) {
+        val isWideScreen = maxWidth >= 600.dp
+
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = palette.canvas,
+            contentColor = palette.ink,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            topBar = {
+                FlameTopBar(title = "今日") {
+                    TodayAccountSwitcherPill(
+                        account = state.account,
+                        otherAccountAlertBadge = otherAccountAlertBadge,
+                        onClick = onOpenAccountSwitcher,
+                    )
+                    FlameIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        onClick = { onOpenSettings(null) },
+                    )
+                }
+            },
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.padding(
+                        bottom = if (isWideScreen) 16.dp else dockBottomClearance - 12.dp,
+                    ),
+                )
+            },
+        ) { innerPadding ->
             if (isWideScreen) {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                        .padding(innerPadding)
+                        .padding(horizontal = 20.dp)
+                        .navigationBarsPadding(),
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     Column(
                         modifier = Modifier
                             .weight(0.46f)
                             .fillMaxHeight()
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                            .verticalScroll(rememberScrollState())
+                            .padding(top = 4.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        TodayOverviewSection(
+                        TodayOverviewColumn(
                             state = state,
                             onReloginClick = onReloginClick,
+                            onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
                             onOpenCooldownDetail = onOpenCooldownDetail,
-                            onClearCooldown = onClearCooldown,
                             onTriggerManualBatch = onTriggerManualBatch,
                             onOpenTab = onOpenTab,
                             onOpenSettings = onOpenSettings,
                         )
                     }
 
-                    Column(
+                    LazyColumn(
                         modifier = Modifier
                             .weight(0.54f)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        RecentJobsHeader(count = state.recentJobs.size)
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                            contentPadding = PaddingValues(bottom = 16.dp),
-                        ) {
-                            if (state.recentJobs.isEmpty()) {
-                                item(key = "empty_recent") {
-                                    EmptyRecentJobsCard(onScanTargets = { onOpenTab(MainTab.TARGETS) })
-                                }
-                            } else {
-                                items(state.recentJobs, key = { it.job.id }) { item ->
-                                    RecentJobCard(
-                                        item = item,
-                                        onToggleExpand = { onToggleJobExpanded(item.job.id) },
-                                        onOpenUnknownReview = { onOpenUnknownReview(item.job.id) },
-                                    )
-                                }
-                            }
+                        item(key = "recent_jobs_section") {
+                            TodayRecentJobsSection(
+                                recentJobs = state.recentJobs,
+                                onOpenJobTimeline = openJobTimeline,
+                                onOpenUnknownReview = onOpenUnknownReview,
+                                onScanTargets = { onOpenTab(MainTab.TARGETS) },
+                            )
                         }
                     }
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 4.dp,
+                        bottom = dockBottomClearance,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item(key = "overview_section") {
-                        TodayOverviewSection(
+                        TodayOverviewColumn(
                             state = state,
                             onReloginClick = onReloginClick,
+                            onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
                             onOpenCooldownDetail = onOpenCooldownDetail,
-                            onClearCooldown = onClearCooldown,
                             onTriggerManualBatch = onTriggerManualBatch,
                             onOpenTab = onOpenTab,
                             onOpenSettings = onOpenSettings,
                         )
                     }
 
-                    item(key = "recent_header") {
-                        RecentJobsHeader(
-                            count = state.recentJobs.size,
-                            modifier = Modifier.padding(top = 4.dp),
+                    item(key = "recent_jobs_section") {
+                        TodayRecentJobsSection(
+                            recentJobs = state.recentJobs,
+                            onOpenJobTimeline = openJobTimeline,
+                            onOpenUnknownReview = onOpenUnknownReview,
+                            onScanTargets = { onOpenTab(MainTab.TARGETS) },
                         )
-                    }
-
-                    if (state.recentJobs.isEmpty()) {
-                        item(key = "empty_recent") {
-                            EmptyRecentJobsCard(onScanTargets = { onOpenTab(MainTab.TARGETS) })
-                        }
-                    } else {
-                        items(state.recentJobs, key = { it.job.id }) { item ->
-                            RecentJobCard(
-                                item = item,
-                                onToggleExpand = { onToggleJobExpanded(item.job.id) },
-                                onOpenUnknownReview = { onOpenUnknownReview(item.job.id) },
-                            )
-                        }
                     }
                 }
             }
         }
     }
 
+    val activeTimelineItem = timelineJobId?.let { id ->
+        state.recentJobs.firstOrNull { it.job.id == id }
+    }
+    if (activeTimelineItem != null) {
+        TaskTimelineSheet(
+            item = activeTimelineItem,
+            onDismiss = {
+                if (activeTimelineItem.expanded) {
+                    onToggleJobExpanded(activeTimelineItem.job.id)
+                }
+                timelineJobId = null
+            },
+            onOpenUnknownReview = {
+                if (activeTimelineItem.expanded) {
+                    onToggleJobExpanded(activeTimelineItem.job.id)
+                }
+                timelineJobId = null
+                onOpenUnknownReview(activeTimelineItem.job.id)
+            },
+        )
+    }
+
     if (state.showReloginChoiceDialog) {
-        ReloginChoiceDialog(
+        ReloginChoiceSheet(
             onDismiss = onDismissReloginChoice,
             onPreserveSession = onChoosePreserveSessionLogin,
             onClearAndRelogin = onChooseClearAndRelogin,
@@ -335,7 +413,7 @@ fun TodayScreen(
     }
 
     state.activeUnknownReviewJob?.let { reviewItem ->
-        UnknownReviewDialog(
+        UnknownReviewSheet(
             item = reviewItem,
             isResolving = state.isResolvingAction,
             onConfirmSucceeded = { onResolveUnknownAsSucceeded(reviewItem.job.id) },
@@ -345,7 +423,7 @@ fun TodayScreen(
     }
 
     if (state.showCooldownDetailDialog && state.account?.status == AccountStatus.COOLDOWN) {
-        CooldownDetailDialog(
+        CooldownDetailSheet(
             account = state.account,
             stats = state.cooldownFailureStats,
             isResolving = state.isResolvingAction,
@@ -355,79 +433,30 @@ fun TodayScreen(
     }
 
     if (state.showDomBrokenDialog) {
-        AlertDialog(
-            onDismissRequest = onDismissDomBrokenDialog,
-            icon = {
-                Icon(
-                    imageVector = Icons.Filled.Build,
-                    contentDescription = null,
-                    tint = FlameThemeTokens.semanticColors.danger,
-                )
+        DomBrokenSheet(
+            onOpenDiagnostics = {
+                onDismissDomBrokenDialog()
+                onOpenSettings(SettingsSection.DIAGNOSTICS)
             },
-            title = { Text("网页核心结构异常") },
-            text = {
-                Text("抖音网页聊天页骨架选择器未命中，系统已暂停自动续火以避免误发。请前往「设置」页运行只读网页结构体检或更新定位器覆写。")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDismissDomBrokenDialog()
-                        onOpenSettings(SettingsSection.DIAGNOSTICS)
-                    },
-                ) {
-                    Text("前往设置体检")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissDomBrokenDialog) {
-                    Text("稍后处理")
-                }
-            },
+            onDismiss = onDismissDomBrokenDialog,
         )
     }
 
     state.urgentAuthPromptCategory?.let { category ->
-        val isVerify = category == UrgentCategory.VERIFICATION_REQUIRED
-        AlertDialog(
-            onDismissRequest = onDismissUrgentAuthPrompt,
-            icon = {
-                Icon(
-                    imageVector = Icons.Filled.Security,
-                    contentDescription = null,
-                    tint = if (isVerify) {
-                        FlameThemeTokens.semanticColors.warning
-                    } else {
-                        FlameThemeTokens.semanticColors.danger
-                    },
-                )
-            },
-            title = {
-                Text(if (isVerify) "需要本人完成身份验证" else "抖音登录态已失效")
-            },
-            text = {
-                Text(
-                    if (isVerify) {
-                        "抖音网页触发了安全验证弹窗，系统已保留当前登录态并暂停后续发信，请打开网页亲自完成验证。"
-                    } else {
-                        "连续两次登录状态检测未通过，自动续火已暂停，请打开网页重新扫码登录。"
-                    },
-                )
-            },
-            confirmButton = {
-                Button(onClick = onConfirmUrgentAuthPrompt) {
-                    Text(if (isVerify) "前往保留态验证" else "前往扫码登录")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissUrgentAuthPrompt) {
-                    Text("暂不处理")
-                }
-            },
+        UrgentAuthPromptSheet(
+            category = category,
+            onConfirm = onConfirmUrgentAuthPrompt,
+            onDismiss = onDismissUrgentAuthPrompt,
         )
     }
 
     state.manualBatchFeedback?.let { feedback ->
-        ManualBatchFeedbackDialog(
+        val settingsTargetSection = when {
+            state.account?.status == AccountStatus.DOM_BROKEN -> SettingsSection.DIAGNOSTICS
+            feedback.reason == ManualBatchBlockReason.SERVICE_START_FAILED -> SettingsSection.SURVIVAL
+            else -> SettingsSection.SCHEDULE
+        }
+        ManualBatchFeedbackSheet(
             feedback = feedback,
             onDismiss = onDismissManualBatchFeedback,
             onOpenUnknownReview = {
@@ -444,7 +473,7 @@ fun TodayScreen(
             },
             onOpenSettings = {
                 onDismissManualBatchFeedback()
-                onOpenSettings(SettingsSection.SCHEDULE)
+                onOpenSettings(settingsTargetSection)
             },
             onOpenTargets = {
                 onDismissManualBatchFeedback()
@@ -455,595 +484,279 @@ fun TodayScreen(
 }
 
 @Composable
-private fun TodayOverviewSection(
+private fun TodayAccountSwitcherPill(
+    account: AccountEntity?,
+    otherAccountAlertBadge: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val statusStyle = accountStatusStyle(account?.status ?: AccountStatus.PENDING_LOGIN)
+    val displayName = account?.displayName?.takeIf { it.isNotBlank() } ?: "默认抖音号"
+
+    Box {
+        Surface(
+            onClick = onClick,
+            modifier = Modifier.heightIn(min = 38.dp),
+            shape = RoundedCornerShape(999.dp),
+            color = palette.surface,
+            contentColor = palette.ink,
+            border = BorderStroke(
+                width = 1.dp,
+                color = if (otherAccountAlertBadge) semantics.dangerBorder else palette.hairline,
+            ),
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 11.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(statusStyle.dotColor),
+                )
+                Text(
+                    text = displayName,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 116.dp),
+                )
+                Icon(
+                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = "切换抖音账号",
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        if (otherAccountAlertBadge) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-1).dp, y = 1.dp)
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(semantics.danger)
+                    .border(1.5.dp, palette.surface, CircleShape),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TodayOverviewColumn(
     state: TodayUiState,
     onReloginClick: () -> Unit,
+    onOpenAccountSwitcher: () -> Unit,
     onOpenUnknownReview: (String?) -> Unit,
     onOpenCooldownDetail: () -> Unit,
-    onClearCooldown: () -> Unit,
     onTriggerManualBatch: () -> Unit,
     onOpenTab: (MainTab) -> Unit,
-    onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenSettings: (SettingsSection?) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        AccountHealthCapsuleCard(
-            account = state.account,
+        TodayHeroStatusCard(
+            state = state,
+            onTriggerManualBatch = onTriggerManualBatch,
             onReloginClick = onReloginClick,
         )
 
-        state.otherRunningAccountName?.let { runningAccountName ->
-            OtherAccountRunningBanner(
-                accountName = runningAccountName,
-                taskLabel = state.otherRunningTaskLabel,
-            )
-        }
-
-        if (state.missingImageEnabledTargetCount > 0 || state.missingImageTemplateCount > 0) {
-            MissingImageTemplateBanner(
-                missingEnabledTargetCount = state.missingImageEnabledTargetCount,
-                missingTemplateCount = state.missingImageTemplateCount,
-                onGoTemplates = { onOpenTab(MainTab.TEMPLATES) },
-            )
-        }
-
-        if (state.unknownReviewJobs.isNotEmpty()) {
-            UnknownReviewBanner(
-                count = state.unknownReviewJobs.size,
-                onReviewClick = { onOpenUnknownReview(state.unknownReviewJobs.first().job.id) },
-            )
-        }
-
-        val account = state.account
-        if (account != null) {
-            when (account.status) {
-                AccountStatus.COOLDOWN -> {
-                    CooldownBanner(
-                        failureStreak = account.failureStreak,
-                        stats = state.cooldownFailureStats,
-                        isResolving = state.isResolvingAction,
-                        onBannerClick = onOpenCooldownDetail,
-                        onRecoverClick = onClearCooldown,
-                    )
-                }
-
-                AccountStatus.DOM_BROKEN -> {
-                    DomBrokenBanner(
-                        onFixClick = { onOpenSettings(SettingsSection.DIAGNOSTICS) },
-                    )
-                }
-
-                AccountStatus.VERIFICATION_REQUIRED -> {
-                    AuthOrVerificationBanner(
-                        isVerification = true,
-                        onActionClick = onReloginClick,
-                    )
-                }
-
-                AccountStatus.AUTH_EXPIRED -> {
-                    AuthOrVerificationBanner(
-                        isVerification = false,
-                        onActionClick = onReloginClick,
-                    )
-                }
-
-                AccountStatus.PENDING_LOGIN -> {
-                    PendingLoginBanner(onLoginClick = onReloginClick)
-                }
-
-                AccountStatus.HEALTHY,
-                AccountStatus.RUNNING,
-                AccountStatus.PAUSED,
-                -> Unit
-            }
-        }
-
-        TodaySummaryCard(
+        TodayConditionalAlertStrips(
             state = state,
-            onTriggerManualBatch = onTriggerManualBatch,
-            onScanTargets = { onOpenTab(MainTab.TARGETS) },
+            onOpenAccountSwitcher = onOpenAccountSwitcher,
+            onOpenUnknownReview = onOpenUnknownReview,
+            onOpenCooldownDetail = onOpenCooldownDetail,
+            onReloginClick = onReloginClick,
+            onOpenTab = onOpenTab,
+            onOpenSettings = onOpenSettings,
+        )
+
+        TodayBentoMetricsRow(
+            state = state,
+            onOpenTargets = { onOpenTab(MainTab.TARGETS) },
         )
     }
 }
 
 @Composable
-private fun AccountHealthCapsuleCard(
-    account: AccountEntity?,
+private fun TodayHeroStatusCard(
+    state: TodayUiState,
+    onTriggerManualBatch: () -> Unit,
     onReloginClick: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
+    val account = state.account
     val status = account?.status ?: AccountStatus.PENDING_LOGIN
-    val semantics = FlameThemeTokens.semanticColors
-    val (badgeText, badgeFg, badgeBg) = when (status) {
-        AccountStatus.HEALTHY -> Triple("健康", semantics.onHealthyContainer, semantics.healthyContainer)
-        AccountStatus.RUNNING -> Triple("执行中", MaterialTheme.colorScheme.onPrimaryContainer, MaterialTheme.colorScheme.primaryContainer)
-        AccountStatus.PENDING_LOGIN -> Triple("待扫码", semantics.onWarningContainer, semantics.warningContainer)
-        AccountStatus.PAUSED -> Triple("已暂停", semantics.onNeutralContainer, semantics.neutralContainer)
-        AccountStatus.AUTH_EXPIRED -> Triple("登录失效", semantics.onDangerContainer, semantics.dangerContainer)
-        AccountStatus.VERIFICATION_REQUIRED -> Triple("需验证", semantics.onWarningContainer, semantics.warningContainer)
-        AccountStatus.DOM_BROKEN -> Triple("结构异常", semantics.onDangerContainer, semantics.dangerContainer)
-        AccountStatus.COOLDOWN -> Triple("已熔断", semantics.onWarningContainer, semantics.warningContainer)
-    }
+    val statusStyle = accountStatusStyle(status)
+    val statusTone = accountStatusTone(status)
+    val isRunning = state.executionState.running || status == AccountStatus.RUNNING
+    val emberGlowColor = palette.emberBright
 
-    ElevatedCard(
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = palette.surface,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairline),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .drawBehind {
+                    if (isDark) {
+                        val glowRadius = size.maxDimension * 0.72f
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    emberGlowColor.copy(alpha = 0.14f),
+                                    emberGlowColor.copy(alpha = 0.04f),
+                                    Color.Transparent,
+                                ),
+                                center = Offset(size.width * 0.88f, size.height * 0.22f),
+                                radius = glowRadius,
+                            ),
+                        )
+                    }
+                },
         ) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 16.dp, top = 18.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.LocalFireDepartment,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FlameStatusPill(
+                            text = statusStyle.label,
+                            tone = statusTone,
+                        )
+                        if (state.businessDate.isNotBlank()) {
+                            Text(
+                                text = state.businessDate,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkTertiary,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+
                     Text(
-                        text = account?.displayName ?: "默认抖音号",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = account?.displayName?.takeIf { it.isNotBlank() } ?: "默认抖音号",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    StatusPill(text = badgeText, contentColor = badgeFg, containerColor = badgeBg)
-                }
-                val nick = account?.douyinNickname?.takeIf { it.isNotBlank() }
-                val subText = if (nick != null) {
-                    "已绑定抖音号：$nick"
-                } else {
-                    "单机独立运行 · 数据留存本地"
-                }
-                Text(
-                    text = subText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
 
-            FilledTonalButton(
-                onClick = onReloginClick,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.QrCodeScanner,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("扫码/重登", style = MaterialTheme.typography.labelLarge)
-            }
-        }
-    }
-}
-
-@Composable
-private fun OtherAccountRunningBanner(
-    accountName: String,
-    taskLabel: String?,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Sync,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier.size(18.dp),
-            )
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = "正在后台执行：$accountName",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = taskLabel?.takeIf { it.isNotBlank() }?.let {
-                        "$it · 多账号任务将按序排队串行运行"
-                    } ?: "多账号后台任务按序排队串行运行，互不干扰",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MissingImageTemplateBanner(
-    missingEnabledTargetCount: Int,
-    missingTemplateCount: Int,
-    onGoTemplates: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    val title = if (missingEnabledTargetCount > 0) {
-        "有 $missingEnabledTargetCount 位启用好友的图片模板缺少本地图片"
-    } else {
-        "有 $missingTemplateCount 个图片模板缺少本地图片（待补图）"
-    }
-    UrgentBannerCard(
-        icon = Icons.Filled.Image,
-        title = title,
-        body = "请前往「模板」页重新选择本地图片，避免发送时因缺少图片文件而失败。",
-        actionLabel = "去补图",
-        containerColor = semantics.warningContainer,
-        contentColor = semantics.onWarningContainer,
-        accentColor = semantics.warning,
-        onActionClick = onGoTemplates,
-        onCardClick = onGoTemplates,
-    )
-}
-
-@Composable
-private fun UnknownReviewBanner(
-    count: Int,
-    onReviewClick: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    UrgentBannerCard(
-        icon = Icons.AutoMirrored.Filled.HelpOutline,
-        title = "有 $count 条发送结果未明，必须人工核对",
-        body = "已触发发送但未在页面确认结果。系统已硬禁止自动与手动补发，点击核对后才可恢复。",
-        actionLabel = "去核对",
-        containerColor = semantics.dangerContainer,
-        contentColor = semantics.onDangerContainer,
-        accentColor = semantics.danger,
-        onActionClick = onReviewClick,
-        onCardClick = onReviewClick,
-    )
-}
-
-@Composable
-private fun CooldownBanner(
-    failureStreak: Int,
-    stats: List<SanitizedFailureStat>,
-    isResolving: Boolean,
-    onBannerClick: () -> Unit,
-    onRecoverClick: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    val summary = if (stats.isEmpty()) {
-        "已连续 $failureStreak 轮自动发送全员失败，系统自动熔断停发。排查目标或模板后点击恢复。"
-    } else {
-        val topBreakdown = stats.take(3).joinToString(" · ") { "${failureClassLabel(it.failureClass)} ×${it.count}" }
-        "已连续 $failureStreak 轮失败（近期：$topBreakdown），请排查后恢复运行。"
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onBannerClick),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = semantics.warningContainer,
-            contentColor = semantics.onWarningContainer,
-        ),
-        border = BorderStroke(1.dp, semantics.warning.copy(alpha = 0.45f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.WarningAmber,
-                    contentDescription = null,
-                    tint = semantics.warning,
-                )
-                Column(modifier = Modifier.weight(1f)) {
+                    val boundNick = account?.douyinNickname?.takeIf { it.isNotBlank() }
                     Text(
-                        text = "连续失败熔断（$failureStreak 轮）",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = summary,
+                        text = if (boundNick != null) {
+                            "已绑抖音：$boundNick"
+                        } else {
+                            "单机本地运行 · 登录态仅存应用沙盒"
+                        },
                         style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Schedule,
+                            contentDescription = null,
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = formatScheduleSummary(state),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkTertiary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                Button(
-                    onClick = onRecoverClick,
-                    enabled = !isResolving,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = semantics.warning,
-                        contentColor = Color.White,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Text("解除熔断并恢复运行")
-                }
-            }
-        }
-    }
-}
 
-@Composable
-private fun DomBrokenBanner(
-    onFixClick: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    UrgentBannerCard(
-        icon = Icons.Filled.Build,
-        title = "抖音网页核心结构异常",
-        body = "页面核心骨架定位失败，已暂停自动续火。请前往设置页运行网页结构体检或更新定位器覆写。",
-        actionLabel = "前往体检/覆写",
-        containerColor = semantics.dangerContainer,
-        contentColor = semantics.onDangerContainer,
-        accentColor = semantics.danger,
-        onActionClick = onFixClick,
-        onCardClick = onFixClick,
-    )
-}
-
-@Composable
-private fun AuthOrVerificationBanner(
-    isVerification: Boolean,
-    onActionClick: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    if (isVerification) {
-        UrgentBannerCard(
-            icon = Icons.Filled.Security,
-            title = "触发安全验证，需要本人处理",
-            body = "系统已保留登录态并停发本轮任务，请打开抖音网页完成身份验证。",
-            actionLabel = "去完成验证",
-            containerColor = semantics.warningContainer,
-            contentColor = semantics.onWarningContainer,
-            accentColor = semantics.warning,
-            onActionClick = onActionClick,
-            onCardClick = onActionClick,
-        )
-    } else {
-        UrgentBannerCard(
-            icon = Icons.Filled.ErrorOutline,
-            title = "抖音登录态已失效",
-            body = "连续两次登录校验未通过，自动续火已暂停，请重新扫码登录。",
-            actionLabel = "去扫码重登",
-            containerColor = semantics.dangerContainer,
-            contentColor = semantics.onDangerContainer,
-            accentColor = semantics.danger,
-            onActionClick = onActionClick,
-            onCardClick = onActionClick,
-        )
-    }
-}
-
-@Composable
-private fun PendingLoginBanner(
-    onLoginClick: () -> Unit,
-) {
-    UrgentBannerCard(
-        icon = Icons.Filled.QrCodeScanner,
-        title = "尚未扫码登录抖音网页端",
-        body = "扫码登录一次即可在本地后台安全自动续火，登录态仅存本机应用沙盒。",
-        actionLabel = "立即扫码",
-        containerColor = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        accentColor = MaterialTheme.colorScheme.primary,
-        onActionClick = onLoginClick,
-        onCardClick = onLoginClick,
-    )
-}
-
-@Composable
-private fun UrgentBannerCard(
-    icon: ImageVector,
-    title: String,
-    body: String,
-    actionLabel: String,
-    containerColor: Color,
-    contentColor: Color,
-    accentColor: Color,
-    onActionClick: () -> Unit,
-    onCardClick: () -> Unit,
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onCardClick),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-        ),
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.4f)),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = accentColor,
-                modifier = Modifier.size(26.dp),
-            )
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = body,
-                    style = MaterialTheme.typography.bodySmall,
+                HeroFlameCtaButton(
+                    isRunning = isRunning,
+                    onClick = onTriggerManualBatch,
                 )
             }
-            FilledTonalButton(
-                onClick = onActionClick,
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = accentColor,
-                    contentColor = Color.White,
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text(actionLabel, style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
 
-@Composable
-private fun TodaySummaryCard(
-    state: TodayUiState,
-    onTriggerManualBatch: () -> Unit,
-    onScanTargets: () -> Unit,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    Card(
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            AnimatedVisibility(
+                visible = state.executionState.running || !state.executionState.lastMessage.isNullOrBlank(),
+                enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
             ) {
-                Text(
-                    text = "今日续火总览",
-                    style = MaterialTheme.typography.titleLarge,
+                HeroLiveProgressStrip(
+                    executionState = state.executionState,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
                 )
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                ) {
-                    Text(
-                        text = state.businessDate.ifBlank { "--" },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
             }
+
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OverviewStatTile(
-                    label = "今日待续火",
-                    value = state.pendingTargetCount.toString(),
-                    sublabel = "启用 ${state.enabledTargetCount}",
-                    accentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f),
-                )
-                OverviewStatTile(
-                    label = "已成功",
-                    value = state.succeededTodayCount.toString(),
-                    sublabel = "今日确认",
-                    accentColor = semantics.healthy,
-                    modifier = Modifier.weight(1f),
-                )
-                OverviewStatTile(
-                    label = "异常",
-                    value = state.issueTodayCount.toString(),
-                    sublabel = if (state.issueTodayCount > 0) "需处理" else "正常",
-                    accentColor = if (state.issueTodayCount > 0) semantics.danger else semantics.neutral,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onReloginClick)
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Schedule,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = formatScheduleSummary(state),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+                val verificationText = when {
+                    account?.lastVerifiedAt != null ->
+                        "登录态校验于 ${formatEpochTimestamp(account.lastVerifiedAt)}"
 
-            LiveExecutionStrip(executionState = state.executionState)
+                    account?.lastSuccessAt != null ->
+                        "最近确认发火 ${formatEpochTimestamp(account.lastSuccessAt)}"
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Button(
-                    onClick = onTriggerManualBatch,
-                    modifier = Modifier.weight(1.2f),
-                    contentPadding = PaddingValues(vertical = 12.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("立即执行今日续火")
+                    else -> "本地会话待扫码或校验"
                 }
-
-                OutlinedButton(
-                    onClick = onScanTargets,
+                Text(
+                    text = verificationText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 12.dp),
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.PersonSearch,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                    Text(
+                        text = "重登 / 换号",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.inkSecondary,
+                        maxLines = 1,
+                        softWrap = false,
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("扫描好友火花")
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = palette.inkTertiary,
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
         }
@@ -1051,52 +764,88 @@ private fun TodaySummaryCard(
 }
 
 @Composable
-private fun OverviewStatTile(
-    label: String,
-    value: String,
-    sublabel: String,
-    accentColor: Color,
+private fun HeroFlameCtaButton(
+    isRunning: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val shape = RoundedCornerShape(18.dp)
+
+    if (isRunning) {
+        Surface(
+            modifier = Modifier.size(60.dp),
+            shape = shape,
+            color = palette.emberContainer,
+            contentColor = palette.ember,
+            border = BorderStroke(1.5.dp, palette.emberBorder),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = palette.ember,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "执行中",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.ember,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    } else {
+        val emberBrush = Brush.linearGradient(
+            colors = listOf(palette.emberBright, Color(0xFFEA580C)),
+        )
+        Box(
+            modifier = Modifier
+                .size(60.dp)
+                .clip(shape)
+                .background(emberBrush)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.LocalFireDepartment,
+                    contentDescription = "立即执行今日续火",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "续火",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroLiveProgressStrip(
+    executionState: ExecutionLiveState,
     modifier: Modifier = Modifier,
 ) {
+    val palette = FlameThemeTokens.palette
     Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = accentColor,
-            )
-            Text(
-                text = sublabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-@Composable
-private fun LiveExecutionStrip(
-    executionState: ExecutionLiveState,
-) {
-    if (!executionState.running && executionState.lastMessage.isNullOrBlank()) return
-    Surface(
-        shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.surfaceSubtle,
     ) {
         Column(
             modifier = Modifier
@@ -1112,36 +861,57 @@ private fun LiveExecutionStrip(
                 ) {
                     Text(
                         text = executionState.currentTask ?: "正在执行后台任务…",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ember,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                     if (executionState.progressTotal > 0) {
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "${executionState.progressCurrent}/${executionState.progressTotal}",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = palette.inkSecondary,
                         )
                     }
                 }
                 if (executionState.progressTotal > 0) {
-                    val progress = (executionState.progressCurrent.toFloat() /
+                    val targetProgress = (executionState.progressCurrent.toFloat() /
                         executionState.progressTotal.toFloat()).coerceIn(0f, 1f)
+                    val animatedProgress by animateFloatAsState(
+                        targetValue = targetProgress,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                        label = "hero_live_progress",
+                    )
                     LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier.fillMaxWidth(),
+                        progress = { animatedProgress },
+                        color = palette.ember,
+                        trackColor = palette.hairline,
+                        strokeCap = StrokeCap.Round,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp),
                     )
                 } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    LinearProgressIndicator(
+                        color = palette.ember,
+                        trackColor = palette.hairline,
+                        strokeCap = StrokeCap.Round,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp),
+                    )
                 }
             }
             executionState.lastMessage?.takeIf { it.isNotBlank() }?.let { msg ->
                 Text(
                     text = msg,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = palette.inkSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -1149,232 +919,504 @@ private fun LiveExecutionStrip(
 }
 
 @Composable
-private fun RecentJobsHeader(
-    count: Int,
-    modifier: Modifier = Modifier,
+private fun TodayConditionalAlertStrips(
+    state: TodayUiState,
+    onOpenAccountSwitcher: () -> Unit,
+    onOpenUnknownReview: (String?) -> Unit,
+    onOpenCooldownDetail: () -> Unit,
+    onReloginClick: () -> Unit,
+    onOpenTab: (MainTab) -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit,
 ) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "最近发送记录",
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = "共 $count 条 · 点击展开明细",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
+    val account = state.account
+    val hasAnyAlert = state.otherRunningAccountName != null ||
+        state.unknownReviewJobs.isNotEmpty() ||
+        account?.status in setOf(
+            AccountStatus.COOLDOWN,
+            AccountStatus.DOM_BROKEN,
+            AccountStatus.VERIFICATION_REQUIRED,
+            AccountStatus.AUTH_EXPIRED,
+            AccountStatus.PENDING_LOGIN,
+        ) ||
+        state.missingImageEnabledTargetCount > 0 ||
+        state.missingImageTemplateCount > 0
 
-@Composable
-private fun EmptyRecentJobsCard(
-    onScanTargets: () -> Unit,
-) {
-    OutlinedCard(
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = "暂无发送记录",
-                style = MaterialTheme.typography.titleSmall,
+    if (!hasAnyAlert) return
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        state.otherRunningAccountName?.let { runningAccountName ->
+            val taskHint = state.otherRunningTaskLabel?.takeIf { it.isNotBlank() }?.let {
+                "$it · 多账号任务将按序排队串行运行"
+            } ?: "多账号后台任务按序排队串行运行，互不干扰"
+            FlameAlertStrip(
+                title = "正在后台执行：$runningAccountName",
+                subtitle = taskHint,
+                tone = FlameTone.NEUTRAL,
+                actionLabel = "切号",
+                icon = Icons.Outlined.Sync,
+                onClick = onOpenAccountSwitcher,
             )
-            Text(
-                text = "先前往「好友」页扫描导入有火花的好友，即可在每日定时或首页手动执行续火。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        }
+
+        if (state.unknownReviewJobs.isNotEmpty()) {
+            FlameAlertStrip(
+                title = "有 ${state.unknownReviewJobs.size} 条发送结果未明，必须人工核对",
+                subtitle = "系统已硬禁止自动与手动补发，点击核对确认后方可恢复。",
+                tone = FlameTone.DANGER,
+                actionLabel = "去核对",
+                icon = Icons.AutoMirrored.Outlined.HelpOutline,
+                onClick = { onOpenUnknownReview(state.unknownReviewJobs.first().job.id) },
             )
-            TextButton(onClick = onScanTargets) {
-                Text("前往扫描好友")
+        }
+
+        if (account != null) {
+            when (account.status) {
+                AccountStatus.COOLDOWN -> {
+                    val cooldownSummary = if (state.cooldownFailureStats.isEmpty()) {
+                        "已连续 ${account.failureStreak} 轮全员失败并熔断停发，点击查看详情或恢复。"
+                    } else {
+                        val breakdown = state.cooldownFailureStats.take(2)
+                            .joinToString(" · ") { "${failureClassLabel(it.failureClass)} ×${it.count}" }
+                        "连续 ${account.failureStreak} 轮失败（$breakdown），排查后可解除熔断。"
+                    }
+                    FlameAlertStrip(
+                        title = "连续失败熔断（${account.failureStreak} 轮）",
+                        subtitle = cooldownSummary,
+                        tone = FlameTone.WARNING,
+                        actionLabel = "详情/恢复",
+                        icon = Icons.Outlined.WarningAmber,
+                        onClick = onOpenCooldownDetail,
+                    )
+                }
+
+                AccountStatus.DOM_BROKEN -> {
+                    FlameAlertStrip(
+                        title = "抖音网页核心结构异常",
+                        subtitle = "页面核心骨架定位失败，已暂停自动续火，请前往诊断页体检或覆写。",
+                        tone = FlameTone.DANGER,
+                        actionLabel = "去诊断",
+                        icon = Icons.Outlined.Build,
+                        onClick = { onOpenSettings(SettingsSection.DIAGNOSTICS) },
+                    )
+                }
+
+                AccountStatus.VERIFICATION_REQUIRED -> {
+                    FlameAlertStrip(
+                        title = "触发安全验证，需要本人处理",
+                        subtitle = "已保留登录态并停发本轮任务，请打开网页亲自完成验证。",
+                        tone = FlameTone.WARNING,
+                        actionLabel = "去验证",
+                        icon = Icons.Outlined.Security,
+                        onClick = onReloginClick,
+                    )
+                }
+
+                AccountStatus.AUTH_EXPIRED -> {
+                    FlameAlertStrip(
+                        title = "抖音登录态已失效",
+                        subtitle = "连续两次登录校验未通过，自动续火已暂停，请重新扫码登录。",
+                        tone = FlameTone.DANGER,
+                        actionLabel = "去重登",
+                        icon = Icons.Outlined.ErrorOutline,
+                        onClick = onReloginClick,
+                    )
+                }
+
+                AccountStatus.PENDING_LOGIN -> {
+                    FlameAlertStrip(
+                        title = "尚未扫码登录抖音网页端",
+                        subtitle = "扫码登录一次即可在本地安全自动续火，登录态仅存本机沙盒。",
+                        tone = FlameTone.EMBER,
+                        actionLabel = "立即扫码",
+                        icon = Icons.Outlined.QrCodeScanner,
+                        onClick = onReloginClick,
+                    )
+                }
+
+                AccountStatus.HEALTHY,
+                AccountStatus.RUNNING,
+                AccountStatus.PAUSED,
+                -> Unit
             }
+        }
+
+        if (state.missingImageEnabledTargetCount > 0 || state.missingImageTemplateCount > 0) {
+            val missingTitle = if (state.missingImageEnabledTargetCount > 0) {
+                "有 ${state.missingImageEnabledTargetCount} 位启用好友缺少模板图片"
+            } else {
+                "有 ${state.missingImageTemplateCount} 个图片模板待补图"
+            }
+            FlameAlertStrip(
+                title = missingTitle,
+                subtitle = "请前往「模板」页重新选择本地图片，避免发送时因缺少图片而失败。",
+                tone = FlameTone.WARNING,
+                actionLabel = "去补图",
+                icon = Icons.Outlined.Image,
+                onClick = { onOpenTab(MainTab.TEMPLATES) },
+            )
         }
     }
 }
 
 @Composable
-private fun RecentJobCard(
-    item: RecentJobItem,
-    onToggleExpand: () -> Unit,
-    onOpenUnknownReview: () -> Unit,
+private fun TodayBentoMetricsRow(
+    state: TodayUiState,
+    onOpenTargets: () -> Unit,
 ) {
-    val job = item.job
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    val (statusLabel, statusFg, statusBg, statusIcon) = when (job.status) {
-        JobStatus.SUCCEEDED -> Quad("已确认发出", semantics.onHealthyContainer, semantics.healthyContainer, Icons.Filled.CheckCircle)
-        JobStatus.UNKNOWN_REQUIRES_REVIEW -> Quad("待人工核对", semantics.onDangerContainer, semantics.dangerContainer, Icons.AutoMirrored.Filled.HelpOutline)
-        JobStatus.CANCELLED -> Quad("今日已取消", semantics.onNeutralContainer, semantics.neutralContainer, Icons.Filled.Cancel)
-        JobStatus.FAILED_RETRYABLE -> Quad("待重试", semantics.onWarningContainer, semantics.warningContainer, Icons.Filled.Refresh)
-        JobStatus.FAILED_TERMINAL -> Quad("终态失败", semantics.onDangerContainer, semantics.dangerContainer, Icons.Filled.ErrorOutline)
-        JobStatus.LEASED,
-        JobStatus.OPENING_CHAT,
-        JobStatus.SENDING,
-        JobStatus.CONFIRMING,
-        -> Quad("执行中", MaterialTheme.colorScheme.onPrimaryContainer, MaterialTheme.colorScheme.primaryContainer, Icons.Filled.Refresh)
-        JobStatus.SCHEDULED -> Quad("已计划", semantics.onNeutralContainer, semantics.neutralContainer, Icons.Filled.Schedule)
+    val completionRatio = if (state.enabledTargetCount > 0) {
+        (state.succeededTodayCount.toFloat() / state.enabledTargetCount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
     }
+    val animatedCompletion by animateFloatAsState(
+        targetValue = completionRatio,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "today_bento_completion",
+    )
+    val allCompleted = state.enabledTargetCount > 0 && state.succeededTodayCount >= state.enabledTargetCount
 
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggleExpand),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
+            .height(IntrinsicSize.Max),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
+        FlameBentoCard(
+            label = "今日已完成",
+            value = state.succeededTodayCount.toString(),
+            valueSuffix = "/ ${state.enabledTargetCount}",
+            valueColor = if (allCompleted) semantics.healthy else palette.ink,
+            onClick = onOpenTargets,
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = statusIcon,
-                    contentDescription = null,
-                    tint = statusFg,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = item.targetName,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                StatusPill(
-                    text = if (item.isDailySlot) "每日" else "单发",
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                )
-                StatusPill(
-                    text = statusLabel,
-                    contentColor = statusFg,
-                    containerColor = statusBg,
-                )
-                Icon(
-                    imageVector = if (item.expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (item.expanded) "收起" else "展开",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(palette.surfaceSubtle),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(animatedCompletion)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (allCompleted) semantics.healthy else palette.ember),
+                        )
+                    }
+                    val detailText = when {
+                        state.issueTodayCount > 0 ->
+                            "待发 ${state.pendingTargetCount} · 异常 ${state.issueTodayCount}"
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
+                        state.enabledTargetCount == 0 ->
+                            "尚未启用续火好友"
+
+                        state.pendingTargetCount == 0 ->
+                            "今日启用对象已全部处理"
+
+                        else ->
+                            "今日待发 ${state.pendingTargetCount} 位"
+                    }
                     Text(
-                        text = item.templateLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (item.isImageMissing) {
-                            semantics.danger
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+                        text = detailText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state.issueTodayCount > 0) semantics.danger else palette.inkTertiary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (item.isImageMissing) {
-                        StatusPill(
-                            text = "待补图",
-                            contentColor = semantics.onWarningContainer,
-                            containerColor = semantics.warningContainer,
-                        )
-                    }
                 }
-                Text(
-                    text = formatEpochTimestamp(job.confirmedAt ?: job.updatedAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            },
+        )
 
-            job.summaryDetail?.takeIf { it.isNotBlank() }?.let { detail ->
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    FilledTonalButton(
-                        onClick = onOpenUnknownReview,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = semantics.danger,
-                            contentColor = Color.White,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    ) {
-                        Text("核对发送结果", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
-
-            AnimatedVisibility(visible = item.expanded) {
+        FlameBentoCard(
+            label = "最长本地连签",
+            value = state.maxLocalStreakDays.toString(),
+            valueSuffix = "天",
+            valueColor = palette.ember,
+            onClick = onOpenTargets,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    if (!item.attemptsLoaded) {
-                        Text(
-                            text = "正在读取尝试明细…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else if (item.attempts.isEmpty()) {
-                        Text(
-                            text = "暂无发送尝试明细记录",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        item.attempts.forEach { attempt ->
-                            AttemptDetailRow(attempt = attempt)
-                        }
-                    }
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Text(
+                        text = "启用 ${state.enabledTargetCount} 位 · 暂停 ${state.pausedTargetCount} 位",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun TodayRecentJobsSection(
+    recentJobs: List<RecentJobItem>,
+    onOpenJobTimeline: (RecentJobItem) -> Unit,
+    onOpenUnknownReview: (String?) -> Unit,
+    onScanTargets: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    if (recentJobs.isEmpty()) {
+        FlameEmptyStateCard(
+            icon = Icons.Outlined.LocalFireDepartment,
+            title = "暂无发送记录",
+            subtitle = "先前往「好友」页扫描导入有火花的好友，即可在每日定时或首页手动执行续火。",
+            actionLabel = "前往扫描好友",
+            onAction = onScanTargets,
+        )
+        return
+    }
+
+    FlameGroupedSection(
+        title = "今日执行动态",
+        trailingHeader = {
+            Text(
+                text = "共 ${recentJobs.size} 条 · 点击看时间线",
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.inkTertiary,
+            )
+        },
+    ) {
+        recentJobs.forEachIndexed { index, item ->
+            val job = item.job
+            val meta = resolveJobVisualMeta(job.status)
+            val subtitleText = buildString {
+                append(item.templateLabel)
+                append(" · ")
+                append(formatEpochTimestamp(job.confirmedAt ?: job.updatedAt))
+                val detail = job.summaryDetail?.trim().orEmpty()
+                if (detail.isNotEmpty()) {
+                    append("\n")
+                    append(detail)
                 }
             }
+
+            FlameListRow(
+                title = item.targetName,
+                subtitle = subtitleText,
+                titleTag = {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlameMiniTag(
+                            text = if (item.isDailySlot) "每日" else "单发",
+                            tone = FlameTone.NEUTRAL,
+                        )
+                        if (item.isImageMissing) {
+                            FlameMiniTag(text = "待补图", tone = FlameTone.WARNING)
+                        }
+                    }
+                },
+                leading = {
+                    FlameRowAvatar(tone = meta.tone) {
+                        Icon(
+                            imageVector = meta.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                },
+                trailing = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                            val dangerTone = resolveFlameToneColors(FlameTone.DANGER)
+                            Surface(
+                                onClick = { onOpenUnknownReview(job.id) },
+                                shape = RoundedCornerShape(999.dp),
+                                color = dangerTone.container,
+                                contentColor = dangerTone.fg,
+                                border = BorderStroke(1.dp, dangerTone.border),
+                            ) {
+                                Text(
+                                    text = "去核对",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                )
+                            }
+                        } else {
+                            FlameStatusPill(
+                                text = meta.label,
+                                tone = meta.tone,
+                                showDot = false,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = "查看任务时间线",
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                },
+                showDivider = index < recentJobs.lastIndex,
+                dividerIndent = 60.dp,
+                onClick = { onOpenJobTimeline(item) },
+            )
         }
     }
 }
 
 @Composable
-private fun AttemptDetailRow(attempt: SendAttemptEntity) {
+private fun TaskTimelineSheet(
+    item: RecentJobItem,
+    onDismiss: () -> Unit,
+    onOpenUnknownReview: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    val (statusText, statusColor) = when (attempt.status) {
-        AttemptStatus.SUCCEEDED -> "成功" to semantics.healthy
-        AttemptStatus.FAILED -> "失败" to semantics.danger
-        AttemptStatus.RUNNING -> "进行中" to MaterialTheme.colorScheme.primary
+    val job = item.job
+    val meta = resolveJobVisualMeta(job.status)
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = item.targetName,
+        subtitle = "${job.businessDate} · ${if (item.isDailySlot) "今日自动/批量续火" else "单发测试"} · ${item.templateLabel}",
+        trailingHeader = {
+            FlameStatusPill(
+                text = meta.label,
+                tone = meta.tone,
+            )
+        },
+    ) {
+        if (!job.summaryDetail.isNullOrBlank() || job.failureClass != null || item.isImageMissing) {
+            FlameCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(12.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "执行摘要 · ${formatEpochTimestamp(job.confirmedAt ?: job.updatedAt)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.inkTertiary,
+                    )
+                    job.summaryDetail?.takeIf { it.isNotBlank() }?.let { detail ->
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.ink,
+                        )
+                    }
+                    job.failureClass?.let { fc ->
+                        Text(
+                            text = "失败分类：${failureClassLabel(fc)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = semantics.danger,
+                        )
+                    }
+                    if (item.isImageMissing) {
+                        Text(
+                            text = "关联图片模板缺少本地图片（待补图）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = semantics.warning,
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "执行尝试时间线",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = palette.inkTertiary,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+
+        if (!item.attemptsLoaded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LinearProgressIndicator(
+                    color = palette.monoCtaContainer,
+                    trackColor = palette.surfaceSubtle,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "正在读取发送尝试明细…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                )
+            }
+        } else if (item.attempts.isEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = palette.surfaceSubtle,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = "暂无发送尝试明细记录",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    modifier = Modifier.padding(14.dp),
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 8.dp),
+            ) {
+                items(items = item.attempts, key = { it.id }) { attempt ->
+                    AttemptTimelineRow(attempt = attempt)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+            FlameSheetActionRow(
+                text = "立即人工核对发送结果",
+                primary = true,
+                danger = true,
+                onClick = onOpenUnknownReview,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        FlameSheetActionRow(
+            text = "关闭",
+            onClick = onDismiss,
+        )
+    }
+}
+
+@Composable
+private fun AttemptTimelineRow(attempt: SendAttemptEntity) {
+    val palette = FlameThemeTokens.palette
+    val (statusText, tone) = when (attempt.status) {
+        AttemptStatus.SUCCEEDED -> "成功" to FlameTone.HEALTHY
+        AttemptStatus.FAILED -> "失败" to FlameTone.DANGER
+        AttemptStatus.RUNNING -> "进行中" to FlameTone.EMBER
     }
     val stageText = when (attempt.stage) {
         "opening_chat" -> "打开会话"
@@ -1394,31 +1436,48 @@ private fun AttemptDetailRow(attempt: SendAttemptEntity) {
         else -> attempt.inputMethodUsed
     }
 
+    val durationLabel = attempt.finishedAt?.let { end ->
+        val elapsedMs = (end - attempt.startedAt).coerceAtLeast(0L)
+        if (elapsedMs < 1000L) {
+            "${elapsedMs}ms"
+        } else {
+            String.format(Locale.US, "%.1fs", elapsedMs / 1000.0)
+        }
+    }
+
     Surface(
-        shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.surfaceSubtle,
+        border = BorderStroke(1.dp, palette.hairline),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
-                    text = "第 ${attempt.attemptNo} 次尝试 · $stageText · $methodText",
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "第 ${attempt.attemptNo} 次 · $stageText · $methodText",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.ink,
                 )
-                val failHint = attempt.failureClass?.let { failureClassLabel(it) }
-                val timeRange = buildString {
+                val failHint = attempt.failureClass?.let(::failureClassLabel)
+                val metaLine = buildString {
                     append(formatEpochTimeOnly(attempt.startedAt))
                     attempt.finishedAt?.let {
-                        append(" - ")
+                        append(" – ")
                         append(formatEpochTimeOnly(it))
+                    }
+                    if (durationLabel != null) {
+                        append(" (")
+                        append(durationLabel)
+                        append(")")
                     }
                     if (failHint != null) {
                         append(" · ")
@@ -1426,256 +1485,411 @@ private fun AttemptDetailRow(attempt: SendAttemptEntity) {
                     }
                 }
                 Text(
-                    text = timeRange,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = metaLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
                 )
             }
-            Text(
+            FlameStatusPill(
                 text = statusText,
-                style = MaterialTheme.typography.labelMedium,
-                color = statusColor,
-                fontWeight = FontWeight.SemiBold,
+                tone = tone,
+                showDot = false,
             )
         }
     }
 }
 
 @Composable
-private fun ReloginChoiceDialog(
+private fun ReloginChoiceSheet(
     onDismiss: () -> Unit,
     onPreserveSession: () -> Unit,
     onClearAndRelogin: () -> Unit,
 ) {
-    AlertDialog(
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+
+    FlameModalSheet(
         onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Filled.QrCodeScanner,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        },
-        title = { Text("选择扫码 / 重登方式") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "当前已有登录配置，请明确选择保留当前网页会话排查，还是清理 Cookie 后重新扫码换号：",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onPreserveSession),
+        title = "选择扫码 / 重登方式",
+        subtitle = "当前已有登录配置，请明确选择保留当前会话或清理后换号",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(14.dp),
+                onClick = onPreserveSession,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    FlameRowAvatar(tone = FlameTone.HEALTHY) {
+                        Icon(
+                            imageVector = Icons.Outlined.QrCodeScanner,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                     Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
                             text = "打开当前抖音网页（保留登录态排查）",
                             style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = palette.ink,
                         )
                         Text(
                             text = "不清理 Cookie 与本地缓存，直接打开网页核对聊天列表或页面状态。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = palette.inkSecondary,
                         )
                     }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = palette.inkTertiary,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
-                OutlinedCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onClearAndRelogin),
+            }
+
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = semantics.warningContainer,
+                borderColor = semantics.warningBorder,
+                contentPadding = PaddingValues(14.dp),
+                onClick = onClearAndRelogin,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    FlameRowAvatar(tone = FlameTone.WARNING) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                     Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
-                            text = "退出并清理 Cookie 重新扫码（重登或更换抖音号）",
+                            text = "退出并清理 Cookie 重新扫码",
                             style = MaterialTheme.typography.titleSmall,
-                            color = FlameThemeTokens.semanticColors.warning,
+                            color = semantics.onWarningContainer,
                         )
                         Text(
-                            text = "彻底清除当前 Cookie 与 WebStorage 后展示全新二维码。",
+                            text = "彻底清除当前 Cookie 与 WebStorage 后展示全新二维码，用于重登或更换抖音号。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = semantics.onWarningContainer.copy(alpha = 0.85f),
                         )
                     }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = semantics.warning,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        },
-    )
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            FlameSheetActionRow(
+                text = "取消",
+                onClick = onDismiss,
+            )
+        }
+    }
 }
 
 @Composable
-private fun UnknownReviewDialog(
+private fun UnknownReviewSheet(
     item: UnknownJobReviewItem,
     isResolving: Boolean,
     onConfirmSucceeded: () -> Unit,
     onConfirmCancelled: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.HelpOutline,
-                contentDescription = null,
-                tint = semantics.danger,
-            )
+    val isDark = FlameThemeTokens.isDark
+
+    FlameModalSheet(
+        onDismissRequest = { if (!isResolving) onDismiss() },
+        title = "人工核对未知发送结果",
+        subtitle = "严禁自动重发 · 请先在手机抖音核对聊天记录",
+        trailingHeader = {
+            FlameStatusPill(text = "待人工核对", tone = FlameTone.DANGER)
         },
-        title = { Text("人工核对未知发送结果") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(13.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "好友：${item.targetName}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.ink,
+                    )
+                    Text(
+                        text = "日期：${item.job.businessDate} · ${if (item.isDailySlot) "今日自动/批量续火" else "单发测试"} · ${item.templateLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                    )
+                    item.job.summaryDetail?.takeIf { it.isNotBlank() }?.let { detail ->
                         Text(
-                            text = "好友：${item.targetName}",
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Text(
-                            text = "日期：${item.job.businessDate} · ${if (item.isDailySlot) "今日自动/批量续火" else "单发测试"} · ${item.templateLabel}",
+                            text = "原因：$detail",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = palette.inkSecondary,
                         )
-                        item.job.summaryDetail?.takeIf { it.isNotBlank() }?.let { detail ->
-                            Text(
-                                text = "原因：$detail",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
                     }
                 }
+            }
 
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
+            ) {
                 Text(
                     text = "系统已触发过发送动作但未能从页面确认回执，为防重复发消息，严禁自动重发。请先打开手机抖音查看聊天记录，再从以下两项中终裁：",
                     style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onDangerContainer,
+                    modifier = Modifier.padding(12.dp),
                 )
+            }
 
-                Button(
-                    onClick = onConfirmSucceeded,
-                    enabled = !isResolving,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = semantics.healthy,
-                        contentColor = Color.White,
-                    ),
+            Surface(
+                onClick = onConfirmSucceeded,
+                enabled = !isResolving,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = if (isResolving) palette.surfaceSubtle else semantics.healthy,
+                contentColor = when {
+                    isResolving -> palette.inkTertiary
+                    isDark -> Color(0xFF06281E)
+                    else -> Color.White
+                },
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
                 ) {
-                    Text("我在抖音里看到发出了（标为已成功）")
-                }
-
-                OutlinedButton(
-                    onClick = onConfirmCancelled,
-                    enabled = !isResolving,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("确认没发出（标为今日取消，不再自动发）")
+                    Icon(
+                        imageVector = Icons.Outlined.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "我在抖音里看到发出了（标为已成功）",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isResolving) {
-                Text("暂不处理")
-            }
-        },
-    )
+
+            FlameSheetActionRow(
+                text = "确认没发出（标为今日取消，不再自动发）",
+                enabled = !isResolving,
+                onClick = onConfirmCancelled,
+            )
+
+            FlameSheetActionRow(
+                text = "暂不处理",
+                enabled = !isResolving,
+                onClick = onDismiss,
+            )
+        }
+    }
 }
 
 @Composable
-private fun CooldownDetailDialog(
+private fun CooldownDetailSheet(
     account: AccountEntity,
     stats: List<SanitizedFailureStat>,
     isResolving: Boolean,
     onRecover: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Filled.WarningAmber,
-                contentDescription = null,
-                tint = semantics.warning,
-            )
+
+    FlameModalSheet(
+        onDismissRequest = { if (!isResolving) onDismiss() },
+        title = "连续失败熔断详情",
+        subtitle = "已连续 ${account.failureStreak} 轮自动发送全员终态失败",
+        trailingHeader = {
+            FlameStatusPill(text = "已熔断", tone = FlameTone.WARNING)
         },
-        title = { Text("连续失败熔断详情") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.warningContainer,
+                border = BorderStroke(1.dp, semantics.warningBorder),
+            ) {
                 Text(
-                    text = "最近已连续 ${account.failureStreak} 轮自动发送全员终态失败，系统为避免持续异常发信已暂停自动调度。",
+                    text = "系统为避免持续异常发信已暂停自动调度。请核查好友是否同名冲突、绑定模板是否可用或网页是否正常，确认后解除熔断。",
                     style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onWarningContainer,
+                    modifier = Modifier.padding(12.dp),
                 )
-                if (stats.isNotEmpty()) {
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = "近期脱敏失败分类统计：",
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                            stats.forEach { stat ->
+            }
+
+            if (stats.isNotEmpty()) {
+                FlameGroupedSection(title = "近期脱敏失败分类统计") {
+                    stats.forEachIndexed { index, stat ->
+                        FlameListRow(
+                            title = failureClassLabel(stat.failureClass),
+                            trailing = {
                                 Text(
-                                    text = "• ${failureClassLabel(stat.failureClass)}：${stat.count} 次",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    text = "${stat.count} 次",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = palette.inkSecondary,
                                 )
-                            }
-                        }
+                            },
+                            showDivider = index < stats.lastIndex,
+                        )
                     }
                 }
-                Text(
-                    text = "请核查好友是否同名冲突、绑定模板是否可用或网页是否正常，确认后点击下方按钮解除熔断。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = onRecover,
+
+            FlameSheetActionRow(
+                text = "解除熔断并恢复运行",
+                primary = true,
                 enabled = !isResolving,
-            ) {
-                Text("解除熔断并恢复运行")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isResolving) {
-                Text("稍后")
-            }
-        },
-    )
+                onClick = onRecover,
+            )
+
+            FlameSheetActionRow(
+                text = "稍后处理",
+                enabled = !isResolving,
+                onClick = onDismiss,
+            )
+        }
+    }
 }
 
 @Composable
-private fun ManualBatchFeedbackDialog(
+private fun DomBrokenSheet(
+    onOpenDiagnostics: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val semantics = FlameThemeTokens.semanticColors
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "网页核心结构异常",
+        subtitle = "已暂停自动续火以避免误发",
+        trailingHeader = {
+            FlameStatusPill(text = "结构异常", tone = FlameTone.DANGER)
+        },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
+            ) {
+                Text(
+                    text = "抖音网页聊天页骨架选择器未命中，系统已暂停自动续火以避免误发。请前往「网页诊断与定位器维护」运行只读网页结构体检或更新定位器覆写。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onDangerContainer,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+
+            FlameSheetActionRow(
+                text = "前往诊断页体检 / 覆写",
+                primary = true,
+                onClick = onOpenDiagnostics,
+            )
+
+            FlameSheetActionRow(
+                text = "稍后处理",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun UrgentAuthPromptSheet(
+    category: UrgentCategory,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isVerify = category == UrgentCategory.VERIFICATION_REQUIRED
+    val tone = if (isVerify) FlameTone.WARNING else FlameTone.DANGER
+    val toneColors = resolveFlameToneColors(tone)
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = if (isVerify) "需要本人完成身份验证" else "抖音登录态已失效",
+        subtitle = if (isVerify) "已保留当前登录态并暂停后续发信" else "连续两次登录校验未通过，自动续火已暂停",
+        trailingHeader = {
+            FlameStatusPill(
+                text = if (isVerify) "需验证" else "登录失效",
+                tone = tone,
+            )
+        },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = toneColors.container,
+                border = BorderStroke(1.dp, toneColors.border),
+            ) {
+                Text(
+                    text = if (isVerify) {
+                        "抖音网页触发了安全验证弹窗，系统已保留当前登录态并暂停后续发信，请打开网页亲自完成验证。"
+                    } else {
+                        "连续两次登录状态检测未通过，自动续火已暂停，请打开网页重新扫码登录。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = toneColors.onContainer,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+
+            FlameSheetActionRow(
+                text = if (isVerify) "前往保留态验证" else "前往扫码登录",
+                primary = true,
+                danger = !isVerify,
+                onClick = onConfirm,
+            )
+
+            FlameSheetActionRow(
+                text = "暂不处理",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ManualBatchFeedbackSheet(
     feedback: ManualBatchFeedback,
     onDismiss: () -> Unit,
     onOpenUnknownReview: () -> Unit,
@@ -1684,101 +1898,125 @@ private fun ManualBatchFeedbackDialog(
     onOpenSettings: () -> Unit,
     onOpenTargets: () -> Unit,
 ) {
-    AlertDialog(
+    val isHardBlock = feedback.reason == ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT
+    val tone = if (isHardBlock) FlameTone.DANGER else FlameTone.WARNING
+    val toneColors = resolveFlameToneColors(tone)
+
+    FlameModalSheet(
         onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = if (feedback.reason == ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT) {
-                    Icons.Filled.VerifiedUser
-                } else {
-                    Icons.Filled.WarningAmber
-                },
-                contentDescription = null,
-                tint = if (feedback.reason == ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT) {
-                    FlameThemeTokens.semanticColors.danger
-                } else {
-                    FlameThemeTokens.semanticColors.warning
-                },
+        title = feedback.title,
+        trailingHeader = {
+            FlameStatusPill(
+                text = if (isHardBlock) "安全拦截" else "提示",
+                tone = tone,
             )
         },
-        title = { Text(feedback.title) },
-        text = { Text(feedback.message) },
-        confirmButton = {
-            when {
-                feedback.canJumpToUnknownReview -> Button(onClick = onOpenUnknownReview) {
-                    Text("立即去核对")
-                }
-
-                feedback.canJumpToLogin -> Button(onClick = onOpenLogin) {
-                    Text("前往登录 / 验证")
-                }
-
-                feedback.canRecoverCooldown -> Button(onClick = onRecoverCooldown) {
-                    Text("解除熔断并恢复")
-                }
-
-                feedback.canJumpToSettings -> Button(onClick = onOpenSettings) {
-                    Text("前往设置")
-                }
-
-                feedback.canJumpToTargets -> Button(onClick = onOpenTargets) {
-                    Text("前往好友页")
-                }
-
-                else -> Button(onClick = onDismiss) {
-                    Text("知道了")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        },
-    )
-}
-
-@Composable
-private fun StatusPill(
-    text: String,
-    contentColor: Color,
-    containerColor: Color,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = containerColor,
-        contentColor = contentColor,
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = toneColors.container,
+                border = BorderStroke(1.dp, toneColors.border),
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        imageVector = if (isHardBlock) {
+                            Icons.Outlined.VerifiedUser
+                        } else {
+                            Icons.Outlined.WarningAmber
+                        },
+                        contentDescription = null,
+                        tint = toneColors.fg,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Text(
+                        text = feedback.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = toneColors.onContainer,
+                    )
+                }
+            }
+
+            when {
+                feedback.canJumpToUnknownReview -> FlameSheetActionRow(
+                    text = "立即去核对",
+                    primary = true,
+                    danger = true,
+                    onClick = onOpenUnknownReview,
+                )
+
+                feedback.canJumpToLogin -> FlameSheetActionRow(
+                    text = "前往登录 / 验证",
+                    primary = true,
+                    onClick = onOpenLogin,
+                )
+
+                feedback.canRecoverCooldown -> FlameSheetActionRow(
+                    text = "解除熔断并恢复",
+                    primary = true,
+                    onClick = onRecoverCooldown,
+                )
+
+                feedback.canJumpToSettings -> FlameSheetActionRow(
+                    text = "前往设置处理",
+                    primary = true,
+                    onClick = onOpenSettings,
+                )
+
+                feedback.canJumpToTargets -> FlameSheetActionRow(
+                    text = "前往好友页",
+                    primary = true,
+                    onClick = onOpenTargets,
+                )
+            }
+
+            FlameSheetActionRow(
+                text = "关闭",
+                onClick = onDismiss,
+            )
+        }
     }
 }
 
-private data class Quad<A, B, C, D>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D,
+private data class JobVisualMeta(
+    val label: String,
+    val tone: FlameTone,
+    val icon: ImageVector,
 )
+
+private fun resolveJobVisualMeta(status: JobStatus): JobVisualMeta = when (status) {
+    JobStatus.SUCCEEDED -> JobVisualMeta("已确认", FlameTone.HEALTHY, Icons.Outlined.CheckCircle)
+    JobStatus.UNKNOWN_REQUIRES_REVIEW -> JobVisualMeta("待核对", FlameTone.DANGER, Icons.AutoMirrored.Outlined.HelpOutline)
+    JobStatus.CANCELLED -> JobVisualMeta("已取消", FlameTone.NEUTRAL, Icons.Outlined.Cancel)
+    JobStatus.FAILED_RETRYABLE -> JobVisualMeta("待重试", FlameTone.WARNING, Icons.Outlined.Refresh)
+    JobStatus.FAILED_TERMINAL -> JobVisualMeta("终态失败", FlameTone.DANGER, Icons.Outlined.ErrorOutline)
+    JobStatus.LEASED,
+    JobStatus.OPENING_CHAT,
+    JobStatus.SENDING,
+    JobStatus.CONFIRMING,
+    -> JobVisualMeta("执行中", FlameTone.EMBER, Icons.Outlined.Sync)
+    JobStatus.SCHEDULED -> JobVisualMeta("已计划", FlameTone.NEUTRAL, Icons.Outlined.Schedule)
+}
 
 private fun formatScheduleSummary(state: TodayUiState): String {
     val account = state.account ?: return "尚未初始化账号配置"
     if (!account.enabled || account.status == AccountStatus.PAUSED) {
-        return "每日自动定时已暂停（可在设置页重新开启）"
+        return "每日自动定时已暂停（可在设置页开启）"
     }
     if (state.authRecheckAtEpochMs != null && account.authFailCount == 1) {
-        return "登录态待复判：预计 ${formatWakeTime(state.authRecheckAtEpochMs, account.timezone)} 自动复检"
+        return "登录态待复判 · 预计 ${formatWakeTime(state.authRecheckAtEpochMs, account.timezone)} 复检"
     }
     if (account.status != AccountStatus.HEALTHY) {
-        return "自动调度已暂挂（当前状态：${accountStatusLabel(account.status)}）"
+        return "自动调度已暂挂（当前：${accountStatusLabel(account.status)}）"
     }
     val nextMs = state.nextAutoTriggerAtEpochMs
-        ?: return "今日暂无后续排班（窗口 ${account.sendWindowStart}–${account.sendWindowEnd}）"
-    return "下次自动时间：${formatWakeTime(nextMs, account.timezone)}（已开启每日定时）"
+        ?: return "今日暂无后续排班 · 窗口 ${account.sendWindowStart}–${account.sendWindowEnd}"
+    return "下次自动：${formatWakeTime(nextMs, account.timezone)} · 窗口 ${account.sendWindowStart}–${account.sendWindowEnd}"
 }
 
 private fun formatWakeTime(epochMs: Long, timezone: String): String {
@@ -1789,7 +2027,7 @@ private fun formatWakeTime(epochMs: Long, timezone: String): String {
     return when (target.toLocalDate()) {
         today -> "今天 $timeStr"
         today.plusDays(1) -> "明天 $timeStr"
-        else -> "${DATE_TIME_FORMATTER.format(target)}"
+        else -> DATE_TIME_FORMATTER.format(target)
     }
 }
 

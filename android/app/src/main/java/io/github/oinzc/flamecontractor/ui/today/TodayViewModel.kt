@@ -252,6 +252,8 @@ data class TodayUiState(
     val manualBatchFeedback: ManualBatchFeedback? = null,
     val hasBlockingTodayJob: Boolean = false,
     val isResolvingAction: Boolean = false,
+    val maxLocalStreakDays: Int = 0,
+    val pausedTargetCount: Int = 0,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -814,6 +816,8 @@ class TodayViewModel(
         val targetsById = db.targets.associateBy { it.id }
         val templatesById = meta.templates.associateBy { it.id }
         val enabledTargets = db.targets.filter { it.enabled }
+        val pausedTargetCount = db.targets.count { !it.enabled }
+        val maxLocalStreakDays = db.targets.maxOfOrNull { it.streakDays } ?: 0
         val todayJobsByTarget = db.todayJobs.groupBy { it.targetId }
 
         val pendingCount = enabledTargets.count { target ->
@@ -933,6 +937,8 @@ class TodayViewModel(
             manualBatchFeedback = meta.controls.manualBatchFeedback,
             hasBlockingTodayJob = SendGuard.hasBlockingUnknownOrInflight(db.todayJobs),
             isResolvingAction = meta.controls.isResolvingAction,
+            maxLocalStreakDays = maxLocalStreakDays,
+            pausedTargetCount = pausedTargetCount,
         )
     }
 

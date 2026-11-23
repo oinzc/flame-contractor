@@ -549,6 +549,58 @@ class TodayViewModelTest {
         assertTrue(state.recentJobs.first().templateLabel.contains("待补图"))
     }
 
+    @Test
+    fun emptyTargetsProducesZeroMaxLocalStreakAndPausedCount() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = emptyList(),
+        )
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = FakeTodayExecutionLauncher(),
+            dispatcher = dispatcher,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals(0, state.enabledTargetCount)
+        assertEquals(0, state.pausedTargetCount)
+        assertEquals(0, state.maxLocalStreakDays)
+    }
+
+    @Test
+    fun maxLocalStreakIncludesPausedTargetsAndExcludesSoftDeleted() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-enabled", nickname = "启用好友", streakDays = 19, enabled = true),
+                sampleTarget(id = "t-paused", nickname = "暂停好友", streakDays = 42, enabled = false),
+                sampleTarget(
+                    id = "t-deleted",
+                    nickname = "已移除好友",
+                    streakDays = 99,
+                    enabled = false,
+                    deletedAt = 5_000L,
+                ),
+            ),
+        )
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = FakeTodayExecutionLauncher(),
+            dispatcher = dispatcher,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals(1, state.enabledTargetCount)
+        assertEquals(1, state.pausedTargetCount)
+        assertEquals(42, state.maxLocalStreakDays)
+    }
+
     private fun createViewModel(
         repo: FakeTodayRepository,
         scheduler: FakeTodayScheduleGateway,
@@ -596,6 +648,8 @@ class TodayViewModelTest {
         nickname: String,
         streakDays: Int = 0,
         templateId: String = "tpl-1",
+        enabled: Boolean = true,
+        deletedAt: Long? = null,
     ): ContractTargetEntity = ContractTargetEntity(
         id = id,
         accountId = DEFAULT_ACCOUNT_ID,
@@ -603,8 +657,9 @@ class TodayViewModelTest {
         platformUserId = "sec_$id",
         conversationType = "friend",
         templateId = templateId,
-        enabled = true,
+        enabled = enabled,
         streakDays = streakDays,
+        deletedAt = deletedAt,
         createdAt = 1_000L,
         updatedAt = 1_000L,
     )
