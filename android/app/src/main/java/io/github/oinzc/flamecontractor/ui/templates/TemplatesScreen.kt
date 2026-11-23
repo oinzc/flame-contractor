@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -293,12 +294,8 @@ fun TemplatesScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            val titleBlock: @Composable (Modifier) -> Unit = { blockModifier ->
+                Column(modifier = blockModifier) {
                     Text(
                         text = "模板与文案池",
                         style = MaterialTheme.typography.headlineSmall,
@@ -310,9 +307,11 @@ fun TemplatesScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-
+            }
+            val actionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = blockModifier,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     OutlinedButton(onClick = { onOpenCreate(TemplateType.POOL) }) {
@@ -323,6 +322,26 @@ fun TemplatesScreen(
                     }
                     FilledTonalButton(onClick = { onOpenCreate(TemplateType.IMAGE) }) {
                         Text("新建图片")
+                    }
+                }
+            }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                if (maxWidth >= 600.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        titleBlock(Modifier.weight(1f))
+                        actionsBlock(Modifier)
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        titleBlock(Modifier.fillMaxWidth())
+                        actionsBlock(Modifier.fillMaxWidth())
                     }
                 }
             }

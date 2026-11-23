@@ -420,12 +420,8 @@ fun TargetsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // 顶部标题与「手动扫描同步」入口
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            val titleBlock: @Composable (Modifier) -> Unit = { blockModifier ->
+                Column(modifier = blockModifier) {
                     Text(
                         text = "好友与群聊",
                         style = MaterialTheme.typography.headlineSmall,
@@ -437,8 +433,10 @@ fun TargetsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-
+            }
+            val actionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
                 FlowRow(
+                    modifier = blockModifier,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -477,6 +475,26 @@ fun TargetsScreen(
                     }
                 }
             }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                if (maxWidth >= 600.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        titleBlock(Modifier.weight(1f))
+                        actionsBlock(Modifier)
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        titleBlock(Modifier.fillMaxWidth())
+                        actionsBlock(Modifier.fillMaxWidth())
+                    }
+                }
+            }
 
             if (uiState.scanRunning) {
                 Surface(
@@ -505,7 +523,13 @@ fun TargetsScreen(
                 onValueChange = onSearchQueryChanged,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = { Text("搜索好友昵称、群名、抖音号或绑定模板…") },
+                placeholder = {
+                    Text(
+                        text = "搜索好友昵称、群名、抖音号或绑定模板…",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (uiState.searchQuery.isNotEmpty()) {
