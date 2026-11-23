@@ -3,6 +3,9 @@ package io.github.oinzc.flamecontractor.ui.history
 import android.content.ActivityNotFoundException
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,17 +20,18 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -35,39 +39,30 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -99,6 +94,25 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.domain.DailyJobBucket
 import io.github.oinzc.flamecontractor.domain.HistoryStatsSummary
+import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
+import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
+import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
+import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
+import io.github.oinzc.flamecontractor.ui.components.FlameListRow
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
+import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
+import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
+import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
+import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.io.IOException
@@ -199,11 +213,11 @@ fun HistoryRoute(
         onSelectJob = viewModel::selectJob,
         onDismissJobDetail = viewModel::dismissJobDetail,
         onNavigateToTodayReview = onNavigateToTodayReview,
+        onOpenSettings = { onOpenSettings(null) },
         modifier = modifier,
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HistoryScreen(
     state: HistoryUiState,
@@ -218,8 +232,10 @@ fun HistoryScreen(
     onSelectJob: (String) -> Unit,
     onDismissJobDetail: () -> Unit,
     onNavigateToTodayReview: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val palette = FlameThemeTokens.palette
     var searchQuery by remember { mutableStateOf("") }
     val trimmedQuery = searchQuery.trim()
     val displayJobs = remember(state.filteredJobs, trimmedQuery) {
@@ -247,40 +263,105 @@ fun HistoryScreen(
         mutableStateOf<Set<String>>(emptySet())
     }
 
+    val windowChips = remember {
+        listOf(
+            FlameFilterChipItem(key = "7", label = "近 7 天"),
+            FlameFilterChipItem(key = "14", label = "近 14 天"),
+            FlameFilterChipItem(key = "30", label = "近 30 天"),
+        )
+    }
+    val statusChips = remember(state.filterCounts) {
+        HistoryStatusFilter.entries.map { filter ->
+            FlameFilterChipItem(
+                key = filter.name,
+                label = filter.label,
+                count = state.filterCounts[filter] ?: 0,
+            )
+        }
+    }
+    val startDate = remember(state.today, state.windowDays) {
+        state.today.minusDays((state.windowDays - 1).toLong())
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        containerColor = palette.canvas,
+        contentColor = palette.ink,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 86.dp),
+            )
+        },
+        topBar = {
+            FlameTopBar(
+                title = "记录",
+                actions = {
+                    FlameTopPillButton(
+                        text = if (isExportingCsv) "导出中…" else "导出 CSV",
+                        leadingIcon = if (isExportingCsv) null else Icons.Outlined.FileDownload,
+                        enabled = !isExportingCsv,
+                        onClick = onExportCsvClick,
+                    )
+                    FlameIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        onClick = onOpenSettings,
+                    )
+                },
+            )
+        },
     ) { innerPadding ->
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            val isWide = maxWidth >= 600.dp
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                modifier = Modifier
+                    .widthIn(max = 860.dp)
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 4.dp,
+                    bottom = flameDockBottomPadding(),
+                ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item(key = "header") {
-                    HistoryHeaderSection(
-                        windowDays = state.windowDays,
-                        today = state.today,
-                        isExportingCsv = isExportingCsv,
-                        onSelectWindowDays = onSelectWindowDays,
-                        onExportCsvClick = onExportCsvClick,
-                    )
+                // 时间窗分段器 + 区间说明
+                item(key = "window_chips") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FlameFilterChipRow(
+                            items = windowChips,
+                            selectedKey = state.windowDays.toString(),
+                            onSelect = { key ->
+                                key.toIntOrNull()?.let(onSelectWindowDays)
+                            },
+                        )
+                        Text(
+                            text = "统计区间：$startDate 至 ${state.today} · CSV 导出仅含脱敏字段",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
                 }
 
-                item(key = "kpi") {
-                    HistoryKpiGrid(
+                // 3 列等宽 Bento 指标块（成功率 / 总成功 / 待核对）
+                item(key = "bento_kpis") {
+                    HistoryBentoRow(
                         summary = state.summary,
                         onNavigateToTodayReview = onNavigateToTodayReview,
                     )
                 }
 
-                item(key = "chart") {
+                // 可交互圆角堆叠每日趋势柱状图卡（含当前连胜 · 最佳连胜）
+                item(key = "trend_chart") {
                     DailyTrendChartCard(
                         summary = state.summary,
                         selectedDate = state.selectedDate,
@@ -289,12 +370,15 @@ fun HistoryScreen(
                     )
                 }
 
-                item(key = "filters") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 明细筛选区：标题 + 展开控制 + 状态筛选芯片 + 胶囊搜索框
+                item(key = "detail_filters") {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Text(
                                 text = if (state.selectedDate != null) {
@@ -303,95 +387,95 @@ fun HistoryScreen(
                                     "近 ${state.windowDays} 天执行明细"
                                 },
                                 style = MaterialTheme.typography.titleMedium,
+                                color = palette.ink,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
                             )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
+                            FlameMiniTag(
+                                text = "${displayJobs.size} 条",
+                                tone = FlameTone.NEUTRAL,
+                            )
+                            if (groupedByDate.size > 1) {
+                                val showAllGroups = expandAllOverride == true
                                 Text(
-                                    text = "共 ${displayJobs.size} 条 · 点击查看时间线",
+                                    text = if (showAllGroups) "仅看最新" else "展开全部日期",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (groupedByDate.size > 1) {
-                                    val showAllGroups = expandAllOverride == true
-                                    TextButton(
-                                        onClick = {
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = palette.inkSecondary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .clickable {
                                             userToggledDates = emptyMap()
                                             expandAllOverride = if (showAllGroups) null else true
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    ) {
-                                        Text(
-                                            text = if (showAllGroups) "仅看最新" else "展开全部日期",
-                                            style = MaterialTheme.typography.labelMedium,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(HistoryStatusFilter.entries) { filter ->
-                                val count = state.filterCounts[filter] ?: 0
-                                FilterChip(
-                                    selected = state.statusFilter == filter,
-                                    onClick = { onSelectStatusFilter(filter) },
-                                    label = { Text("${filter.label} ($count)") },
+                                        }
+                                        .padding(horizontal = 6.dp, vertical = 3.dp),
                                 )
                             }
                         }
 
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            placeholder = { Text("按好友名、日期或摘要筛选明细…") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.Search,
-                                    contentDescription = null,
-                                )
+                        FlameFilterChipRow(
+                            items = statusChips,
+                            selectedKey = state.statusFilter.name,
+                            onSelect = { key ->
+                                HistoryStatusFilter.entries
+                                    .firstOrNull { it.name == key }
+                                    ?.let(onSelectStatusFilter)
                             },
-                            trailingIcon = {
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { searchQuery = "" }) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Close,
-                                            contentDescription = "清除搜索",
-                                        )
-                                    }
-                                }
-                            },
+                        )
+
+                        FlameSearchPill(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            placeholder = "按好友名、日期或摘要筛选明细…",
                         )
                     }
                 }
 
+                // 明细列表：加载态 / 空态 / 按日期折叠分组的 FlameGroupedSection
                 if (state.isLoading) {
                     item(key = "loading") {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 28.dp),
-                            contentAlignment = Alignment.Center,
+                        FlameCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(vertical = 28.dp),
                         ) {
-                            CircularProgressIndicator()
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(28.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = palette.monoCtaContainer,
+                                )
+                            }
                         }
                     }
                 } else if (displayJobs.isEmpty()) {
                     item(key = "empty") {
-                        EmptyHistoryCard(
-                            windowDays = state.windowDays,
-                            hasAnyJobsInWindow = state.totalJobsInWindow > 0,
-                            hasActiveFilter = state.selectedDate != null ||
-                                state.statusFilter != HistoryStatusFilter.ALL ||
-                                trimmedQuery.isNotEmpty(),
-                            onClearAllFilters = {
-                                searchQuery = ""
-                                onClearAllFilters()
+                        val hasActiveFilter = state.selectedDate != null ||
+                            state.statusFilter != HistoryStatusFilter.ALL ||
+                            trimmedQuery.isNotEmpty()
+                        FlameEmptyStateCard(
+                            icon = Icons.Outlined.History,
+                            title = if (state.totalJobsInWindow == 0) {
+                                "近 ${state.windowDays} 天暂无执行记录"
+                            } else {
+                                "当前筛选条件下无记录"
+                            },
+                            subtitle = if (state.totalJobsInWindow == 0) {
+                                "当每日自动续火或单发测试产生执行记录后，可在此回溯每日趋势与尝试耗时。"
+                            } else {
+                                "可尝试切换状态筛选芯片、清除日期过滤或清空搜索关键词。"
+                            },
+                            actionLabel = if (hasActiveFilter) "重置全部筛选" else null,
+                            onAction = if (hasActiveFilter) {
+                                {
+                                    searchQuery = ""
+                                    onClearAllFilters()
+                                }
+                            } else {
+                                null
                             },
                         )
                     }
@@ -406,105 +490,33 @@ fun HistoryScreen(
                         val isExpanded = userToggledDates[dateKey] ?: expandAllOverride ?: defaultExpanded
                         val showAllForDate = dateKey in showAllForDates
 
-                        item(key = "date_hdr_$dateKey") {
-                            HistoryDateGroupHeader(
+                        item(key = "date_group_$dateKey") {
+                            HistoryDateGroupSection(
                                 businessDate = dateKey,
-                                items = groupItems,
+                                groupItems = groupItems,
                                 isExpanded = isExpanded,
+                                showAllForDate = showAllForDate,
                                 onToggleExpand = {
                                     userToggledDates = userToggledDates + (dateKey to !isExpanded)
                                 },
+                                onToggleShowAll = {
+                                    showAllForDates = if (showAllForDate) {
+                                        showAllForDates - dateKey
+                                    } else {
+                                        showAllForDates + dateKey
+                                    }
+                                },
+                                onSelectJob = onSelectJob,
                             )
                         }
-
-                        if (isExpanded) {
-                            val visibleItems = if (showAllForDate) {
-                                groupItems
-                            } else {
-                                groupItems.take(DEFAULT_VISIBLE_JOBS_PER_DAY)
-                            }
-                            if (isWide) {
-                                items(
-                                    items = visibleItems.chunked(2),
-                                    key = { pair -> "row_${dateKey}_${pair.first().job.id}" },
-                                ) { pair ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(IntrinsicSize.Max),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        HistoryJobCard(
-                                            item = pair[0],
-                                            onClick = { onSelectJob(pair[0].job.id) },
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxHeight(),
-                                        )
-                                        if (pair.size > 1) {
-                                            HistoryJobCard(
-                                                item = pair[1],
-                                                onClick = { onSelectJob(pair[1].job.id) },
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxHeight(),
-                                            )
-                                        } else {
-                                            Spacer(modifier = Modifier.weight(1f))
-                                        }
-                                    }
-                                }
-                            } else {
-                                items(
-                                    items = visibleItems,
-                                    key = { it.job.id },
-                                ) { item ->
-                                    HistoryJobCard(
-                                        item = item,
-                                        onClick = { onSelectJob(item.job.id) },
-                                    )
-                                }
-                            }
-
-                            if (groupItems.size > DEFAULT_VISIBLE_JOBS_PER_DAY) {
-                                item(key = "date_more_$dateKey") {
-                                    Box(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        TextButton(
-                                            onClick = {
-                                                showAllForDates = if (showAllForDate) {
-                                                    showAllForDates - dateKey
-                                                } else {
-                                                    showAllForDates + dateKey
-                                                }
-                                            },
-                                        ) {
-                                            Text(
-                                                text = if (showAllForDate) {
-                                                    "收起至前 $DEFAULT_VISIBLE_JOBS_PER_DAY 条"
-                                                } else {
-                                                    "展开当日剩余 ${groupItems.size - DEFAULT_VISIBLE_JOBS_PER_DAY} 条（共 ${groupItems.size} 条）"
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
-                }
-
-                item(key = "bottom_spacer") {
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }
     }
 
     state.selectedJobDetail?.let { detail ->
-        HistoryJobDetailDialog(
+        HistoryJobTimelineSheet(
             detail = detail,
             onDismiss = onDismissJobDetail,
             onNavigateToTodayReview = {
@@ -515,321 +527,109 @@ fun HistoryScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HistoryHeaderSection(
-    windowDays: Int,
-    today: LocalDate,
-    isExportingCsv: Boolean,
-    onSelectWindowDays: (Int) -> Unit,
-    onExportCsvClick: () -> Unit,
-) {
-    val startDate = today.minusDays((windowDays - 1).toLong())
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "历史与统计",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "统计区间：$startDate 至 $today",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            FilledTonalButton(
-                onClick = onExportCsvClick,
-                enabled = !isExportingCsv,
-            ) {
-                if (isExportingCsv) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("导出中…")
-                } else {
-                    Icon(
-                        imageVector = Icons.Filled.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("导出 CSV")
-                }
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            FilterChip(
-                selected = windowDays == 7,
-                onClick = { onSelectWindowDays(7) },
-                label = { Text("7天") },
-            )
-            FilterChip(
-                selected = windowDays == 30,
-                onClick = { onSelectWindowDays(30) },
-                label = { Text("30天") },
-            )
-            Text(
-                text = "导出仅含脱敏字段，不含昵称与聊天内容",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .align(Alignment.CenterVertically)
-                    .padding(start = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun HistoryKpiGrid(
+private fun HistoryBentoRow(
     summary: HistoryStatsSummary,
     onNavigateToTodayReview: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    val rateText = summary.successRate?.let { formatSuccessRatePercent(it) } ?: "--"
-    val rateSub = if (summary.totalJobs > 0) {
-        "共 ${summary.totalJobs} 次已结算"
-    } else {
-        "近 ${summary.windowDays} 日暂无数据"
-    }
+    val rateDigits = summary.successRate?.let { formatSuccessRateDigits(it) } ?: "--"
+    val rateSuffix = if (summary.successRate != null) "%" else null
     val hasUnknown = summary.unknownJobs > 0
-    val issueAccent = when {
-        hasUnknown -> semantics.warning
-        summary.failedJobs > 0 -> semantics.danger
-        else -> semantics.healthy
-    }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isWide = maxWidth >= 600.dp
-        if (isWide) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Max),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                KpiCard(
-                    title = "成功率",
-                    value = rateText,
-                    subtitle = rateSub,
-                    accentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                )
-                KpiCard(
-                    title = "当前 / 最长连胜",
-                    value = "${summary.currentSuccessStreak} / ${summary.bestSuccessStreak} 天",
-                    subtitle = "成功日：有成功且零失败未知",
-                    accentColor = semantics.healthy,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                )
-                KpiCard(
-                    title = "成功 / 总任务",
-                    value = "${summary.succeededJobs} / ${summary.totalJobs}",
-                    subtitle = "已取消 ${summary.cancelledJobs} 次",
-                    accentColor = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                )
-                UnknownAndFailureKpiCard(
-                    unknownJobs = summary.unknownJobs,
-                    failedJobs = summary.failedJobs,
-                    accentColor = issueAccent,
-                    onNavigateToTodayReview = onNavigateToTodayReview,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                )
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Max),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    KpiCard(
-                        title = "成功率",
-                        value = rateText,
-                        subtitle = rateSub,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    KpiCard(
-                        title = "当前 / 最长连胜",
-                        value = "${summary.currentSuccessStreak} / ${summary.bestSuccessStreak} 天",
-                        subtitle = "零失败未知日计入连胜",
-                        accentColor = semantics.healthy,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Max),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    KpiCard(
-                        title = "成功 / 总任务",
-                        value = "${summary.succeededJobs} / ${summary.totalJobs}",
-                        subtitle = "已取消 ${summary.cancelledJobs} 次",
-                        accentColor = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    UnknownAndFailureKpiCard(
-                        unknownJobs = summary.unknownJobs,
-                        failedJobs = summary.failedJobs,
-                        accentColor = issueAccent,
-                        onNavigateToTodayReview = onNavigateToTodayReview,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun KpiCard(
-    title: String,
-    value: String,
-    subtitle: String,
-    accentColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Max),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
+        FlameBentoCard(
+            label = "成功率",
+            value = rateDigits,
+            valueSuffix = rateSuffix,
+            valueColor = palette.ink,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = accentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun UnknownAndFailureKpiCard(
-    unknownJobs: Int,
-    failedJobs: Int,
-    accentColor: Color,
-    onNavigateToTodayReview: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val semantics = FlameThemeTokens.semanticColors
-    val hasUnknown = unknownJobs > 0
-    Card(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = if (hasUnknown) {
-                semantics.warningContainer.copy(alpha = 0.72f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainer
-            },
-        ),
-        border = if (hasUnknown) {
-            BorderStroke(1.dp, semantics.warning.copy(alpha = 0.5f))
-        } else {
-            null
-        },
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = "待核对 / 失败",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (hasUnknown) semantics.onWarningContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = "$unknownJobs / $failedJobs",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = accentColor,
-                maxLines = 1,
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            if (hasUnknown) {
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
                 Text(
-                    text = "前往「今日」核对 →",
+                    text = if (summary.totalJobs > 0) "共 ${summary.totalJobs} 条" else "暂无数据",
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = semantics.onWarningContainer,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onNavigateToTodayReview)
-                        .padding(vertical = 2.dp),
-                )
-            } else {
-                Text(
-                    text = if (failedJobs > 0) "失败记录可点击查看耗时" else "无异常与待核对",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-            }
-        }
+            },
+        )
+
+        FlameBentoCard(
+            label = "总成功",
+            value = summary.succeededJobs.toString(),
+            valueSuffix = "次",
+            valueColor = semantics.healthy,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                Text(
+                    text = if (summary.cancelledJobs > 0) {
+                        "取消 ${summary.cancelledJobs} 条"
+                    } else {
+                        "已确认送达"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+        )
+
+        FlameBentoCard(
+            label = "待核对",
+            value = summary.unknownJobs.toString(),
+            valueSuffix = if (hasUnknown) "条" else null,
+            valueColor = if (hasUnknown) semantics.warning else palette.ink,
+            onClick = if (hasUnknown) onNavigateToTodayReview else null,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                when {
+                    hasUnknown -> {
+                        Text(
+                            text = "去核对 ›",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = semantics.warning,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    summary.failedJobs > 0 -> {
+                        Text(
+                            text = "失败 ${summary.failedJobs} 条",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = semantics.danger,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    else -> {
+                        Text(
+                            text = "全部正常",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -841,45 +641,106 @@ private fun DailyTrendChartCard(
     onToggleDate: (LocalDate) -> Unit,
     onClearDateFilter: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val maxDayTotal = summary.daily.maxOfOrNull { it.total }?.coerceAtLeast(1) ?: 1
 
-    Card(
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+    FlameCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 20.dp,
+        contentPadding = PaddingValues(15.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        // 卡片标题 + 连胜摘要副行 + 已选日期清除按钮
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = "每日执行趋势",
+                    text = "每日发送趋势",
                     style = MaterialTheme.typography.titleMedium,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    ChartLegendDot(color = semantics.healthy, label = "成功")
-                    ChartLegendDot(color = semantics.sparkGold, label = "待核对")
-                    ChartLegendDot(color = semantics.danger, label = "失败")
-                    if (summary.cancelledJobs > 0) {
-                        ChartLegendDot(color = semantics.neutral, label = "取消")
-                    }
-                    ChartLegendDot(color = MaterialTheme.colorScheme.outlineVariant, label = "无任务")
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = null,
+                        tint = palette.ember,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = "当前连胜 ${summary.currentSuccessStreak} 天 · 最佳 ${summary.bestSuccessStreak} 天",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = palette.inkSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
 
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            if (selectedDate != null) {
+                Surface(
+                    onClick = onClearDateFilter,
+                    shape = RoundedCornerShape(999.dp),
+                    color = palette.surfaceSubtle,
+                    contentColor = palette.inkSecondary,
+                    border = BorderStroke(1.dp, palette.hairline),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = "清除日期筛选",
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "清除",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // 紧凑图例
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            ChartLegendDot(color = semantics.healthy, label = "成功")
+            ChartLegendDot(color = semantics.warning, label = "待核对")
+            ChartLegendDot(color = semantics.danger, label = "失败")
+            if (summary.cancelledJobs > 0) {
+                ChartLegendDot(color = semantics.neutral, label = "取消")
+            }
+            ChartLegendDot(color = palette.hairlineStrong, label = "无任务")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 可交互堆叠圆角柱状图（7天均分 / 宽屏全览 / 14&30天横向滚动默认定位最新日期）
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val isScrollableMode = summary.daily.size > 7 && maxWidth < 560.dp
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 when {
                     summary.daily.size <= 7 -> {
                         Row(
@@ -894,7 +755,7 @@ private fun DailyTrendChartCard(
                                     isSelected = bucket.date == selectedDate,
                                     showLabel = true,
                                     reserveLabelSpace = true,
-                                    maxBarWidth = 36.dp,
+                                    maxBarWidth = 30.dp,
                                     horizontalPadding = 2.dp,
                                     onClick = { onToggleDate(bucket.date) },
                                     modifier = Modifier.weight(1f),
@@ -903,14 +764,14 @@ private fun DailyTrendChartCard(
                         }
                     }
 
-                    maxWidth >= 560.dp -> {
+                    !isScrollableMode -> {
                         val tickIndices = remember(summary.daily.size) {
                             computeAxisTickIndices(summary.daily.size, 6)
                         }
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
                                 verticalAlignment = Alignment.Bottom,
                             ) {
                                 summary.daily.forEach { bucket ->
@@ -940,11 +801,7 @@ private fun DailyTrendChartCard(
                                     Text(
                                         text = SHORT_DAY_FORMATTER.format(date),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isTickSelected) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
+                                        color = if (isTickSelected) palette.ember else palette.inkTertiary,
                                         fontWeight = if (isTickSelected) FontWeight.Bold else FontWeight.Normal,
                                         maxLines = 1,
                                         softWrap = false,
@@ -961,6 +818,7 @@ private fun DailyTrendChartCard(
                                 listState.scrollToItem(summary.daily.lastIndex)
                             }
                         }
+                        val tickStep = if (summary.windowDays <= 14) 2 else 5
                         LazyRow(
                             state = listState,
                             modifier = Modifier.fillMaxWidth(),
@@ -973,59 +831,78 @@ private fun DailyTrendChartCard(
                             ) { index, bucket ->
                                 val isLast = index == summary.daily.lastIndex
                                 val isSelected = bucket.date == selectedDate
-                                val showDateTick = isSelected || index == 0 || isLast || index % 5 == 0
+                                val showDateTick = isSelected || index == 0 || isLast || index % tickStep == 0
                                 DayStackedBarColumn(
                                     bucket = bucket,
                                     maxDayTotal = maxDayTotal,
                                     isSelected = isSelected,
                                     showLabel = showDateTick,
                                     reserveLabelSpace = true,
-                                    maxBarWidth = 16.dp,
+                                    maxBarWidth = 18.dp,
                                     horizontalPadding = 2.dp,
                                     onClick = { onToggleDate(bucket.date) },
-                                    modifier = Modifier.width(40.dp),
+                                    modifier = Modifier.width(42.dp),
                                 )
                             }
                         }
                     }
                 }
-            }
 
-            val selectedBucket = selectedDate?.let { date ->
-                summary.daily.firstOrNull { it.date == date }
-            }
-            if (selectedBucket != null) {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                val selectedBucket = selectedDate?.let { date ->
+                    summary.daily.firstOrNull { it.date == date }
+                }
+                if (selectedBucket != null) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.emberContainer,
+                        border = BorderStroke(1.dp, palette.emberBorder),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            text = "${selectedBucket.date}：成功 ${selectedBucket.succeeded} · 待核对 ${selectedBucket.unknown} · 失败 ${selectedBucket.failed} · 取消 ${selectedBucket.cancelled}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            onClick = onClearDateFilter,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("清除日期", style = MaterialTheme.typography.labelSmall)
+                            val detailText = buildString {
+                                append("${selectedBucket.date}：成功 ${selectedBucket.succeeded}")
+                                append(" · 待核对 ${selectedBucket.unknown}")
+                                append(" · 失败 ${selectedBucket.failed}")
+                                if (selectedBucket.cancelled > 0) {
+                                    append(" · 取消 ${selectedBucket.cancelled}")
+                                }
+                            }
+                            Text(
+                                text = detailText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = palette.ink,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "取消筛选",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.ember,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(onClick = onClearDateFilter)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                            )
                         }
                     }
+                } else {
+                    Text(
+                        text = if (isScrollableMode) {
+                            "点击任意柱条筛选当日明细，左右滑动查看更多日期"
+                        } else {
+                            "点击任意日期柱条可筛选当日明细，再次点击取消"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                    )
                 }
-            } else {
-                Text(
-                    text = "点击任意日期柱条可筛选当日明细，再次点击取消筛选",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -1043,50 +920,57 @@ private fun DayStackedBarColumn(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    val maxBarHeightDp = 92f
-    val containerColor = if (isSelected) {
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+    val maxBarHeightDp = 96f
+    val targetBarHeight = if (bucket.total == 0) {
+        3.dp
     } else {
-        Color.Transparent
+        (maxBarHeightDp * (bucket.total.toFloat() / maxDayTotal.toFloat()))
+            .coerceIn(14f, maxBarHeightDp)
+            .dp
     }
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val animatedHeight by animateDpAsState(
+        targetValue = targetBarHeight,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "history_bar_height_${bucket.date}",
+    )
+
+    val containerColor = if (isSelected) palette.emberContainer else Color.Transparent
+    val borderColor = if (isSelected) palette.ember else Color.Transparent
 
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(containerColor)
-            .border(width = 1.dp, color = borderColor, shape = RoundedCornerShape(8.dp))
+            .border(width = 1.dp, color = borderColor, shape = RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 4.dp, horizontal = horizontalPadding),
+            .padding(vertical = 5.dp, horizontal = horizontalPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(94.dp),
+                .height(98.dp),
             contentAlignment = Alignment.BottomCenter,
         ) {
             if (bucket.total == 0) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(0.75f)
+                        .fillMaxWidth(0.72f)
                         .widthIn(max = maxBarWidth)
                         .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(palette.hairlineStrong.copy(alpha = 0.7f)),
                 )
             } else {
-                val barHeight = (maxBarHeightDp * (bucket.total.toFloat() / maxDayTotal.toFloat()))
-                    .coerceIn(12f, maxBarHeightDp)
-                    .dp
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth(0.68f)
+                        .fillMaxWidth(0.66f)
                         .widthIn(max = maxBarWidth)
-                        .height(barHeight)
-                        .clip(RoundedCornerShape(4.dp)),
+                        .height(animatedHeight)
+                        .clip(RoundedCornerShape(6.dp)),
                 ) {
                     if (bucket.cancelled > 0) {
                         Box(
@@ -1109,7 +993,7 @@ private fun DayStackedBarColumn(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(bucket.unknown.toFloat())
-                                .background(semantics.sparkGold),
+                                .background(semantics.warning),
                         )
                     }
                     if (bucket.succeeded > 0) {
@@ -1128,92 +1012,11 @@ private fun DayStackedBarColumn(
             Text(
                 text = if (showLabel) SHORT_DAY_FORMATTER.format(bucket.date) else "",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (isSelected) palette.ember else palette.inkTertiary,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Clip,
-            )
-        }
-    }
-}
-
-private fun computeAxisTickIndices(totalCount: Int, targetTicks: Int = 6): List<Int> {
-    if (totalCount <= 0) return emptyList()
-    if (totalCount == 1) return listOf(0)
-    if (totalCount <= targetTicks) return (0 until totalCount).toList()
-    val indices = LinkedHashSet<Int>(targetTicks)
-    for (i in 0 until targetTicks) {
-        val ratio = i.toFloat() / (targetTicks - 1).toFloat()
-        val index = (ratio * (totalCount - 1).toFloat()).roundToInt().coerceIn(0, totalCount - 1)
-        indices.add(index)
-    }
-    indices.add(0)
-    indices.add(totalCount - 1)
-    return indices.sorted()
-}
-
-@Composable
-private fun HistoryDateGroupHeader(
-    businessDate: String,
-    items: List<HistoryJobItem>,
-    isExpanded: Boolean,
-    onToggleExpand: () -> Unit,
-) {
-    val succeededCount = items.count { it.job.status == JobStatus.SUCCEEDED }
-    val unknownCount = items.count { it.job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW }
-    val failedCount = items.count {
-        it.job.status == JobStatus.FAILED_RETRYABLE || it.job.status == JobStatus.FAILED_TERMINAL
-    }
-    val summaryParts = buildList {
-        if (succeededCount > 0) add("成功 $succeededCount")
-        if (unknownCount > 0) add("待核对 $unknownCount")
-        if (failedCount > 0) add("失败 $failedCount")
-    }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onToggleExpand),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(
-                    text = businessDate,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "${items.size} 条",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (summaryParts.isNotEmpty()) {
-                    Text(
-                        text = summaryParts.joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Icon(
-                imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                contentDescription = if (isExpanded) "收起该日明细" else "展开该日明细",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -1224,327 +1027,390 @@ private fun ChartLegendDot(
     color: Color,
     label: String,
 ) {
+    val palette = FlameThemeTokens.palette
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
+                .size(7.dp)
                 .clip(CircleShape)
                 .background(color),
         )
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.inkSecondary,
         )
     }
 }
 
 @Composable
-private fun HistoryJobCard(
-    item: HistoryJobItem,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun HistoryDateGroupSection(
+    businessDate: String,
+    groupItems: List<HistoryJobItem>,
+    isExpanded: Boolean,
+    showAllForDate: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleShowAll: () -> Unit,
+    onSelectJob: (String) -> Unit,
 ) {
-    val job = item.job
-    val badge = jobStatusBadge(job.status)
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column(
+    val palette = FlameThemeTokens.palette
+    val summaryText = remember(groupItems) {
+        val succeededCount = groupItems.count { it.job.status == JobStatus.SUCCEEDED }
+        val unknownCount = groupItems.count { it.job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW }
+        val failedCount = groupItems.count {
+            it.job.status == JobStatus.FAILED_RETRYABLE || it.job.status == JobStatus.FAILED_TERMINAL
+        }
+        buildList {
+            if (succeededCount > 0) add("成功 $succeededCount")
+            if (unknownCount > 0) add("待核对 $unknownCount")
+            if (failedCount > 0) add("失败 $failedCount")
+        }.joinToString(" · ")
+    }
+
+    FlameGroupedSection {
+        // 可点击折叠/展开的日期分组头行
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .clickable(onClick = onToggleExpand)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(
-                    imageVector = badge.icon,
-                    contentDescription = null,
-                    tint = badge.fg,
-                    modifier = Modifier.size(18.dp),
-                )
+            Text(
+                text = businessDate,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.ink,
+            )
+            FlameMiniTag(
+                text = "${groupItems.size} 条",
+                tone = FlameTone.NEUTRAL,
+            )
+            if (summaryText.isNotEmpty()) {
                 Text(
-                    text = item.targetName,
-                    style = MaterialTheme.typography.titleSmall,
+                    text = summaryText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (item.targetDeleted) {
-                    HistoryPill(
-                        text = "已删除",
-                        contentColor = FlameThemeTokens.semanticColors.onNeutralContainer,
-                        containerColor = FlameThemeTokens.semanticColors.neutralContainer,
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            Icon(
+                imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (isExpanded) "收起该日明细" else "展开该日明细",
+                tint = palette.inkTertiary,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+
+        if (isExpanded) {
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+            val visibleItems = if (showAllForDate) {
+                groupItems
+            } else {
+                groupItems.take(DEFAULT_VISIBLE_JOBS_PER_DAY)
+            }
+            val hasPagination = groupItems.size > DEFAULT_VISIBLE_JOBS_PER_DAY
+
+            visibleItems.forEachIndexed { idx, item ->
+                HistoryJobListRow(
+                    item = item,
+                    showDivider = idx < visibleItems.lastIndex || hasPagination,
+                    onClick = { onSelectJob(item.job.id) },
+                )
+            }
+
+            if (hasPagination) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onToggleShowAll)
+                        .padding(vertical = 11.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (showAllForDate) {
+                            "收起至前 $DEFAULT_VISIBLE_JOBS_PER_DAY 条"
+                        } else {
+                            "展开当日剩余 ${groupItems.size - DEFAULT_VISIBLE_JOBS_PER_DAY} 条（共 ${groupItems.size} 条）"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.inkSecondary,
                     )
                 }
-                HistoryPill(
-                    text = if (item.isDailySlot) "每日" else "测试",
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                )
-                HistoryPill(
-                    text = badge.label,
-                    contentColor = badge.fg,
-                    containerColor = badge.bg,
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "${job.businessDate} · 尝试 ${job.attemptCount} 次",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                val timeText = job.confirmedAt?.let { "确认于 ${formatEpochTimestamp(it)}" }
-                    ?: "更新于 ${formatEpochTimestamp(job.updatedAt)}"
-                Text(
-                    text = timeText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            val detailLine = buildString {
-                job.failureClass?.let { fc ->
-                    append("分类：")
-                    append(failureClassLabel(fc))
-                }
-                val summary = job.summaryDetail?.takeIf { it.isNotBlank() }
-                if (summary != null) {
-                    if (isNotEmpty()) append(" · ")
-                    append(summary)
-                }
-            }
-            if (detailLine.isNotEmpty()) {
-                Text(
-                    text = detailLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
         }
     }
 }
 
 @Composable
-private fun EmptyHistoryCard(
-    windowDays: Int,
-    hasAnyJobsInWindow: Boolean,
-    hasActiveFilter: Boolean,
-    onClearAllFilters: () -> Unit,
+private fun HistoryJobListRow(
+    item: HistoryJobItem,
+    showDivider: Boolean,
+    onClick: () -> Unit,
 ) {
-    OutlinedCard(
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = if (!hasAnyJobsInWindow) "近 $windowDays 天暂无执行记录" else "当前筛选条件下无记录",
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Text(
-                text = if (!hasAnyJobsInWindow) {
-                    "当每日自动续火或单发测试产生执行记录后，可在此回溯每日趋势与尝试耗时。"
-                } else {
-                    "可尝试切换状态筛选芯片或清除日期过滤。"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (hasActiveFilter) {
-                TextButton(onClick = onClearAllFilters) {
-                    Text("重置全部筛选")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryJobDetailDialog(
-    detail: HistoryJobDetailUiState,
-    onDismiss: () -> Unit,
-    onNavigateToTodayReview: () -> Unit,
-) {
-    val item = detail.item
     val job = item.job
-    val badge = jobStatusBadge(job.status)
-    val semantics = FlameThemeTokens.semanticColors
+    val style = jobStatusStyle(job.status)
+    val subtitle = remember(job) {
+        val timeText = job.confirmedAt?.let { formatEpochTimeShort(it) }
+            ?: formatEpochTimeShort(job.updatedAt)
+        val parts = buildList {
+            add(timeText)
+            add("尝试 ${job.attemptCount} 次")
+            job.failureClass?.let { add(failureClassLabel(it)) }
+            job.summaryDetail
+                ?.replace('\n', ' ')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { add(it) }
+        }
+        parts.joinToString(" · ")
+    }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = badge.icon,
-                contentDescription = null,
-                tint = badge.fg,
-            )
-        },
-        title = {
-            Text(
-                text = if (item.targetDeleted) {
-                    "${item.targetName}（已删除）"
-                } else {
-                    item.targetName
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = "业务日：${job.businessDate} · ${if (item.isDailySlot) "每日自动/批量槽位" else "单发测试槽位"}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Text(
-                            text = "状态：${badge.label} · 总尝试 ${job.attemptCount} 次",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        job.failureClass?.let { fc ->
-                            Text(
-                                text = "失败分类：${failureClassLabel(fc)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        job.scheduledAt?.let { scheduledAt ->
-                            Text(
-                                text = "计划时刻：${formatEpochTimestampWithSec(scheduledAt)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        job.confirmedAt?.let { confirmedAt ->
-                            Text(
-                                text = "确认完成：${formatEpochTimestampWithSec(confirmedAt)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        job.summaryDetail?.takeIf { it.isNotBlank() }?.let { summary ->
-                            Text(
-                                text = "脱敏摘要：$summary",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                Text(
-                    text = "发送尝试时间线",
-                    style = MaterialTheme.typography.titleSmall,
+    FlameListRow(
+        title = item.targetName,
+        subtitle = subtitle,
+        showDivider = showDivider,
+        dividerIndent = 60.dp,
+        onClick = onClick,
+        leading = {
+            FlameRowAvatar(tone = style.tone) {
+                Icon(
+                    imageVector = style.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
                 )
-
-                when {
-                    detail.isLoadingAttempts -> {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text(
-                            text = "正在加载尝试明细…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    detail.attemptsLoadError != null -> {
-                        Text(
-                            text = detail.attemptsLoadError,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = semantics.danger,
-                        )
-                    }
-
-                    detail.attempts.isEmpty() -> {
-                        Text(
-                            text = "暂无底层发送尝试记录",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    else -> {
-                        detail.attempts.forEach { attempt ->
-                            HistoryAttemptTimelineRow(attempt = attempt)
-                        }
-                    }
-                }
             }
         },
-        confirmButton = {
-            if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
-                Button(
-                    onClick = onNavigateToTodayReview,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = semantics.danger,
-                        contentColor = Color.White,
-                    ),
-                ) {
-                    Text("前往「今日」人工核对")
+        titleTag = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (item.targetDeleted) {
+                    FlameMiniTag(text = "已删除", tone = FlameTone.NEUTRAL)
                 }
+                FlameMiniTag(
+                    text = if (item.isDailySlot) "每日" else "测试",
+                    tone = FlameTone.NEUTRAL,
+                )
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
+        trailing = {
+            FlameStatusPill(
+                text = style.label,
+                tone = style.tone,
+                showDot = false,
+            )
         },
     )
 }
 
 @Composable
-private fun HistoryAttemptTimelineRow(attempt: SendAttemptEntity) {
+private fun HistoryJobTimelineSheet(
+    detail: HistoryJobDetailUiState,
+    onDismiss: () -> Unit,
+    onNavigateToTodayReview: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
-    val (statusLabel, statusColor) = when (attempt.status) {
-        AttemptStatus.SUCCEEDED -> "成功" to semantics.healthy
-        AttemptStatus.FAILED -> "失败" to semantics.danger
-        AttemptStatus.RUNNING -> "进行中" to MaterialTheme.colorScheme.primary
+    val item = detail.item
+    val job = item.job
+    val style = jobStatusStyle(job.status)
+    val sheetTitle = if (item.targetDeleted) {
+        "${item.targetName}（已删除）"
+    } else {
+        item.targetName
     }
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = sheetTitle,
+        subtitle = "${job.businessDate} · ${if (item.isDailySlot) "每日自动/批量槽位" else "单发测试槽位"}",
+        trailingHeader = {
+            FlameStatusPill(
+                text = style.label,
+                tone = style.tone,
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // 任务元信息摘要卡
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                borderColor = palette.hairline,
+                contentPadding = PaddingValues(13.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TimelineMetaRow(label = "执行状态", value = "${style.label} · 总尝试 ${job.attemptCount} 次")
+                    job.failureClass?.let { fc ->
+                        TimelineMetaRow(label = "失败分类", value = failureClassLabel(fc))
+                    }
+                    job.scheduledAt?.let { scheduledAt ->
+                        TimelineMetaRow(label = "计划时刻", value = formatEpochTimestampWithSec(scheduledAt))
+                    }
+                    job.confirmedAt?.let { confirmedAt ->
+                        TimelineMetaRow(label = "确认完成", value = formatEpochTimestampWithSec(confirmedAt))
+                    }
+                    job.summaryDetail?.takeIf { it.isNotBlank() }?.let { summary ->
+                        HorizontalDivider(
+                            thickness = 1.dp,
+                            color = palette.hairline,
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                        Text(
+                            text = "脱敏摘要",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                        )
+                        Text(
+                            text = summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.ink,
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text = "发送尝试时间线",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.inkTertiary,
+                modifier = Modifier.padding(horizontal = 2.dp),
+            )
+
+            when {
+                detail.isLoadingAttempts -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(999.dp)),
+                            color = palette.monoCtaContainer,
+                            trackColor = palette.surfaceSubtle,
+                        )
+                        Text(
+                            text = "正在加载尝试明细…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                }
+
+                detail.attemptsLoadError != null -> {
+                    Surface(
+                        color = semantics.dangerContainer,
+                        border = BorderStroke(1.dp, semantics.dangerBorder),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = detail.attemptsLoadError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = semantics.onDangerContainer,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                }
+
+                detail.attempts.isEmpty() -> {
+                    Surface(
+                        color = palette.surfaceSubtle,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "暂无底层发送尝试记录",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkSecondary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                }
+
+                else -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        detail.attempts.forEach { attempt ->
+                            HistoryAttemptTimelineItem(attempt = attempt)
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                FlameSheetActionRow(
+                    text = "去今日核对",
+                    trailingText = "人工确认发送结果",
+                    onClick = onNavigateToTodayReview,
+                    primary = true,
+                    danger = true,
+                )
+            }
+            FlameSheetActionRow(
+                text = "关闭",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimelineMetaRow(
+    label: String,
+    value: String,
+) {
+    val palette = FlameThemeTokens.palette
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.inkTertiary,
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = palette.ink,
+        )
+    }
+}
+
+@Composable
+private fun HistoryAttemptTimelineItem(attempt: SendAttemptEntity) {
+    val palette = FlameThemeTokens.palette
+    val (statusLabel, statusTone) = when (attempt.status) {
+        AttemptStatus.SUCCEEDED -> "成功" to FlameTone.HEALTHY
+        AttemptStatus.FAILED -> "失败" to FlameTone.DANGER
+        AttemptStatus.RUNNING -> "进行中" to FlameTone.EMBER
+    }
+    val toneColors = resolveFlameToneColors(statusTone)
     val stageLabel = when (attempt.stage) {
         "opening_chat" -> "打开会话"
         "sending" -> "写入发送"
@@ -1562,158 +1428,148 @@ private fun HistoryAttemptTimelineRow(attempt: SendAttemptEntity) {
         null -> "--"
         else -> attempt.inputMethodUsed
     }
-
-    Surface(
-        shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "第 ${attempt.attemptNo} 次 · $stageLabel",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = statusLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = statusColor,
-                )
-            }
-
-            val metaParts = buildList {
-                add("方式：$methodLabel")
-                attempt.failureClass?.let { add("分类：${failureClassLabel(it)}") }
-                attempt.errorCode?.takeIf { it.isNotBlank() }?.let { add("错误码：$it") }
-            }
-            Text(
-                text = metaParts.joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            val durationSuffix = attempt.finishedAt?.let { finished ->
-                val elapsedMs = (finished - attempt.startedAt).coerceAtLeast(0L)
-                if (elapsedMs < 1_000L) {
-                    "耗时 ${elapsedMs}ms"
-                } else {
-                    String.format(Locale.US, "耗时 %.1fs", elapsedMs / 1000.0)
-                }
-            } ?: "尚未结束"
-            val startText = formatEpochTimeOnly(attempt.startedAt)
-            val endText = attempt.finishedAt?.let { formatEpochTimeOnly(it) } ?: "进行中"
-            Text(
-                text = "时间：$startText - $endText（$durationSuffix）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    val durationSuffix = attempt.finishedAt?.let { finished ->
+        val elapsedMs = (finished - attempt.startedAt).coerceAtLeast(0L)
+        if (elapsedMs < 1_000L) {
+            "耗时 ${elapsedMs}ms"
+        } else {
+            String.format(Locale.US, "耗时 %.1fs", elapsedMs / 1000.0)
         }
-    }
-}
+    } ?: "尚未结束"
+    val startText = formatEpochTimeOnly(attempt.startedAt)
+    val endText = attempt.finishedAt?.let { formatEpochTimeOnly(it) } ?: "进行中"
 
-@Composable
-private fun HistoryPill(
-    text: String,
-    contentColor: Color,
-    containerColor: Color,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = containerColor,
-        contentColor = contentColor,
+    FlameCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 14.dp,
+        containerColor = palette.surface,
+        borderColor = palette.hairline,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(toneColors.accent),
+            )
+            Text(
+                text = "第 ${attempt.attemptNo} 次 · $stageLabel",
+                style = MaterialTheme.typography.titleSmall,
+                color = palette.ink,
+                modifier = Modifier.weight(1f),
+            )
+            FlameMiniTag(text = statusLabel, tone = statusTone)
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        val metaParts = buildList {
+            add("方式：$methodLabel")
+            attempt.failureClass?.let { add("分类：${failureClassLabel(it)}") }
+            attempt.errorCode?.takeIf { it.isNotBlank() }?.let { add("错误码：$it") }
+        }
         Text(
-            text = text,
+            text = metaParts.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.inkSecondary,
+        )
+
+        Spacer(modifier = Modifier.height(3.dp))
+
+        Text(
+            text = "$startText – $endText（$durationSuffix）",
             style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            color = palette.inkTertiary,
         )
     }
 }
 
-private data class JobBadgeStyle(
+private data class JobStatusStyle(
     val label: String,
-    val fg: Color,
-    val bg: Color,
+    val tone: FlameTone,
     val icon: ImageVector,
 )
 
-@Composable
-private fun jobStatusBadge(status: JobStatus): JobBadgeStyle {
-    val semantics = FlameThemeTokens.semanticColors
-    return when (status) {
-        JobStatus.SUCCEEDED -> JobBadgeStyle(
-            label = "已成功",
-            fg = semantics.onHealthyContainer,
-            bg = semantics.healthyContainer,
-            icon = Icons.Filled.CheckCircle,
-        )
-        JobStatus.UNKNOWN_REQUIRES_REVIEW -> JobBadgeStyle(
-            label = "待核对",
-            fg = semantics.onWarningContainer,
-            bg = semantics.warningContainer,
-            icon = Icons.AutoMirrored.Filled.HelpOutline,
-        )
-        JobStatus.FAILED_RETRYABLE -> JobBadgeStyle(
-            label = "待重试",
-            fg = semantics.onWarningContainer,
-            bg = semantics.warningContainer,
-            icon = Icons.Filled.Refresh,
-        )
-        JobStatus.FAILED_TERMINAL -> JobBadgeStyle(
-            label = "失败",
-            fg = semantics.onDangerContainer,
-            bg = semantics.dangerContainer,
-            icon = Icons.Filled.ErrorOutline,
-        )
-        JobStatus.CANCELLED -> JobBadgeStyle(
-            label = "已取消",
-            fg = semantics.onNeutralContainer,
-            bg = semantics.neutralContainer,
-            icon = Icons.Filled.Cancel,
-        )
-        JobStatus.SCHEDULED -> JobBadgeStyle(
-            label = "已计划",
-            fg = semantics.onNeutralContainer,
-            bg = semantics.neutralContainer,
-            icon = Icons.Filled.Schedule,
-        )
-        JobStatus.LEASED,
-        JobStatus.OPENING_CHAT,
-        JobStatus.SENDING,
-        JobStatus.CONFIRMING,
-        -> JobBadgeStyle(
-            label = "执行中",
-            fg = MaterialTheme.colorScheme.onPrimaryContainer,
-            bg = MaterialTheme.colorScheme.primaryContainer,
-            icon = Icons.Filled.WarningAmber,
-        )
-    }
+private fun jobStatusStyle(status: JobStatus): JobStatusStyle = when (status) {
+    JobStatus.SUCCEEDED -> JobStatusStyle(
+        label = "已成功",
+        tone = FlameTone.HEALTHY,
+        icon = Icons.Outlined.CheckCircle,
+    )
+
+    JobStatus.UNKNOWN_REQUIRES_REVIEW -> JobStatusStyle(
+        label = "待核对",
+        tone = FlameTone.WARNING,
+        icon = Icons.AutoMirrored.Outlined.HelpOutline,
+    )
+
+    JobStatus.FAILED_RETRYABLE -> JobStatusStyle(
+        label = "待重试",
+        tone = FlameTone.WARNING,
+        icon = Icons.Outlined.Refresh,
+    )
+
+    JobStatus.FAILED_TERMINAL -> JobStatusStyle(
+        label = "失败",
+        tone = FlameTone.DANGER,
+        icon = Icons.Outlined.ErrorOutline,
+    )
+
+    JobStatus.CANCELLED -> JobStatusStyle(
+        label = "已取消",
+        tone = FlameTone.NEUTRAL,
+        icon = Icons.Outlined.Cancel,
+    )
+
+    JobStatus.SCHEDULED -> JobStatusStyle(
+        label = "已计划",
+        tone = FlameTone.NEUTRAL,
+        icon = Icons.Outlined.Schedule,
+    )
+
+    JobStatus.LEASED,
+    JobStatus.OPENING_CHAT,
+    JobStatus.SENDING,
+    JobStatus.CONFIRMING,
+    -> JobStatusStyle(
+        label = "执行中",
+        tone = FlameTone.EMBER,
+        icon = Icons.Outlined.WarningAmber,
+    )
 }
 
-private fun formatSuccessRatePercent(rate: Double): String {
+private fun computeAxisTickIndices(totalCount: Int, targetTicks: Int = 6): List<Int> {
+    if (totalCount <= 0) return emptyList()
+    if (totalCount == 1) return listOf(0)
+    if (totalCount <= targetTicks) return (0 until totalCount).toList()
+    val indices = LinkedHashSet<Int>(targetTicks)
+    for (i in 0 until targetTicks) {
+        val ratio = i.toFloat() / (targetTicks - 1).toFloat()
+        val index = (ratio * (totalCount - 1).toFloat()).roundToInt().coerceIn(0, totalCount - 1)
+        indices.add(index)
+    }
+    indices.add(0)
+    indices.add(totalCount - 1)
+    return indices.sorted()
+}
+
+private fun formatSuccessRateDigits(rate: Double): String {
     val pct = (rate * 100.0).coerceIn(0.0, 100.0)
     return if (pct == 0.0 || pct == 100.0) {
-        String.format(Locale.US, "%.0f%%", pct)
+        String.format(Locale.US, "%.0f", pct)
     } else {
-        String.format(Locale.US, "%.1f%%", pct)
+        String.format(Locale.US, "%.1f", pct)
     }
 }
 
-private fun formatEpochTimestamp(epochMs: Long): String {
+private fun formatEpochTimeShort(epochMs: Long): String {
     val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(epochMs), ZoneId.systemDefault())
-    return DATE_TIME_FORMATTER.format(zdt)
+    return TIME_SHORT_FORMATTER.format(zdt)
 }
 
 private fun formatEpochTimestampWithSec(epochMs: Long): String {
@@ -1739,6 +1595,6 @@ private fun failureClassLabel(failureClass: FailureClass): String = when (failur
 private const val DEFAULT_VISIBLE_JOBS_PER_DAY = 10
 
 private val SHORT_DAY_FORMATTER = DateTimeFormatter.ofPattern("M/d")
-private val DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+private val TIME_SHORT_FORMATTER = DateTimeFormatter.ofPattern("HH:mm")
 private val DATE_TIME_SEC_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
 private val TIME_SEC_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss")
