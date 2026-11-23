@@ -1,75 +1,66 @@
 package io.github.oinzc.flamecontractor.ui.targets
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Badge
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PersonSearch
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.Whatshot
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PauseCircleOutline
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PersonSearch
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +71,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -96,7 +90,29 @@ import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
+import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
+import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
+import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
+import io.github.oinzc.flamecontractor.ui.components.FlameListRow
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
+import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
+import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
+import io.github.oinzc.flamecontractor.ui.components.FlameStreakBadge
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
+import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
+import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun TargetsRoute(
@@ -155,6 +171,7 @@ fun TargetsRoute(
         onSingleSend = viewModel::requestSingleSend,
         onRepairIdentity = viewModel::requestIdentityRepair,
         onRequestDelete = viewModel::requestDeleteTarget,
+        onOpenSettings = onOpenSettings,
         modifier = modifier,
     )
 
@@ -174,7 +191,7 @@ fun TargetsRoute(
     }
 
     uiState.editorState?.let { editor ->
-        TargetEditorDialog(
+        TargetEditorSheet(
             editor = editor,
             templates = uiState.templates,
             missingImageTemplateIds = uiState.missingImageTemplateIds,
@@ -190,25 +207,11 @@ fun TargetsRoute(
     }
 
     uiState.deleteConfirmTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissDeleteConfirm,
-            title = { Text("移出续火名单？") },
-            text = {
-                Text(
-                    "确定移除「${target.nicknameSnapshot}」？\n\n" +
-                        "系统将保留其历史发送审计与连续天数；日后再次扫码或新建同名对象时可自动复活恢复。",
-                )
-            },
-            confirmButton = {
-                Button(onClick = viewModel::confirmDeleteTarget) {
-                    Text("确认移除")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissDeleteConfirm) {
-                    Text("取消")
-                }
-            },
+        DeleteTargetConfirmSheet(
+            target = target,
+            busy = uiState.isBusy,
+            onConfirm = viewModel::confirmDeleteTarget,
+            onDismiss = viewModel::dismissDeleteConfirm,
         )
     }
 
@@ -216,179 +219,48 @@ fun TargetsRoute(
         SingleSendDialogState.None -> Unit
 
         is SingleSendDialogState.Blocked -> {
-            AlertDialog(
-                onDismissRequest = viewModel::dismissSingleSendDialog,
-                icon = {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+            SingleSendBlockedSheet(
+                state = dlg,
+                onNavigateToTodayReview = {
+                    viewModel.dismissSingleSendDialog()
+                    onNavigateToTodayReview()
                 },
-                title = { Text("已拦截单发测试") },
-                text = {
-                    Text(
-                        "「${dlg.targetName}」今日存在未确认或进行中的发送记录。\n\n${dlg.message}",
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            viewModel.dismissSingleSendDialog()
-                            onNavigateToTodayReview()
-                        },
-                    ) {
-                        Text("去「今日」核对")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = viewModel::dismissSingleSendDialog) {
-                        Text("关闭")
-                    }
-                },
+                onDismiss = viewModel::dismissSingleSendDialog,
             )
         }
 
         is SingleSendDialogState.ConfirmAlreadySucceeded -> {
-            val canSend = dlg.overrideText.isNotBlank() || dlg.target.templateId != null
-            val tplLabel = dlg.templateName?.let { name ->
-                val typeTag = dlg.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
-                "$name$typeTag"
-            } ?: "未绑定"
-            AlertDialog(
-                onDismissRequest = viewModel::dismissSingleSendDialog,
-                title = { Text("确认额外补发测试消息？") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "「${dlg.target.nicknameSnapshot}」${dlg.message}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text = "当前绑定模板：$tplLabel",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (dlg.isTemplateMissingImage && dlg.overrideText.isBlank()) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    text = "该图片模板缺少本地图片（待补图），请先前往「模板」页重新选图或填写下方临时文本。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.padding(10.dp),
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = dlg.overrideText,
-                            onValueChange = viewModel::updateSingleSendOverrideText,
-                            label = { Text("可选临时测试文本") },
-                            placeholder = {
-                                Text(
-                                    if (dlg.target.templateId != null) {
-                                        "留空则按绑定模板发送"
-                                    } else {
-                                        "未绑定模板，请输入临时测试文本"
-                                    },
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 3,
-                        )
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = viewModel::confirmSingleSend,
-                        enabled = canSend,
-                    ) {
-                        Text("确认补发")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = viewModel::dismissSingleSendDialog) {
-                        Text("取消")
-                    }
-                },
+            SingleSendConfirmSheet(
+                target = dlg.target,
+                templateName = dlg.templateName,
+                templateType = dlg.templateType,
+                isTemplateMissingImage = dlg.isTemplateMissingImage,
+                overrideText = dlg.overrideText,
+                isAlreadySucceeded = true,
+                leadMessage = "「${dlg.target.nicknameSnapshot}」${dlg.message}",
+                onOverrideTextChanged = viewModel::updateSingleSendOverrideText,
+                onConfirm = viewModel::confirmSingleSend,
+                onDismiss = viewModel::dismissSingleSendDialog,
             )
         }
 
         is SingleSendDialogState.ConfirmSend -> {
-            val canSend = dlg.overrideText.isNotBlank() || dlg.target.templateId != null
-            val tplLabel = dlg.templateName?.let { name ->
-                val typeTag = dlg.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
-                "$name$typeTag"
-            } ?: "未绑定"
-            AlertDialog(
-                onDismissRequest = viewModel::dismissSingleSendDialog,
-                title = { Text("单发测试 · ${dlg.target.nicknameSnapshot}") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "将触发离屏 WebView 立即发送 1 条测试消息（走独立手动槽位，写入发送审计）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "当前绑定模板：$tplLabel",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (dlg.isTemplateMissingImage && dlg.overrideText.isBlank()) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    text = "该图片模板缺少本地图片（待补图），请先前往「模板」页重新选图或填写下方临时文本。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.padding(10.dp),
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = dlg.overrideText,
-                            onValueChange = viewModel::updateSingleSendOverrideText,
-                            label = { Text("可选临时测试文本") },
-                            placeholder = {
-                                Text(
-                                    if (dlg.target.templateId != null) {
-                                        "留空则按绑定模板发送"
-                                    } else {
-                                        "未绑定模板，请输入临时测试文本"
-                                    },
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 3,
-                        )
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = viewModel::confirmSingleSend,
-                        enabled = canSend,
-                    ) {
-                        Text("立即发送")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = viewModel::dismissSingleSendDialog) {
-                        Text("取消")
-                    }
-                },
+            SingleSendConfirmSheet(
+                target = dlg.target,
+                templateName = dlg.templateName,
+                templateType = dlg.templateType,
+                isTemplateMissingImage = dlg.isTemplateMissingImage,
+                overrideText = dlg.overrideText,
+                isAlreadySucceeded = false,
+                leadMessage = "将触发离屏 WebView 立即发送 1 条测试消息（走独立手动槽位，写入发送审计）。",
+                onOverrideTextChanged = viewModel::updateSingleSendOverrideText,
+                onConfirm = viewModel::confirmSingleSend,
+                onDismiss = viewModel::dismissSingleSendDialog,
             )
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TargetsScreen(
     uiState: TargetsUiState,
@@ -403,237 +275,210 @@ fun TargetsScreen(
     onSingleSend: (ContractTargetEntity) -> Unit,
     onRepairIdentity: (ContractTargetEntity) -> Unit,
     onRequestDelete: (ContractTargetEntity) -> Unit,
+    onOpenSettings: (SettingsSection?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = onOpenCreateTarget) {
-                Icon(Icons.Default.Add, contentDescription = "手工新增好友或群聊")
-            }
-        },
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // 顶部标题与「手动扫描同步」入口
-            val titleBlock: @Composable (Modifier) -> Unit = { blockModifier ->
-                Column(modifier = blockModifier) {
-                    Text(
-                        text = "好友与群聊",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "共 ${uiState.allTargetsCount} 个续火对象",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            val actionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
-                FlowRow(
-                    modifier = blockModifier,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (uiState.hasAvailableSnapshot) {
-                        OutlinedButton(onClick = onOpenReconcileSheet) {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("查看最近扫描结果")
-                        }
-                    }
+    val palette = FlameThemeTokens.palette
+    val dockBottomClearance = flameDockBottomPadding()
+    var selectedTargetId by remember { mutableStateOf<String?>(null) }
+    var showScanActionSheet by remember { mutableStateOf(false) }
 
-                    FilledTonalButton(
-                        onClick = onStartManualScan,
-                        enabled = !uiState.scanRunning,
-                    ) {
-                        if (uiState.scanRunning) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("扫描中 (${uiState.scanDiscoveredCount})")
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("手动扫描同步")
-                        }
-                    }
-                }
-            }
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                if (maxWidth >= 600.dp) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        titleBlock(Modifier.weight(1f))
-                        actionsBlock(Modifier)
-                    }
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        titleBlock(Modifier.fillMaxWidth())
-                        actionsBlock(Modifier.fillMaxWidth())
-                    }
-                }
-            }
-
-            if (uiState.scanRunning) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = "${uiState.scanTaskLabel ?: "正在扫描抖音会话…"} · 已发现 ${uiState.scanDiscoveredCount} 条",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            }
-
-            // 搜索框
-            OutlinedTextField(
-                value = uiState.searchQuery,
-                onValueChange = onSearchQueryChanged,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = {
-                    Text(
-                        text = "搜索好友昵称、群名、抖音号或绑定模板…",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (uiState.searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchQueryChanged("") }) {
-                            Icon(Icons.Default.Clear, contentDescription = "清空搜索")
-                        }
-                    }
-                },
+    val filterItems = remember(uiState.filterCounts) {
+        TargetFilter.entries.map { filter ->
+            FlameFilterChipItem(
+                key = filter.name,
+                label = filter.label,
+                count = uiState.filterCounts[filter] ?: 0,
             )
+        }
+    }
 
-            // 过滤胶囊
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(TargetFilter.entries) { filter ->
-                    val count = uiState.filterCounts[filter] ?: 0
-                    FilterChip(
-                        selected = uiState.filter == filter,
-                        onClick = { onFilterSelected(filter) },
-                        label = { Text("${filter.label} ($count)") },
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .background(palette.canvas),
+    ) {
+        val isWideScreen = maxWidth >= 600.dp
+
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = palette.canvas,
+            contentColor = palette.ink,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            topBar = {
+                FlameTopBar(title = "好友") {
+                    FlameTopPillButton(
+                        text = if (uiState.scanRunning) {
+                            "扫描(${uiState.scanDiscoveredCount})"
+                        } else {
+                            "扫描对账"
+                        },
+                        leadingIcon = Icons.Outlined.Sync,
+                        primary = false,
+                        enabled = !uiState.scanRunning,
+                        onClick = {
+                            if (uiState.hasAvailableSnapshot) {
+                                showScanActionSheet = true
+                            } else {
+                                onStartManualScan()
+                            }
+                        },
+                    )
+                    FlameTopPillButton(
+                        text = "新增",
+                        leadingIcon = Icons.Default.Add,
+                        primary = true,
+                        onClick = onOpenCreateTarget,
+                    )
+                    FlameIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        onClick = { onOpenSettings(null) },
                     )
                 }
-            }
+            },
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.padding(
+                        bottom = if (isWideScreen) 16.dp else dockBottomClearance - 12.dp,
+                    ),
+                )
+            },
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = if (isWideScreen) 20.dp else 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FlameSearchPill(
+                    query = uiState.searchQuery,
+                    onQueryChange = onSearchQueryChanged,
+                    placeholder = "搜索好友昵称、群名、抖音号或绑定模板…",
+                )
 
-            // 自适应手机单列 / 平板双列列表
-            if (uiState.items.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center,
+                FlameFilterChipRow(
+                    items = filterItems,
+                    selectedKey = uiState.filter.name,
+                    onSelect = { key ->
+                        TargetFilter.entries.firstOrNull { it.name == key }?.let(onFilterSelected)
+                    },
+                )
+
+                AnimatedVisibility(
+                    visible = uiState.scanRunning,
+                    enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                    exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = if (uiState.allTargetsCount == 0) {
-                                "暂无续火对象"
-                            } else {
-                                "当前筛选条件下没有匹配对象"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            text = if (uiState.allTargetsCount == 0) {
-                                "可点击右上角「手动扫描同步」导入抖音火花好友，或点击右下角 + 手工录入"
-                            } else {
-                                "可尝试切换筛选胶囊或清空搜索关键词"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    ActiveScanProgressBanner(
+                        taskLabel = uiState.scanTaskLabel,
+                        discoveredCount = uiState.scanDiscoveredCount,
+                    )
                 }
-            } else {
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
+
+                AnimatedVisibility(
+                    visible = uiState.hasAvailableSnapshot && !uiState.scanRunning,
+                    enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                    exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
                 ) {
-                    val isWide = maxWidth >= 600.dp
-                    if (isWide) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 330.dp),
-                            contentPadding = PaddingValues(bottom = 80.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            items(
-                                items = uiState.items,
-                                key = { it.target.id },
-                            ) { item ->
-                                TargetCard(
+                    RecentScanReconcileShortcut(
+                        reconcileState = uiState.reconcileState,
+                        onOpenReconcile = onOpenReconcileSheet,
+                    )
+                }
+
+                if (uiState.items.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(
+                                top = 12.dp,
+                                bottom = if (isWideScreen) 24.dp else dockBottomClearance,
+                            ),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        if (uiState.allTargetsCount == 0) {
+                            FlameEmptyStateCard(
+                                icon = Icons.Outlined.PersonSearch,
+                                title = "暂无续火对象",
+                                subtitle = "点击右上角「扫描对账」导入抖音火花好友，或点击「新增」手工录入。",
+                                actionLabel = "立即扫描导入",
+                                onAction = onStartManualScan,
+                            )
+                        } else {
+                            FlameEmptyStateCard(
+                                icon = Icons.Outlined.PersonSearch,
+                                title = "当前筛选条件下没有匹配对象",
+                                subtitle = "可尝试切换上方筛选胶囊或清空搜索关键词。",
+                                actionLabel = "重置筛选",
+                                onAction = {
+                                    onSearchQueryChanged("")
+                                    onFilterSelected(TargetFilter.ALL)
+                                },
+                            )
+                        }
+                    }
+                } else if (isWideScreen) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .navigationBarsPadding(),
+                        contentPadding = PaddingValues(top = 2.dp, bottom = 24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(
+                            items = uiState.items,
+                            key = { it.target.id },
+                        ) { item ->
+                            FlameCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 20.dp,
+                                contentPadding = PaddingValues(0.dp),
+                            ) {
+                                TargetGritListRow(
                                     item = item,
-                                    onToggleEnabled = { enabled -> onToggleEnabled(item.target, enabled) },
-                                    onSingleSend = { onSingleSend(item.target) },
-                                    onRepairIdentity = { onRepairIdentity(item.target) },
-                                    onEdit = { onOpenEditTarget(item.target) },
-                                    onDelete = { onRequestDelete(item.target) },
+                                    showDivider = false,
+                                    onClick = { selectedTargetId = item.target.id },
                                 )
                             }
                         }
-                    } else {
-                        LazyColumn(
-                            contentPadding = PaddingValues(bottom = 80.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            items(
-                                items = uiState.items,
-                                key = { it.target.id },
-                            ) { item ->
-                                TargetCard(
-                                    item = item,
-                                    onToggleEnabled = { enabled -> onToggleEnabled(item.target, enabled) },
-                                    onSingleSend = { onSingleSend(item.target) },
-                                    onRepairIdentity = { onRepairIdentity(item.target) },
-                                    onEdit = { onOpenEditTarget(item.target) },
-                                    onDelete = { onRequestDelete(item.target) },
-                                )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(top = 2.dp, bottom = dockBottomClearance),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        item(key = "targets_grouped_list") {
+                            FlameGroupedSection(
+                                title = "续火名单",
+                                trailingHeader = {
+                                    Text(
+                                        text = if (uiState.items.size == uiState.allTargetsCount) {
+                                            "共 ${uiState.allTargetsCount} 位 · 点行操作"
+                                        } else {
+                                            "显示 ${uiState.items.size} / ${uiState.allTargetsCount} 位"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.inkTertiary,
+                                    )
+                                },
+                            ) {
+                                uiState.items.forEachIndexed { index, item ->
+                                    TargetGritListRow(
+                                        item = item,
+                                        showDivider = index < uiState.items.lastIndex,
+                                        onClick = { selectedTargetId = item.target.id },
+                                    )
+                                }
                             }
                         }
                     }
@@ -641,316 +486,638 @@ fun TargetsScreen(
             }
         }
     }
+
+    if (showScanActionSheet) {
+        ScanActionChoiceSheet(
+            reconcileState = uiState.reconcileState,
+            onRescanNow = {
+                showScanActionSheet = false
+                onStartManualScan()
+            },
+            onOpenLastReconcile = {
+                showScanActionSheet = false
+                onOpenReconcileSheet()
+            },
+            onDismiss = { showScanActionSheet = false },
+        )
+    }
+
+    val selectedItem = selectedTargetId?.let { id ->
+        uiState.items.firstOrNull { it.target.id == id }
+    }
+    if (selectedItem != null) {
+        TargetActionDetailSheet(
+            item = selectedItem,
+            onToggleEnabled = { enabled -> onToggleEnabled(selectedItem.target, enabled) },
+            onSingleSend = {
+                selectedTargetId = null
+                onSingleSend(selectedItem.target)
+            },
+            onEdit = {
+                selectedTargetId = null
+                onOpenEditTarget(selectedItem.target)
+            },
+            onRepairIdentity = {
+                selectedTargetId = null
+                onRepairIdentity(selectedItem.target)
+            },
+            onDelete = {
+                selectedTargetId = null
+                onRequestDelete(selectedItem.target)
+            },
+            onDismiss = { selectedTargetId = null },
+        )
+    }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TargetCard(
-    item: TargetItemUi,
-    onToggleEnabled: (Boolean) -> Unit,
-    onSingleSend: () -> Unit,
-    onRepairIdentity: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
+private fun ActiveScanProgressBanner(
+    taskLabel: String?,
+    discoveredCount: Int,
 ) {
-    val target = item.target
-    var menuExpanded by remember { mutableStateOf(false) }
-
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (target.enabled) {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLowest
-            },
-        ),
+    val palette = FlameThemeTokens.palette
+    FlameCard(
         modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 16.dp,
+        containerColor = palette.emberContainer,
+        borderColor = palette.emberBorder,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // 第一行：显示名 + 好友/群聊角标 + 开关 + 快捷菜单
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = target.nicknameSnapshot,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            shape = MaterialTheme.shapes.extraSmall,
-                        ) {
-                            Text(
-                                text = if (target.conversationType == "group") "群聊" else "好友",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                    if (!target.platformHandle.isNullOrBlank()) {
-                        Text(
-                            text = "@${target.platformHandle}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-
-                Switch(
-                    checked = target.enabled,
-                    onCheckedChange = onToggleEnabled,
-                )
-
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "更多操作")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("单发测试") },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onSingleSend()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("单独补采身份") },
-                            leadingIcon = { Icon(Icons.Default.PersonSearch, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onRepairIdentity()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("编辑") },
-                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除") },
-                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 第二行：身份绑定角标 + 独立「抖音官方火花」徽标 + 独立「本机连续天数」
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                // 1) 身份绑定状态角标
-                val (idBg, idFg, idText) = when {
-                    item.hasBoundIdentity -> Triple(
-                        MaterialTheme.colorScheme.primaryContainer,
-                        MaterialTheme.colorScheme.onPrimaryContainer,
-                        if (target.conversationType == "group") "已绑群ID" else "已绑稳定身份",
-                    )
-                    item.isAmbiguousInLatestScan -> Triple(
-                        MaterialTheme.colorScheme.errorContainer,
-                        MaterialTheme.colorScheme.onErrorContainer,
-                        "同名冲突 · 未绑",
-                    )
-                    else -> Triple(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                        "未绑身份",
-                    )
-                }
-                Surface(color = idBg, shape = MaterialTheme.shapes.small) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (item.hasBoundIdentity) {
-                                Icons.Default.VerifiedUser
-                            } else {
-                                Icons.Default.Badge
-                            },
-                            contentDescription = null,
-                            tint = idFg,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Text(
-                            text = idText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = idFg,
-                        )
-                    }
-                }
-
-                // 2) 独立「抖音官方火花」徽标（绝不与本机连续天数混同）
-                val officialBg = if (item.hasOfficialSpark) {
-                    MaterialTheme.colorScheme.tertiaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                }
-                val officialFg = if (item.hasOfficialSpark) {
-                    MaterialTheme.colorScheme.onTertiaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
-                Surface(color = officialBg, shape = MaterialTheme.shapes.small) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocalFireDepartment,
-                            contentDescription = null,
-                            tint = officialFg,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Text(
-                            text = formatOfficialSparkBadge(target, item.hasOfficialSpark),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = officialFg,
-                            fontWeight = if (item.hasOfficialSpark) FontWeight.Medium else FontWeight.Normal,
-                        )
-                    }
-                }
-
-                // 3) 独立「本机连续天数」徽标
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                    shape = MaterialTheme.shapes.small,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Whatshot,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Text(
-                            text = "本机连续 ${target.streakDays} 天",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                    }
-                }
-
-                if (item.todayStatusLabel != null) {
-                    val statusBg = when {
-                        item.hasBlockingTodayJob -> MaterialTheme.colorScheme.errorContainer
-                        item.hasSucceededTodayJob -> MaterialTheme.colorScheme.primaryContainer
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    }
-                    val statusFg = when {
-                        item.hasBlockingTodayJob -> MaterialTheme.colorScheme.onErrorContainer
-                        item.hasSucceededTodayJob -> MaterialTheme.colorScheme.onPrimaryContainer
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                    Surface(color = statusBg, shape = MaterialTheme.shapes.small) {
-                        Text(
-                            text = item.todayStatusLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = statusFg,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
-                    }
-                }
-            }
-
-            HorizontalDivider()
-
-            // 第三行：绑定模板名 + 固定时刻 + 快捷操作按钮
+        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(
+                Text(
+                    text = taskLabel?.takeIf { it.isNotBlank() } ?: "正在扫描抖音会话…",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.ember,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    val typeTag = item.templateType?.let { " · ${targetTemplateTypeLabel(it)}" }.orEmpty()
-                    Text(
-                        text = "模板：${item.templateName ?: "未绑定模板"}$typeTag",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (item.isTemplateMissingImage) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            shape = MaterialTheme.shapes.extraSmall,
-                        ) {
-                            Text(
-                                text = "待补图 · 缺少本地图片",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                    if (!target.sendTimeHhmm.isNullOrBlank()) {
-                        Text(
-                            text = "固定发送时刻：${target.sendTimeHhmm}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "已发现 $discoveredCount 条",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.ember,
+                )
+            }
+            LinearProgressIndicator(
+                color = palette.ember,
+                trackColor = palette.emberBorder.copy(alpha = 0.55f),
+                strokeCap = StrokeCap.Round,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp),
+            )
+        }
+    }
+}
 
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (!item.hasBoundIdentity) {
-                        TextButton(onClick = onRepairIdentity) {
-                            Text("补采身份")
-                        }
-                    }
-                    OutlinedButton(onClick = onSingleSend) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("单发测试")
-                    }
-                }
+@Composable
+private fun RecentScanReconcileShortcut(
+    reconcileState: ScanReconcileState,
+    onOpenReconcile: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val timeLabel = reconcileState.scannedAtEpochMs?.let(::formatTargetTimestamp)
+    val metaText = buildString {
+        append("发现 ${reconcileState.discoveredCount} 条 · 含火花 ${reconcileState.sparkCount} 条")
+        if (timeLabel != null) {
+            append(" · ")
+            append(timeLabel)
+        }
+    }
+
+    Surface(
+        onClick = onOpenReconcile,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = palette.surface,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairline),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            FlameRowAvatar(tone = FlameTone.EMBER) {
+                Icon(
+                    imageVector = Icons.Outlined.Sync,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "最近扫描结果可对账",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = metaText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "查看",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.inkSecondary,
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(16.dp),
+                )
             }
         }
     }
 }
 
+@Composable
+private fun TargetGritListRow(
+    item: TargetItemUi,
+    showDivider: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val target = item.target
+    val avatarMeta = resolveTargetAvatarMeta(item)
+
+    val subtitleLine1 = buildString {
+        append(item.templateName?.let { name ->
+            val typeTag = item.templateType?.let { "·${targetTemplateTypeLabel(it)}" }.orEmpty()
+            "模板：$name$typeTag"
+        } ?: "未绑定模板")
+        if (!target.sendTimeHhmm.isNullOrBlank()) {
+            append(" · 定时 ")
+            append(target.sendTimeHhmm)
+        }
+    }
+    val subtitleLine2 = formatOfficialSparkRowSummary(target, item.hasOfficialSpark)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FlameRowAvatar(tone = avatarMeta.tone) {
+                Icon(
+                    imageVector = avatarMeta.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        text = target.nicknameSnapshot,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (target.enabled) palette.ink else palette.inkSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (target.conversationType == "group") {
+                        FlameMiniTag(text = "群聊", tone = FlameTone.NEUTRAL)
+                    }
+                    if (item.isAmbiguousInLatestScan) {
+                        FlameMiniTag(text = "同名冲突", tone = FlameTone.DANGER)
+                    } else if (!item.hasBoundIdentity) {
+                        FlameMiniTag(text = "未绑身份", tone = FlameTone.WARNING)
+                    }
+                    if (item.isTemplateMissingImage) {
+                        FlameMiniTag(text = "待补图", tone = FlameTone.DANGER)
+                    }
+                }
+
+                Text(
+                    text = subtitleLine1,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (item.isTemplateMissingImage) semantics.danger else palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                Text(
+                    text = subtitleLine2,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                FlameStreakBadge(days = target.streakDays)
+                item.todayStatusLabel?.let { statusText ->
+                    val statusColor = when {
+                        item.hasBlockingTodayJob -> semantics.danger
+                        item.hasSucceededTodayJob -> semantics.healthy
+                        !target.enabled -> palette.inkTertiary
+                        else -> palette.inkSecondary
+                    }
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+
+        if (showDivider) {
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 60.dp, end = 14.dp),
+                thickness = 1.dp,
+                color = palette.hairline,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScanActionChoiceSheet(
+    reconcileState: ScanReconcileState,
+    onRescanNow: () -> Unit,
+    onOpenLastReconcile: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val timeLabel = reconcileState.scannedAtEpochMs?.let(::formatTargetTimestamp) ?: "最近一次"
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "扫描对账",
+        subtitle = "已有 $timeLabel 的扫描结果（发现 ${reconcileState.discoveredCount} 条 · 火花 ${reconcileState.sparkCount} 条）",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(14.dp),
+                onClick = onOpenLastReconcile,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    FlameRowAvatar(tone = FlameTone.EMBER) {
+                        Icon(
+                            imageVector = Icons.Outlined.Sync,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = "查看上次扫描对账结果",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.ink,
+                        )
+                        Text(
+                            text = "直接打开已有快照导入新好友或同步官方火花，无需等待重扫。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = palette.inkTertiary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(14.dp),
+                onClick = onRescanNow,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    FlameRowAvatar(tone = FlameTone.NEUTRAL) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = "立即重新扫描同步",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.ink,
+                        )
+                        Text(
+                            text = "离屏打开抖音聊天页重新拉取最新好友列表、身份 ID 与官方火花。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = palette.inkTertiary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            FlameSheetActionRow(
+                text = "取消",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TargetActionDetailSheet(
+    item: TargetItemUi,
+    onToggleEnabled: (Boolean) -> Unit,
+    onSingleSend: () -> Unit,
+    onEdit: () -> Unit,
+    onRepairIdentity: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val target = item.target
+
+    val identitySummary = when {
+        item.hasBoundIdentity && target.conversationType == "group" -> "已绑群会话 ID"
+        item.hasBoundIdentity -> "已绑稳定身份"
+        item.isAmbiguousInLatestScan -> "同名冲突 · 尚未绑定"
+        else -> "未绑稳定身份"
+    }
+    val headerSubtitle = buildString {
+        append(if (target.conversationType == "group") "群聊" else "好友")
+        if (!target.platformHandle.isNullOrBlank()) {
+            append(" · @")
+            append(target.platformHandle)
+        }
+        append(" · ")
+        append(identitySummary)
+    }
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = target.nicknameSnapshot,
+        subtitle = headerSubtitle,
+        trailingHeader = {
+            FlameStreakBadge(days = target.streakDays, prefixText = "本机 ")
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // 详情快照卡（本机连续天数与抖音官方火花快照严格分列展示）
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                containerColor = palette.surfaceSubtle,
+                contentPadding = PaddingValues(13.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    TargetDetailKeyValueRow(
+                        label = "本机连续续火",
+                        value = buildString {
+                            append("${target.streakDays} 天")
+                            target.lastConfirmedAt?.let {
+                                append(" · 最近确认 ")
+                                append(formatTargetTimestamp(it))
+                            }
+                        },
+                        valueColor = palette.ember,
+                    )
+                    TargetDetailKeyValueRow(
+                        label = "官方火花快照",
+                        value = formatOfficialSparkRowSummary(target, item.hasOfficialSpark),
+                    )
+                    val tplDisplay = item.templateName?.let { name ->
+                        val typeTag = item.templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
+                        val missingTag = if (item.isTemplateMissingImage) " · 待补图" else ""
+                        "$name$typeTag$missingTag"
+                    } ?: "未绑定模板"
+                    TargetDetailKeyValueRow(
+                        label = "绑定模板",
+                        value = tplDisplay,
+                        valueColor = if (item.isTemplateMissingImage) semantics.danger else palette.ink,
+                    )
+                    TargetDetailKeyValueRow(
+                        label = "发送时刻",
+                        value = target.sendTimeHhmm?.takeIf { it.isNotBlank() } ?: "沿用账号全局发送窗口",
+                    )
+                    TargetDetailKeyValueRow(
+                        label = "今日状态",
+                        value = item.todayStatusLabel ?: if (target.enabled) "待自动或手动发送" else "已暂停",
+                        valueColor = when {
+                            item.hasBlockingTodayJob -> semantics.danger
+                            item.hasSucceededTodayJob -> semantics.healthy
+                            else -> palette.ink
+                        },
+                    )
+                    Text(
+                        text = "官方火花快照仅作参考展示，绝不覆盖本机连续天数。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                    )
+                }
+            }
+
+            // 自动续火总开关
+            FlameGroupedSection {
+                FlameListRow(
+                    title = "自动续火开关",
+                    subtitle = if (target.enabled) {
+                        "已纳入每日自动与批量续火队列"
+                    } else {
+                        "已暂停自动续火，保留历史审计与连签天数"
+                    },
+                    trailing = {
+                        Switch(
+                            checked = target.enabled,
+                            onCheckedChange = onToggleEnabled,
+                        )
+                    },
+                    showDivider = false,
+                )
+            }
+
+            // 主行动：立即单发测试
+            FlameSheetActionRow(
+                text = "立即单发测试",
+                trailingText = if (item.hasSucceededTodayJob) "今日已发" else "独立手动槽位",
+                primary = true,
+                onClick = onSingleSend,
+            )
+
+            // 次级操作分组
+            FlameGroupedSection {
+                FlameListRow(
+                    title = "编辑好友与模板",
+                    subtitle = "修改显示名称、绑定模板与固定发送时刻",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.NEUTRAL) {
+                            Icon(
+                                imageVector = Icons.Outlined.Edit,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    dividerIndent = 60.dp,
+                    onClick = onEdit,
+                )
+                FlameListRow(
+                    title = "单点身份修复",
+                    subtitle = if (item.hasBoundIdentity) {
+                        "离屏重新核验平台稳定身份 ID"
+                    } else {
+                        "离屏补采稳定身份 ID，防止好友改名失联"
+                    },
+                    leading = {
+                        FlameRowAvatar(
+                            tone = if (item.hasBoundIdentity) FlameTone.NEUTRAL else FlameTone.WARNING,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PersonSearch,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    dividerIndent = 60.dp,
+                    onClick = onRepairIdentity,
+                )
+                FlameListRow(
+                    title = "移出续火列表",
+                    subtitle = "软删除保留审计记录，再次扫码可自动复活",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.DANGER) {
+                            Icon(
+                                imageVector = Icons.Outlined.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = semantics.danger,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    showDivider = false,
+                    onClick = onDelete,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TargetDetailKeyValueRow(
+    label: String,
+    value: String,
+    valueColor: Color = FlameThemeTokens.palette.ink,
+) {
+    val palette = FlameThemeTokens.palette
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.inkTertiary,
+            modifier = Modifier.width(86.dp),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = valueColor,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TargetEditorDialog(
+private fun TargetEditorSheet(
     editor: TargetEditorState,
     templates: List<MessageTemplateEntity>,
     missingImageTemplateIds: Set<String> = emptySet(),
@@ -963,7 +1130,10 @@ private fun TargetEditorDialog(
     onSave: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     var templateDropdownExpanded by remember { mutableStateOf(false) }
+
     val selectedTemplate = remember(editor.templateId, templates) {
         templates.firstOrNull { it.id == editor.templateId }
     }
@@ -974,176 +1144,475 @@ private fun TargetEditorDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(if (editor.isNew) "手工新增续火对象" else "编辑续火对象")
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (editor.errorMessage != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = editor.errorMessage,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(10.dp),
-                        )
-                    }
-                }
-
-                OutlinedTextField(
-                    value = editor.nickname,
-                    onValueChange = onNicknameChanged,
-                    label = { Text("显示昵称 / 群名") },
-                    placeholder = { Text("须与抖音会话标题严格一致") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "会话类型",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        SegmentedButton(
-                            selected = editor.conversationType != "group",
-                            onClick = { onTypeChanged("friend") },
-                            enabled = editor.typeLockedReason == null,
-                            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                        ) {
-                            Text("好友")
-                        }
-                        SegmentedButton(
-                            selected = editor.conversationType == "group",
-                            onClick = { onTypeChanged("group") },
-                            enabled = editor.typeLockedReason == null,
-                            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                        ) {
-                            Text("群聊")
-                        }
-                    }
-                    if (editor.typeLockedReason != null) {
-                        Text(
-                            text = editor.typeLockedReason,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                ExposedDropdownMenuBox(
-                    expanded = templateDropdownExpanded,
-                    onExpandedChange = { templateDropdownExpanded = !templateDropdownExpanded },
+    FlameModalSheet(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = if (editor.isNew) "手工新增续火对象" else "编辑续火对象",
+        subtitle = "昵称或群名须与抖音聊天页标题严格一致",
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (editor.errorMessage != null) {
+                Surface(
+                    color = semantics.dangerContainer,
+                    border = BorderStroke(1.dp, semantics.dangerBorder),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    OutlinedTextField(
-                        value = selectedTemplateLabel ?: "暂不绑定模板",
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("绑定发送模板") },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = templateDropdownExpanded)
-                        },
-                        modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth(),
+                    Text(
+                        text = editor.errorMessage,
+                        color = semantics.onDangerContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
                     )
-                    ExposedDropdownMenu(
-                        expanded = templateDropdownExpanded,
-                        onDismissRequest = { templateDropdownExpanded = false },
-                    ) {
+                }
+            }
+
+            OutlinedTextField(
+                value = editor.nickname,
+                onValueChange = onNicknameChanged,
+                label = { Text("显示昵称 / 群名") },
+                placeholder = { Text("须与抖音会话标题严格一致") },
+                singleLine = true,
+                enabled = !busy,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "会话类型",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.inkTertiary,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val isFriend = editor.conversationType != "group"
+                    val isGroup = editor.conversationType == "group"
+                    val typeEnabled = editor.typeLockedReason == null && !busy
+                    EditorSegmentOption(
+                        label = "好友",
+                        selected = isFriend,
+                        enabled = typeEnabled,
+                        onClick = { onTypeChanged("friend") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    EditorSegmentOption(
+                        label = "群聊",
+                        selected = isGroup,
+                        enabled = typeEnabled,
+                        onClick = { onTypeChanged("group") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (editor.typeLockedReason != null) {
+                    Text(
+                        text = editor.typeLockedReason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                    )
+                }
+            }
+
+            ExposedDropdownMenuBox(
+                expanded = templateDropdownExpanded,
+                onExpandedChange = { if (!busy) templateDropdownExpanded = !templateDropdownExpanded },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedTextField(
+                    value = selectedTemplateLabel ?: "暂不绑定模板",
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = !busy,
+                    shape = RoundedCornerShape(14.dp),
+                    label = { Text("绑定发送模板") },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = templateDropdownExpanded)
+                    },
+                    modifier = Modifier
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth(),
+                )
+                ExposedDropdownMenu(
+                    expanded = templateDropdownExpanded,
+                    onDismissRequest = { templateDropdownExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("暂不绑定模板") },
+                        onClick = {
+                            onTemplateChanged(null)
+                            templateDropdownExpanded = false
+                        },
+                    )
+                    templates.forEach { tpl ->
+                        val isMissing = tpl.id in missingImageTemplateIds
                         DropdownMenuItem(
-                            text = { Text("暂不绑定模板") },
+                            text = {
+                                Text(
+                                    text = "${tpl.name} · ${targetTemplateTypeLabel(tpl.type)}" +
+                                        if (isMissing) "（待补图）" else "",
+                                    color = if (isMissing) semantics.danger else palette.ink,
+                                )
+                            },
                             onClick = {
-                                onTemplateChanged(null)
+                                onTemplateChanged(tpl.id)
                                 templateDropdownExpanded = false
                             },
                         )
-                        templates.forEach { tpl ->
-                            val isMissing = tpl.id in missingImageTemplateIds
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "${tpl.name} · ${targetTemplateTypeLabel(tpl.type)}" +
-                                            if (isMissing) "（待补图）" else "",
-                                        color = if (isMissing) {
-                                            MaterialTheme.colorScheme.error
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    onTemplateChanged(tpl.id)
-                                    templateDropdownExpanded = false
-                                },
-                            )
-                        }
                     }
                 }
-                if (selectedTemplate != null && selectedTemplate.id in missingImageTemplateIds) {
-                    Text(
-                        text = "当前所选图片模板缺少本地图片（待补图），请先前往「模板」页重新选择本地图片。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+            }
 
-                OutlinedTextField(
-                    value = editor.sendTimeHhmm,
-                    onValueChange = onSendTimeChanged,
-                    label = { Text("可选固定时刻（HH:mm）") },
-                    placeholder = { Text("留空则沿用账号发送窗口，例如 20:30") },
-                    supportingText = { Text("填写后优先于账号全局窗口，享有 60 分钟同日宽限窗") },
-                    singleLine = true,
+            if (selectedTemplate != null && selectedTemplate.id in missingImageTemplateIds) {
+                Surface(
+                    color = semantics.dangerContainer,
+                    border = BorderStroke(1.dp, semantics.dangerBorder),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "启用自动续火",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Switch(
-                        checked = editor.enabled,
-                        onCheckedChange = onEnabledChanged,
+                        text = "当前所选图片模板缺少本地图片（待补图），请先前往「模板」页重新选择本地图片。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onDangerContainer,
+                        modifier = Modifier.padding(11.dp),
                     )
                 }
             }
-        },
-        confirmButton = {
-            Button(
+
+            OutlinedTextField(
+                value = editor.sendTimeHhmm,
+                onValueChange = onSendTimeChanged,
+                label = { Text("可选固定时刻（HH:mm）") },
+                placeholder = { Text("留空则沿用账号发送窗口，例如 20:30") },
+                supportingText = { Text("填写后优先于账号全局窗口，享有 60 分钟同日宽限窗") },
+                singleLine = true,
+                enabled = !busy,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            FlameGroupedSection {
+                FlameListRow(
+                    title = "启用自动续火",
+                    subtitle = "开启后自动参与每日定时与首页续火",
+                    trailing = {
+                        Switch(
+                            checked = editor.enabled,
+                            enabled = !busy,
+                            onCheckedChange = onEnabledChanged,
+                        )
+                    },
+                    showDivider = false,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlameSheetActionRow(
+                text = if (editor.isNew) "保存新增" else "保存修改",
+                primary = true,
+                enabled = !busy,
                 onClick = onSave,
+            )
+            FlameSheetActionRow(
+                text = "取消",
                 enabled = !busy,
-            ) {
-                Text(if (editor.isNew) "保存新增" else "保存修改")
-            }
-        },
-        dismissButton = {
-            TextButton(
                 onClick = onDismiss,
-                enabled = !busy,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EditorSegmentOption(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    val container = when {
+        !enabled && selected -> palette.monoCtaContainer.copy(alpha = 0.4f)
+        !enabled -> palette.surfaceSubtle
+        selected -> palette.monoCtaContainer
+        else -> palette.surfaceSubtle
+    }
+    val content = when {
+        !enabled && selected -> palette.monoCtaContent.copy(alpha = 0.72f)
+        !enabled -> palette.inkTertiary
+        selected -> palette.monoCtaContent
+        else -> palette.inkSecondary
+    }
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = container,
+        contentColor = content,
+        border = BorderStroke(1.dp, if (selected) container else palette.hairline),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeleteTargetConfirmSheet(
+    target: ContractTargetEntity,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val semantics = FlameThemeTokens.semanticColors
+    FlameModalSheet(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = "移出续火名单？",
+        subtitle = "「${target.nicknameSnapshot}」",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
             ) {
-                Text("取消")
+                Text(
+                    text = "确定移除「${target.nicknameSnapshot}」？系统将保留其历史发送审计与连续天数；日后再次扫码或新建同名对象时可自动复活恢复。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = semantics.onDangerContainer,
+                    modifier = Modifier.padding(12.dp),
+                )
             }
+            FlameSheetActionRow(
+                text = "确认移除",
+                primary = true,
+                danger = true,
+                enabled = !busy,
+                onClick = onConfirm,
+            )
+            FlameSheetActionRow(
+                text = "取消",
+                enabled = !busy,
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SingleSendBlockedSheet(
+    state: SingleSendDialogState.Blocked,
+    onNavigateToTodayReview: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val semantics = FlameThemeTokens.semanticColors
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "已拦截单发测试",
+        subtitle = "「${state.targetName}」今日存在未确认或进行中的记录",
+        trailingHeader = {
+            FlameStatusPill(text = "安全拦截", tone = FlameTone.DANGER)
         },
-    )
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.WarningAmber,
+                        contentDescription = null,
+                        tint = semantics.danger,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Text(
+                        text = state.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onDangerContainer,
+                    )
+                }
+            }
+            FlameSheetActionRow(
+                text = "去「今日」核对",
+                primary = true,
+                danger = true,
+                onClick = onNavigateToTodayReview,
+            )
+            FlameSheetActionRow(
+                text = "关闭",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SingleSendConfirmSheet(
+    target: ContractTargetEntity,
+    templateName: String?,
+    templateType: TemplateType?,
+    isTemplateMissingImage: Boolean,
+    overrideText: String,
+    isAlreadySucceeded: Boolean,
+    leadMessage: String,
+    onOverrideTextChanged: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val missingImageBlocked = isTemplateMissingImage && overrideText.isBlank()
+    val canSend = overrideText.isNotBlank() || (target.templateId != null && !isTemplateMissingImage)
+    val tplLabel = templateName?.let { name ->
+        val typeTag = templateType?.let { "（${targetTemplateTypeLabel(it)}）" }.orEmpty()
+        "$name$typeTag"
+    } ?: "未绑定模板"
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = if (isAlreadySucceeded) "确认额外补发测试消息？" else "单发测试 · ${target.nicknameSnapshot}",
+        subtitle = "当前绑定模板：$tplLabel",
+        trailingHeader = if (isAlreadySucceeded) {
+            { FlameStatusPill(text = "今日已发", tone = FlameTone.WARNING) }
+        } else {
+            null
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = if (isAlreadySucceeded) semantics.warningContainer else palette.surfaceSubtle,
+                border = BorderStroke(
+                    1.dp,
+                    if (isAlreadySucceeded) semantics.warningBorder else palette.hairline,
+                ),
+            ) {
+                Text(
+                    text = leadMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isAlreadySucceeded) semantics.onWarningContainer else palette.inkSecondary,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+
+            if (missingImageBlocked) {
+                Surface(
+                    color = semantics.dangerContainer,
+                    border = BorderStroke(1.dp, semantics.dangerBorder),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "该图片模板缺少本地图片（待补图），请先前往「模板」页重新选图，或填写下方临时文本后发送。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onDangerContainer,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = overrideText,
+                onValueChange = onOverrideTextChanged,
+                label = { Text("可选临时测试文本") },
+                placeholder = {
+                    Text(
+                        if (target.templateId != null && !isTemplateMissingImage) {
+                            "留空则按绑定模板发送"
+                        } else {
+                            "请输入临时测试文本以发送"
+                        },
+                    )
+                },
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 3,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlameSheetActionRow(
+                text = if (isAlreadySucceeded) "确认补发" else "立即发送",
+                primary = true,
+                enabled = canSend,
+                onClick = onConfirm,
+            )
+            FlameSheetActionRow(
+                text = "取消",
+                onClick = onDismiss,
+            )
+        }
+    }
+}
+
+private data class TargetAvatarMeta(
+    val tone: FlameTone,
+    val icon: ImageVector,
+)
+
+private fun resolveTargetAvatarMeta(item: TargetItemUi): TargetAvatarMeta {
+    val target = item.target
+    return when {
+        item.isTemplateMissingImage && target.enabled ->
+            TargetAvatarMeta(FlameTone.DANGER, Icons.Outlined.Image)
+
+        item.isAmbiguousInLatestScan ->
+            TargetAvatarMeta(FlameTone.DANGER, Icons.Outlined.WarningAmber)
+
+        !target.enabled ->
+            TargetAvatarMeta(FlameTone.NEUTRAL, Icons.Outlined.PauseCircleOutline)
+
+        !item.hasBoundIdentity ->
+            TargetAvatarMeta(FlameTone.WARNING, Icons.Outlined.PersonSearch)
+
+        target.conversationType == "group" ->
+            TargetAvatarMeta(
+                if (item.hasOfficialSpark) FlameTone.EMBER else FlameTone.HEALTHY,
+                Icons.Outlined.Groups,
+            )
+
+        else ->
+            TargetAvatarMeta(
+                if (item.hasOfficialSpark) FlameTone.EMBER else FlameTone.HEALTHY,
+                Icons.Outlined.Person,
+            )
+    }
 }
 
 private fun targetTemplateTypeLabel(type: TemplateType): String = when (type) {
@@ -1153,23 +1622,38 @@ private fun targetTemplateTypeLabel(type: TemplateType): String = when (type) {
     TemplateType.IMAGE -> "图片"
 }
 
-private fun formatOfficialSparkBadge(
+private fun formatOfficialSparkRowSummary(
     target: ContractTargetEntity,
     hasOfficialSpark: Boolean,
 ): String {
-    if (!hasOfficialSpark) {
-        return "抖音官方火花: 无"
+    val sparkPart = if (!hasOfficialSpark) {
+        val raw = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+        if (raw != null) "官方快照：$raw" else "官方火花：暂无"
+    } else {
+        val kindPrefix = when (target.sparkKind) {
+            "couple" -> "合养火花"
+            "family" -> "家庭火花"
+            else -> "官方火花"
+        }
+        val days = target.sparkDays
+        val label = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+        when {
+            days != null && days > 0 -> "$kindPrefix ${days}天"
+            label != null -> "$kindPrefix · $label"
+            else -> kindPrefix
+        }
     }
-    val kindPrefix = when (target.sparkKind) {
-        "couple" -> "合养火花"
-        "family" -> "家庭火花"
-        else -> "抖音官方火花"
+    val scannedAt = target.sparkScannedAt
+    return if (scannedAt != null) {
+        "$sparkPart · ${formatTargetTimestamp(scannedAt)} 扫描"
+    } else {
+        sparkPart
     }
-    val days = target.sparkDays
-    val label = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
-    return when {
-        days != null && days > 0 -> "$kindPrefix ${days}天"
-        label != null -> "$kindPrefix · $label"
-        else -> kindPrefix
-    }
+}
+
+private val TARGET_TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+private fun formatTargetTimestamp(epochMs: Long): String {
+    val zdt = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault())
+    return TARGET_TIME_FORMATTER.format(zdt)
 }

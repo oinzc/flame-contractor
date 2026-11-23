@@ -1,5 +1,7 @@
 package io.github.oinzc.flamecontractor.ui.targets
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,22 +12,21 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -34,15 +35,12 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -51,6 +49,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +58,12 @@ import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.execution.ScannedChatCandidate
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
+import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -76,74 +82,99 @@ fun ScanReconcileSheet(
     onSyncExistingSparks: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val isDark = FlameThemeTokens.isDark
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var templateMenuExpanded by remember { mutableStateOf(false) }
     val selectedTemplateName = remember(reconcileState.defaultTemplateId, templates) {
         templates.firstOrNull { it.id == reconcileState.defaultTemplateId }?.name
     }
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
-    val maxSheetContentHeight = (screenHeightDp - 108).coerceAtLeast(280).dp
+    val maxSheetContentHeight = (screenHeightDp * 0.88f).coerceAtLeast(280f).dp
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!reconcileState.importing) onDismiss() },
         sheetState = sheetState,
         sheetMaxWidth = 760.dp,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        containerColor = palette.surface,
+        contentColor = palette.ink,
+        scrimColor = Color.Black.copy(alpha = if (isDark) 0.62f else 0.36f),
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(palette.hairlineStrong),
+                )
+            }
+        },
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = maxSheetContentHeight)
-                .imePadding(),
+                .imePadding()
+                .navigationBarsPadding(),
         ) {
             val isWideSheet = maxWidth >= 520.dp
 
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // 标题与扫描统计
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
                         text = "扫描对账与导入",
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ink,
                     )
                     val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
                     Text(
                         text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条 · $timeStr",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = palette.inkSecondary,
                     )
                 }
 
                 if (reconcileState.errorMessage != null) {
                     Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = MaterialTheme.shapes.medium,
+                        color = semantics.dangerContainer,
+                        border = BorderStroke(1.dp, semantics.dangerBorder),
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
                             text = reconcileState.errorMessage,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            color = semantics.onDangerContainer,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(12.dp),
                         )
                     }
                 }
 
-                // 宽屏（横屏/平板）将搜索框与默认模板选择器并排放置，节省纵向高度让列表与底栏同步可见
+                // 宽屏（横屏/平板）将搜索栏与默认模板选择器并排放置，节省纵向高度让列表与底栏同步可见
                 if (isWideSheet) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ReconcileSearchField(
+                        FlameSearchPill(
                             query = reconcileState.searchQuery,
-                            onQueryChanged = onSearchChanged,
+                            onQueryChange = onSearchChanged,
+                            placeholder = "搜索昵称、群名、抖音号或火花天数…",
                             modifier = Modifier.weight(1f),
                         )
                         ReconcileTemplateSelector(
@@ -156,9 +187,10 @@ fun ScanReconcileSheet(
                         )
                     }
                 } else {
-                    ReconcileSearchField(
+                    FlameSearchPill(
                         query = reconcileState.searchQuery,
-                        onQueryChanged = onSearchChanged,
+                        onQueryChange = onSearchChanged,
+                        placeholder = "搜索昵称、群名、抖音号或火花天数…",
                         modifier = Modifier.fillMaxWidth(),
                     )
                     ReconcileTemplateSelector(
@@ -175,29 +207,29 @@ fun ScanReconcileSheet(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    OutlinedButton(
-                        onClick = onSelectAllImportableSparks,
+                    FlameTopPillButton(
+                        text = "全选可导入火花 (${reconcileState.importableSparkCount})",
+                        primary = false,
                         enabled = reconcileState.importableSparkCount > 0 && !reconcileState.importing,
-                    ) {
-                        Text("全选可导入火花对象 (${reconcileState.importableSparkCount})")
-                    }
-                    TextButton(
-                        onClick = onClearSelection,
+                        onClick = onSelectAllImportableSparks,
+                    )
+                    FlameTopPillButton(
+                        text = "清空选择",
+                        primary = false,
                         enabled = reconcileState.selectedCount > 0 && !reconcileState.importing,
-                    ) {
-                        Text("清空选择")
-                    }
+                        onClick = onClearSelection,
+                    )
                     if (reconcileState.alreadyImportedWithSparkCount > 0) {
-                        TextButton(
-                            onClick = onSyncExistingSparks,
+                        FlameTopPillButton(
+                            text = "同步已有火花 (${reconcileState.alreadyImportedWithSparkCount})",
+                            primary = false,
                             enabled = !reconcileState.importing,
-                        ) {
-                            Text("同步已有火花 (${reconcileState.alreadyImportedWithSparkCount})")
-                        }
+                            onClick = onSyncExistingSparks,
+                        )
                     }
                 }
 
-                HorizontalDivider()
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
                 // 候选列表按剩余可用高度自适应伸缩，确保底部按钮栏始终锚定可见
                 if (reconcileState.filteredCandidates.isEmpty()) {
@@ -205,17 +237,17 @@ fun ScanReconcileSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = false)
-                            .padding(vertical = 20.dp),
+                            .padding(vertical = 22.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             text = if (reconcileState.allCandidates.isEmpty()) {
-                                "暂无扫描对账数据，请先点击「手动扫描同步」"
+                                "暂无扫描对账数据，请先点击「扫描对账」重新扫描"
                             } else {
                                 "没有匹配当前搜索关键词的会话"
                             },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = palette.inkSecondary,
                         )
                     }
                 } else {
@@ -239,64 +271,88 @@ fun ScanReconcileSheet(
                     }
                 }
 
-                HorizontalDivider()
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
                 // 底部提交操作栏
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(
+                    Surface(
                         onClick = onDismiss,
                         enabled = !reconcileState.importing,
+                        modifier = Modifier.heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = palette.surfaceSubtle,
+                        contentColor = if (reconcileState.importing) palette.inkTertiary else palette.ink,
+                        border = BorderStroke(1.dp, palette.hairline),
                     ) {
-                        Text("关闭")
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = onImportSelected,
-                        enabled = reconcileState.selectedCount > 0 && !reconcileState.importing,
-                    ) {
-                        if (reconcileState.importing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
+                        Box(
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "关闭",
+                                style = MaterialTheme.typography.labelLarge,
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("导入中…")
+                        }
+                    }
+
+                    val importEnabled = reconcileState.selectedCount > 0 && !reconcileState.importing
+                    Surface(
+                        onClick = onImportSelected,
+                        enabled = importEnabled,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (importEnabled) {
+                            palette.monoCtaContainer
                         } else {
-                            Text("导入所选 (${reconcileState.selectedCount})")
+                            palette.surfaceSubtle
+                        },
+                        contentColor = if (importEnabled) {
+                            palette.monoCtaContent
+                        } else {
+                            palette.inkTertiary
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (importEnabled) palette.monoCtaContainer else palette.hairline,
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (reconcileState.importing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(15.dp),
+                                    strokeWidth = 2.dp,
+                                    color = palette.inkTertiary,
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "导入中…",
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            } else {
+                                Text(
+                                    text = "导入所选 (${reconcileState.selectedCount})",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun ReconcileSearchField(
-    query: String,
-    onQueryChanged: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChanged,
-        modifier = modifier,
-        singleLine = true,
-        label = { Text("搜索会话") },
-        placeholder = { Text("搜索昵称、群名、抖音号或火花天数…") },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChanged("") }) {
-                    Icon(Icons.Default.Clear, contentDescription = "清空搜索")
-                }
-            }
-        },
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -319,6 +375,7 @@ private fun ReconcileTemplateSelector(
             onValueChange = {},
             readOnly = true,
             singleLine = true,
+            shape = RoundedCornerShape(14.dp),
             label = { Text("导入时默认绑定模板") },
             trailingIcon = {
                 ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
@@ -358,17 +415,26 @@ private fun ScanCandidateRow(
     busy: Boolean,
     onToggle: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     val c = item.candidate
+
     val containerColor = when {
-        item.isAmbiguous -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
-        item.effectivelyAlreadyImported -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-        item.selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-        else -> MaterialTheme.colorScheme.surfaceContainerLow
+        item.isAmbiguous -> semantics.dangerContainer.copy(alpha = 0.65f)
+        item.effectivelyAlreadyImported -> palette.surfaceSubtle.copy(alpha = 0.72f)
+        item.selected -> palette.emberContainer.copy(alpha = 0.52f)
+        else -> palette.surfaceSubtle
+    }
+    val borderColor = when {
+        item.isAmbiguous -> semantics.dangerBorder
+        item.selected -> palette.emberBorder
+        else -> palette.hairline
     }
 
     Surface(
         color = containerColor,
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .fillMaxWidth()
             .then(
@@ -382,7 +448,7 @@ private fun ScanCandidateRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 10.dp),
+                .padding(start = 6.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.Top,
         ) {
             Checkbox(
@@ -398,8 +464,8 @@ private fun ScanCandidateRow(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .padding(start = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -408,27 +474,20 @@ private fun ScanCandidateRow(
                     Text(
                         text = c.displayName,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Medium,
+                        color = palette.ink,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = MaterialTheme.shapes.extraSmall,
-                    ) {
-                        Text(
-                            text = if (c.conversationType == "group") "群聊" else "好友",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
+                    FlameMiniTag(
+                        text = if (c.conversationType == "group") "群聊" else "好友",
+                        tone = FlameTone.NEUTRAL,
+                    )
                     if (!c.platformHandle.isNullOrBlank()) {
                         Text(
                             text = "@${c.platformHandle}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = palette.inkTertiary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -440,26 +499,28 @@ private fun ScanCandidateRow(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     if (item.hasOfficialSpark) {
+                        val emberTone = resolveFlameToneColors(FlameTone.EMBER)
                         Surface(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            shape = MaterialTheme.shapes.small,
+                            color = emberTone.container,
+                            border = BorderStroke(1.dp, emberTone.border),
+                            shape = RoundedCornerShape(999.dp),
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.LocalFireDepartment,
+                                    imageVector = Icons.Filled.LocalFireDepartment,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    modifier = Modifier.size(14.dp),
+                                    tint = emberTone.fg,
+                                    modifier = Modifier.size(13.dp),
                                 )
                                 Text(
                                     text = formatCandidateSparkText(c),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    fontWeight = FontWeight.Medium,
+                                    color = emberTone.fg,
+                                    fontWeight = FontWeight.SemiBold,
                                 )
                             }
                         }
@@ -467,65 +528,65 @@ private fun ScanCandidateRow(
 
                     when {
                         item.isAmbiguous -> {
+                            val dangerTone = resolveFlameToneColors(FlameTone.DANGER)
                             Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = MaterialTheme.shapes.small,
+                                color = dangerTone.container,
+                                border = BorderStroke(1.dp, dangerTone.border),
+                                shape = RoundedCornerShape(999.dp),
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Warning,
+                                        imageVector = Icons.Outlined.WarningAmber,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                                        modifier = Modifier.size(14.dp),
+                                        tint = dangerTone.fg,
+                                        modifier = Modifier.size(13.dp),
                                     )
                                     Text(
                                         text = "同名冲突 · 禁选",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        color = dangerTone.onContainer,
+                                        fontWeight = FontWeight.SemiBold,
                                     )
                                 }
                             }
                         }
 
                         item.effectivelyAlreadyImported -> {
+                            val healthyTone = resolveFlameToneColors(FlameTone.HEALTHY)
                             Surface(
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                shape = MaterialTheme.shapes.small,
+                                color = healthyTone.container,
+                                border = BorderStroke(1.dp, healthyTone.border),
+                                shape = RoundedCornerShape(999.dp),
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.CheckCircle,
+                                        imageVector = Icons.Outlined.CheckCircle,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(14.dp),
+                                        tint = healthyTone.fg,
+                                        modifier = Modifier.size(13.dp),
                                     )
                                     Text(
                                         text = "已导入",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        color = healthyTone.onContainer,
+                                        fontWeight = FontWeight.Medium,
                                     )
                                 }
                             }
                         }
 
                         c.matchStatus == MatchStatus.NOT_OBSERVED -> {
-                            AssistChip(
-                                onClick = {},
-                                enabled = false,
-                                label = {
-                                    Text(
-                                        text = "未观察到稳定 ID",
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
-                                },
+                            FlameMiniTag(
+                                text = "未观察到稳定 ID",
+                                tone = FlameTone.WARNING,
                             )
                         }
                     }
@@ -534,11 +595,7 @@ private fun ScanCandidateRow(
                 Text(
                     text = item.statusNote,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (item.isAmbiguous) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    color = if (item.isAmbiguous) semantics.danger else palette.inkSecondary,
                 )
             }
         }
