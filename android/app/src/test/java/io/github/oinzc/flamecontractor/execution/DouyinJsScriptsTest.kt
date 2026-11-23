@@ -621,6 +621,42 @@ class DouyinJsScriptsTest {
         assertFalse(sendBtnRegex.matches("重新发送"))
     }
 
+    @Test
+    fun outgoingMediaMultisetScriptSeparatesRemoteAndLocalPreviewAndTracksModalAndSendingState() {
+        val bundle = SelectorBundle.defaults()
+        val script = DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle, netSinceEpochMs = 987_654L)
+
+        assertTrue(script.contains("remoteSignatures"))
+        assertTrue(script.contains("localPreviewSignatures"))
+        assertTrue(script.contains("settledLocalSignatures"))
+        assertTrue(script.contains("tempPreviewSignatures"))
+        assertTrue(script.contains("imSendSucceeded"))
+        assertTrue(script.contains("uploadOrSendInFlight"))
+        assertTrue(script.contains("uploadOrSendFailed"))
+        assertTrue(script.contains("/message/send"))
+        assertTrue(script.contains("isTempUploadImg"))
+        assertTrue(script.contains("987654"))
+        assertTrue(script.contains("modalVisible"))
+        assertTrue(script.contains("hasSendingIndicator"))
+        assertTrue(script.contains("sanitizedImgSummary"))
+        assertTrue(script.contains("blob:"))
+        assertTrue(script.contains("data:"))
+        assertTrue(script.contains("__flameFindTopVisibleModal"))
+    }
+
+    @Test
+    fun identityCaptureAndNetEventsScriptsStaySanitizedWithoutQueryOrBody() {
+        val docStartJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+        val netReadJs = DouyinJsScripts.buildReadRecentUploadNetEventsJs(123_456L)
+
+        assertTrue(docStartJs.contains("__flameNetEvents"))
+        assertTrue(docStartJs.contains("sanitizeNetTarget"))
+        assertTrue(docStartJs.contains("u.pathname"))
+        assertFalse(docStartJs.contains("u.search"))
+        assertTrue(netReadJs.contains("window.__flameNetEvents"))
+        assertTrue(netReadJs.contains("123456"))
+    }
+
     private class InMemoryAccountDao : AccountDao {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 

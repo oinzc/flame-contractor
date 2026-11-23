@@ -445,17 +445,79 @@ object DouyinJsScripts {
                   } catch (_) {}
                 }
 
+                var NET_EVENTS_LIMIT = 40;
+                var netEvents = window.__flameNetEvents;
+                if (!Array.isArray(netEvents)) {
+                  netEvents = [];
+                  window.__flameNetEvents = netEvents;
+                }
+
+                function sanitizeNetTarget(rawUrl) {
+                  try {
+                    var u = new URL(String(rawUrl || ''), window.location.origin);
+                    var host = String(u.host || '').toLowerCase();
+                    var rawPath = String(u.pathname || '');
+                    var lower = (host + rawPath).toLowerCase();
+                    var interesting = lower.indexOf('upload') !== -1 ||
+                      lower.indexOf('tos') !== -1 ||
+                      lower.indexOf('imagex') !== -1 ||
+                      lower.indexOf('/im/') !== -1 ||
+                      lower.indexOf('imapi') !== -1 ||
+                      lower.indexOf('message') !== -1 ||
+                      lower.indexOf('send') !== -1 ||
+                      lower.indexOf('media') !== -1;
+                    if (!interesting) return null;
+                    var segs = rawPath.split('/').filter(Boolean).slice(0, 4).map(function (seg) {
+                      if (seg.length > 24 || /^\d{6,}$/.test(seg)) return '<id>';
+                      return seg;
+                    });
+                    return { host: host, path: '/' + segs.join('/') };
+                  } catch (_) {
+                    return null;
+                  }
+                }
+
+                function recordNetStart(kind, method, rawUrl) {
+                  var target = sanitizeNetTarget(rawUrl);
+                  if (!target) return null;
+                  var entry = {
+                    t: Date.now(),
+                    kind: kind,
+                    method: String(method || 'GET').toUpperCase().slice(0, 8),
+                    host: target.host,
+                    path: target.path,
+                    status: 0
+                  };
+                  netEvents.push(entry);
+                  if (netEvents.length > NET_EVENTS_LIMIT) {
+                    netEvents.splice(0, netEvents.length - NET_EVENTS_LIMIT);
+                  }
+                  return entry;
+                }
+
                 if (typeof window.fetch === 'function') {
                   var origFetch = window.fetch;
                   window.fetch = function (input, init) {
                     var rawUrl = '';
+                    var method = 'GET';
                     try {
                       rawUrl = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                      method = (init && init.method) || (input && input.method) || 'GET';
                     } catch (_) {}
                     var path = extractPath(rawUrl);
                     var idMatch = matchPath(path, IDENTITY_PATHS);
                     var protoMatch = matchPath(path, PROTO_PATHS);
+                    var netEntry = recordNetStart('fetch', method, rawUrl);
                     var promise = origFetch.apply(this, arguments);
+                    if (netEntry) {
+                      try {
+                        promise.then(function (resp) {
+                          try { netEntry.status = (resp && typeof resp.status === 'number') ? resp.status : -2; } catch (_) {}
+                        }).catch(function () {
+                          try { netEntry.status = -1; } catch (_) {}
+                        });
+                      } catch (_) {}
+                    }
                     if (idMatch || protoMatch) {
                       try {
                         promise.then(function (resp) {
@@ -483,14 +545,30 @@ object DouyinJsScripts {
                   var origOpen = XMLHttpRequest.prototype.open;
                   var origSend = XMLHttpRequest.prototype.send;
                   XMLHttpRequest.prototype.open = function (method, url) {
-                    try { this.__flameUrl = url ? String(url) : ''; } catch (_) {}
+                    try {
+                      this.__flameMethod = method ? String(method) : 'GET';
+                      this.__flameUrl = url ? String(url) : '';
+                    } catch (_) {}
                     return origOpen.apply(this, arguments);
                   };
                   XMLHttpRequest.prototype.send = function () {
                     try {
-                      var path = extractPath(this.__flameUrl || '');
+                      var rawUrl = this.__flameUrl || '';
+                      var path = extractPath(rawUrl);
                       var idMatch = matchPath(path, IDENTITY_PATHS);
                       var protoMatch = matchPath(path, PROTO_PATHS);
+                      var netEntry = recordNetStart('xhr', this.__flameMethod || 'GET', rawUrl);
+                      if (netEntry) {
+                        this.addEventListener('load', function () {
+                          try { netEntry.status = typeof this.status === 'number' ? this.status : -2; } catch (_) {}
+                        });
+                        this.addEventListener('error', function () {
+                          try { netEntry.status = -1; } catch (_) {}
+                        });
+                        this.addEventListener('abort', function () {
+                          try { netEntry.status = -3; } catch (_) {}
+                        });
+                      }
                       if ((idMatch || protoMatch) && !this.__flameBridgeHooked) {
                         this.__flameBridgeHooked = true;
                         this.addEventListener('load', function () {
@@ -521,6 +599,29 @@ object DouyinJsScripts {
             })();
         """.trimIndent()
     }
+
+    /**
+     * 只读读取本次会话自 [sinceEpochMs] 起记录的脱敏上传/IM 网络事件摘要（不含 query、body 或用户标识）。
+     */
+    fun buildReadRecentUploadNetEventsJs(sinceEpochMs: Long): String = """
+        (function () {
+          var raw = Array.isArray(window.__flameNetEvents) ? window.__flameNetEvents : [];
+          var since = $sinceEpochMs;
+          var events = [];
+          for (var i = 0; i < raw.length; i++) {
+            var e = raw[i];
+            if (!e || typeof e.t !== 'number' || e.t < since) continue;
+            events.push(
+              String(e.kind || '') + ':' +
+              String(e.method || '') + ':' +
+              String(e.host || '') +
+              String(e.path || '') + '=' +
+              String(typeof e.status === 'number' ? e.status : 0)
+            );
+          }
+          return { count: events.length, events: events.slice(-16) };
+        })();
+    """.trimIndent()
 
     /**
      * 只读读取浏览器 IndexedDB 中缓存的用户身份记录（每个 store 独立闭包与 `ev.target.result`，
@@ -1243,7 +1344,10 @@ object DouyinJsScripts {
         """.trimIndent()
     }
 
-    fun buildSampleOutgoingMediaMultisetJs(bundle: SelectorBundle): String {
+    fun buildSampleOutgoingMediaMultisetJs(
+        bundle: SelectorBundle,
+        netSinceEpochMs: Long = 0L,
+    ): String {
         val failureMarkersLit = jsStringArrayLiteral(bundle.sendFailureMarkers)
         val boxesLit = jsStringLiteral(bundle.mediaMessageBoxes)
         val contentLit = jsStringLiteral(bundle.mediaMessageContent)
@@ -1251,14 +1355,49 @@ object DouyinJsScripts {
         return """
             (function () {
               $DOM_HELPERS_JS
+              $IMAGE_MODAL_DISCOVERY_HELPERS_JS
               var failureMarkerHit = __flameIsFailureMarkerHit($failureMarkersLit);
+              var modalState = __flameFindTopVisibleModal();
+              var modalVisible = !!(modalState && modalState.topModal);
               var norm = function (value) {
                 return String(value || '')
                   .replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ')
                   .trim();
               };
+              var isLocalPreviewSrc = function (src) {
+                var lower = String(src || '').trim().toLowerCase();
+                return lower.indexOf('blob:') === 0 || lower.indexOf('data:') === 0;
+              };
+              var isTempUploadImg = function (cls) {
+                return String(cls || '').toLowerCase().indexOf('temp') !== -1;
+              };
+              var sanitizeImgTag = function (cls, rawSrc) {
+                var shortCls = String(cls || '').trim().split(/\s+/).slice(0, 2).join('.').slice(0, 40);
+                var lower = String(rawSrc || '').trim().toLowerCase();
+                var originTag = 'other';
+                if (lower.indexOf('blob:') === 0) {
+                  originTag = 'blob:';
+                } else if (lower.indexOf('data:') === 0) {
+                  originTag = 'data:';
+                } else {
+                  try {
+                    var u = new URL(rawSrc, window.location.origin);
+                    originTag = String(u.protocol || '') + '//' + String(u.host || '').toLowerCase();
+                  } catch (_) {
+                    originTag = 'rel';
+                  }
+                }
+                return originTag + (shortCls ? '[' + shortCls + ']' : '');
+              };
+              var sendingSelector = '[class*="sending"], [class*="Sending"], [class*="uploading"], [class*="Uploading"], [class*="loading"], [class*="Loading"], [role="progressbar"], .semi-spin';
               var signatures = [];
+              var remoteSignatures = [];
+              var localPreviewSignatures = [];
+              var settledLocalSignatures = [];
+              var tempPreviewSignatures = [];
+              var sanitizedImgSummary = [];
               var pendingImgCount = 0;
+              var hasSendingIndicator = false;
               var boxes = document.querySelectorAll($boxesLit);
               for (var i = 0; i < boxes.length; i++) {
                 var box = boxes[i];
@@ -1274,8 +1413,21 @@ object DouyinJsScripts {
                   ownContent = contents.length ? contents[0] : box;
                 }
                 if (!ownContent) continue;
+                try {
+                  var indicators = box.querySelectorAll(sendingSelector);
+                  for (var s = 0; s < indicators.length; s++) {
+                    if (__flameIsVisible(indicators[s])) {
+                      hasSendingIndicator = true;
+                      break;
+                    }
+                  }
+                } catch (_) {}
                 var imgs = ownContent.querySelectorAll('img');
                 var nonAvatar = [];
+                var remoteNonAvatar = [];
+                var previewNonAvatar = [];
+                var settledLocalNonAvatar = [];
+                var tempPreviewNonAvatar = [];
                 for (var k = 0; k < imgs.length; k++) {
                   var rawSrc = String(imgs[k].getAttribute('src') || imgs[k].currentSrc || imgs[k].src || '').trim();
                   if (!rawSrc) {
@@ -1283,19 +1435,86 @@ object DouyinJsScripts {
                     continue;
                   }
                   if (rawSrc.toLowerCase().indexOf('avatar') === -1) {
-                    nonAvatar.push(String(imgs[k].className || '') + ':' + rawSrc.split(/[?#]/, 1)[0]);
+                    var clsName = String(imgs[k].className || '');
+                    var entry = clsName + ':' + rawSrc.split(/[?#]/, 1)[0];
+                    nonAvatar.push(entry);
+                    if (isLocalPreviewSrc(rawSrc)) {
+                      previewNonAvatar.push(entry);
+                      if (isTempUploadImg(clsName)) {
+                        tempPreviewNonAvatar.push(entry);
+                      } else {
+                        settledLocalNonAvatar.push(entry);
+                      }
+                    } else {
+                      remoteNonAvatar.push(entry);
+                    }
+                    if (sanitizedImgSummary.length < 12) {
+                      sanitizedImgSummary.push(sanitizeImgTag(clsName, rawSrc));
+                    }
                   }
                 }
                 if (!nonAvatar.length) continue;
                 var timeEl = box.querySelector($timeLit);
                 var timeText = timeEl ? timeEl.textContent : '';
-                signatures.push(norm(timeText) + '\u001F' + nonAvatar.join('|') + '\u001F' + norm(ownContent.innerText));
+                var normTime = norm(timeText);
+                var normText = norm(ownContent.innerText);
+                signatures.push(normTime + '\u001F' + nonAvatar.join('|') + '\u001F' + normText);
+                if (remoteNonAvatar.length) {
+                  remoteSignatures.push(normTime + '\u001F' + remoteNonAvatar.join('|') + '\u001F' + normText);
+                }
+                if (previewNonAvatar.length) {
+                  localPreviewSignatures.push(normTime + '\u001F' + previewNonAvatar.join('|') + '\u001F' + normText);
+                }
+                if (settledLocalNonAvatar.length) {
+                  settledLocalSignatures.push(normTime + '\u001F' + settledLocalNonAvatar.join('|') + '\u001F' + normText);
+                }
+                if (tempPreviewNonAvatar.length) {
+                  tempPreviewSignatures.push(normTime + '\u001F' + tempPreviewNonAvatar.join('|') + '\u001F' + normText);
+                }
+              }
+              var netSince = $netSinceEpochMs;
+              var imSendSucceeded = false;
+              var uploadOrSendInFlight = false;
+              var uploadOrSendFailed = false;
+              if (netSince > 0 && Array.isArray(window.__flameNetEvents)) {
+                var evs = window.__flameNetEvents;
+                for (var n = 0; n < evs.length; n++) {
+                  var ev = evs[n];
+                  if (!ev || typeof ev.t !== 'number' || ev.t < netSince) continue;
+                  var evHost = String(ev.host || '').toLowerCase();
+                  var evPath = String(ev.path || '').toLowerCase();
+                  var evFull = evHost + evPath;
+                  var isSend = evPath.indexOf('/message/send') !== -1;
+                  var isUploadOrSend = isSend ||
+                    evPath.indexOf('/upload') !== -1 ||
+                    evHost.indexOf('tos-') !== -1 ||
+                    evFull.indexOf('imagex') !== -1;
+                  if (!isUploadOrSend) continue;
+                  var st = typeof ev.status === 'number' ? ev.status : 0;
+                  if (st === 0) {
+                    uploadOrSendInFlight = true;
+                  } else if (st < 0 || st >= 400) {
+                    uploadOrSendFailed = true;
+                  } else if (isSend && st >= 200 && st < 300) {
+                    imSendSucceeded = true;
+                  }
+                }
               }
               return {
                 failureMarkerHit: failureMarkerHit,
+                modalVisible: modalVisible,
+                hasSendingIndicator: hasSendingIndicator,
                 totalBoxes: boxes.length,
                 pendingImgCount: pendingImgCount,
-                signatures: signatures
+                signatures: signatures,
+                remoteSignatures: remoteSignatures,
+                localPreviewSignatures: localPreviewSignatures,
+                settledLocalSignatures: settledLocalSignatures,
+                tempPreviewSignatures: tempPreviewSignatures,
+                imSendSucceeded: imSendSucceeded,
+                uploadOrSendInFlight: uploadOrSendInFlight,
+                uploadOrSendFailed: uploadOrSendFailed,
+                sanitizedImgSummary: sanitizedImgSummary
               };
             })();
         """.trimIndent()

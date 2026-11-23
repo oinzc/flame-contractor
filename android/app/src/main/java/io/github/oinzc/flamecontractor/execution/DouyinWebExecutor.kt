@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Base64
+import android.util.Log
 import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import android.webkit.JavascriptInterface
@@ -2316,7 +2317,23 @@ class DouyinWebExecutor(
         val signatures: List<String>,
     )
 
+    internal data class ImageMediaPollSample(
+        val failureMarkerHit: Boolean,
+        val modalVisible: Boolean,
+        val hasSendingIndicator: Boolean,
+        val totalBoxes: Int,
+        val remoteMultiset: Map<String, Int>,
+        val previewMultiset: Map<String, Int>,
+        val settledLocalMultiset: Map<String, Int>,
+        val tempPreviewMultiset: Map<String, Int>,
+        val imSendSucceeded: Boolean,
+        val uploadOrSendInFlight: Boolean,
+        val uploadOrSendFailed: Boolean,
+        val sanitizedImgSummary: List<String>,
+    )
+
     companion object {
+        private const val TAG = "FlameImageExec"
         private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
         private const val CONVERSATION_LIST_HYDRATION_DELAY_MS = 1_000L
         private const val SEARCH_RESULTS_TIMEOUT_MS = 12_000L
@@ -2327,6 +2344,8 @@ class DouyinWebExecutor(
         private const val FILE_CHOOSER_TRIGGER_TIMEOUT_MS = 1_500L
         private const val FILE_CHOOSER_FALLBACK_TIMEOUT_MS = 1_000L
         private const val IMAGE_CONFIRM_MODAL_TIMEOUT_MS = 6_000L
+        private const val IMAGE_CONFIRM_TIMEOUT_MS = 20_000L
+        private const val IMAGE_POST_CONFIRM_SETTLE_MS = 1_500L
         private const val IMAGE_MODAL_POLL_INTERVAL_MS = 300L
         private const val MESSAGE_LIST_POLL_INTERVAL_MS = 350L
         private const val MESSAGE_LIST_MIN_SETTLE_MS = 700L
@@ -2339,6 +2358,87 @@ class DouyinWebExecutor(
         private const val SCAN_IDLE_ROUNDS = 3
         private const val SCAN_SCROLL_STEP_PX = 900
         private val SAFE_UPLOAD_NAME_REGEX = Regex("""^[A-Za-z0-9._-]{1,64}$""")
+
+        private fun safeLogInfo(message: String) {
+            try {
+                Log.i(TAG, message)
+            } catch (_: Throwable) {
+            }
+        }
+
+        internal fun isLocalPreviewSignature(signature: String): Boolean {
+            val lower = signature.lowercase()
+            return lower.contains("blob:") || lower.contains("data:")
+        }
+
+        internal fun isTempUploadSignature(signature: String): Boolean =
+            signature.lowercase().contains("temp")
+
+        internal fun extractImageConfirmSample(sampleObj: Map<String, Any?>?): ImageMediaPollSample {
+            if (sampleObj == null) {
+                return ImageMediaPollSample(
+                    failureMarkerHit = false,
+                    modalVisible = false,
+                    hasSendingIndicator = false,
+                    totalBoxes = 0,
+                    remoteMultiset = emptyMap(),
+                    previewMultiset = emptyMap(),
+                    settledLocalMultiset = emptyMap(),
+                    tempPreviewMultiset = emptyMap(),
+                    imSendSucceeded = false,
+                    uploadOrSendInFlight = false,
+                    uploadOrSendFailed = false,
+                    sanitizedImgSummary = emptyList(),
+                )
+            }
+            val hasExplicitRemote = sampleObj.containsKey("remoteSignatures")
+            val remoteList = if (hasExplicitRemote) {
+                sampleObj.stringListOrEmpty("remoteSignatures")
+            } else {
+                sampleObj.stringListOrEmpty("signatures").filterNot { isLocalPreviewSignature(it) }
+            }
+            val previewList = if (sampleObj.containsKey("localPreviewSignatures")) {
+                sampleObj.stringListOrEmpty("localPreviewSignatures")
+            } else if (hasExplicitRemote) {
+                emptyList()
+            } else {
+                sampleObj.stringListOrEmpty("signatures").filter { isLocalPreviewSignature(it) }
+            }
+            val settledLocalList = if (sampleObj.containsKey("settledLocalSignatures")) {
+                sampleObj.stringListOrEmpty("settledLocalSignatures")
+            } else {
+                previewList.filterNot { isTempUploadSignature(it) }
+            }
+            val tempPreviewList = if (sampleObj.containsKey("tempPreviewSignatures")) {
+                sampleObj.stringListOrEmpty("tempPreviewSignatures")
+            } else {
+                previewList.filter { isTempUploadSignature(it) }
+            }
+            return ImageMediaPollSample(
+                failureMarkerHit = sampleObj.boolOrDefault("failureMarkerHit", false),
+                modalVisible = sampleObj.boolOrDefault("modalVisible", false),
+                hasSendingIndicator = sampleObj.boolOrDefault("hasSendingIndicator", false),
+                totalBoxes = sampleObj.intOrNull("totalBoxes") ?: 0,
+                remoteMultiset = SendConfirmer.toMultiset(remoteList),
+                previewMultiset = SendConfirmer.toMultiset(previewList),
+                settledLocalMultiset = SendConfirmer.toMultiset(settledLocalList),
+                tempPreviewMultiset = SendConfirmer.toMultiset(tempPreviewList),
+                imSendSucceeded = sampleObj.boolOrDefault("imSendSucceeded", false),
+                uploadOrSendInFlight = sampleObj.boolOrDefault("uploadOrSendInFlight", false),
+                uploadOrSendFailed = sampleObj.boolOrDefault("uploadOrSendFailed", false),
+                sanitizedImgSummary = sampleObj.stringListOrEmpty("sanitizedImgSummary"),
+            )
+        }
+
+        private suspend fun logRecentUploadNetEvents(
+            transport: ImageSendTransport,
+            sinceWallMs: Long,
+            stage: String,
+        ) {
+            val netObj = transport.evalJsObject(DouyinJsScripts.buildReadRecentUploadNetEventsJs(sinceWallMs))
+            val events = netObj?.stringListOrEmpty("events").orEmpty()
+            safeLogInfo("IMG_NET stage=$stage count=${events.size} events=$events")
+        }
 
         internal fun isValidImageFile(imageFile: File?): Boolean =
             imageFile != null && imageFile.isFile && imageFile.canRead() && imageFile.length() > 0L
@@ -2476,6 +2576,7 @@ class DouyinWebExecutor(
                 )
             }
 
+            val uploadStartedWallMs = System.currentTimeMillis()
             var uploadMethod: String? = null
 
             // 方案 A：原生 MotionEvent 点 .semi-upload-add -> onShowFileChooser 回传 content:// URI，依次兜底 JS .click()
@@ -2533,6 +2634,7 @@ class DouyinWebExecutor(
             }
 
             if (uploadMethod == null) {
+                safeLogInfo("IMG_UPLOAD_NO_MODAL hasContentUri=$hasContentUri triggerFound=$triggerFound fileInputs=$fileInputCount")
                 return SendExecutionResult(
                     jobStatus = JobStatus.FAILED_RETRYABLE,
                     failureClass = FailureClass.OTHER,
@@ -2545,73 +2647,162 @@ class DouyinWebExecutor(
             val beforeMediaObj = transport.evalJsObject(
                 DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
             )
-            val beforeMultiset = SendConfirmer.toMultiset(
-                beforeMediaObj?.stringListOrEmpty("signatures").orEmpty(),
+            val beforeSample = extractImageConfirmSample(beforeMediaObj)
+            val beforeRemoteCount = beforeSample.remoteMultiset.values.sum()
+            val beforeSettledLocalCount = beforeSample.settledLocalMultiset.values.sum()
+            val beforePreviewCount = beforeSample.previewMultiset.values.sum()
+            safeLogInfo(
+                "IMG_BEFORE method=$uploadMethod modal=${beforeSample.modalVisible} " +
+                    "boxes=${beforeSample.totalBoxes} remote=$beforeRemoteCount " +
+                    "settledLocal=$beforeSettledLocalCount preview=$beforePreviewCount " +
+                    "sending=${beforeSample.hasSendingIndicator} imgs=${beforeSample.sanitizedImgSummary}",
             )
 
             // 不可逆边界：先落 CONFIRMING 再点确认发送按钮
             onStageConfirming?.invoke()
 
+            val sendClickWallMs = System.currentTimeMillis()
             val clickRes = transport.evalJsObject(DouyinJsScripts.buildClickImageModalSendJs(bundle))
-            val outcome = SendConfirmer.confirmStickerAfterClick(
-                clickResult = clickRes,
-                beforeMultiset = beforeMultiset,
-                postClickSettleMs = 0L,
-                timeoutMs = SendConfirmer.DEFAULT_CONFIRM_TIMEOUT_MS,
-                pollIntervalMs = SendConfirmer.DEFAULT_POLL_INTERVAL_MS,
-                clockMs = { transport.clockMs() },
-                delayFn = { ms -> transport.delayMs(ms) },
-            ) {
-                val sampleObj = transport.evalJsObject(
-                    DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(bundle),
-                )
-                StickerPollSample(
-                    failureMarkerHit = sampleObj?.boolOrDefault("failureMarkerHit", false) == true,
-                    afterMultiset = SendConfirmer.toMultiset(
-                        sampleObj?.stringListOrEmpty("signatures").orEmpty(),
-                    ),
+            safeLogInfo(
+                "IMG_CLICK clicked=${clickRes?.boolOrDefault("clicked", false)} " +
+                    "method=${clickRes?.stringOrNull("method")} " +
+                    "btn=${clickRes?.stringOrNull("buttonText")} " +
+                    "reason=${clickRes?.stringOrNull("reason")}",
+            )
+            if (SendConfirmer.classifyIrreversibleClickResult(clickRes) == ClickDispatchOutcome.ABORT_RETRYABLE) {
+                transport.evalJsObject(DouyinJsScripts.buildDismissImageModalJs())
+                return SendExecutionResult(
+                    jobStatus = JobStatus.FAILED_RETRYABLE,
+                    failureClass = FailureClass.OTHER,
+                    inputMethodUsed = uploadMethod,
+                    summaryDetail = "未能点击图片发送确认按钮",
                 )
             }
 
-            return when (outcome) {
-                ConfirmOutcome.SUCCEEDED -> SendExecutionResult(
-                    jobStatus = JobStatus.SUCCEEDED,
-                    inputMethodUsed = uploadMethod,
-                    summaryDetail = "图片发送已通过新增非头像媒体签名确认",
-                    observedPlatformUserId = opened.observedPlatformUserId,
-                    observedPlatformHandle = opened.observedPlatformHandle,
-                    observedPlatformConversationId = opened.observedPlatformConversationId,
-                    observedConversationType = opened.observedConversationType,
+            val confirmStartMs = transport.clockMs()
+            val deadline = confirmStartMs + IMAGE_CONFIRM_TIMEOUT_MS
+            var pollNo = 0
+            var lastLogKey: String? = null
+            var lastModalVisible = false
+            var lastSendingIndicator = false
+            var lastImSendSucceeded = false
+            var sawPreviewAdded = false
+            var sawSettledLocalAdded = false
+
+            while (true) {
+                pollNo += 1
+                val nowMs = transport.clockMs()
+                val elapsedMs = nowMs - confirmStartMs
+                val timedOut = nowMs >= deadline
+                val sampleObj = transport.evalJsObject(
+                    DouyinJsScripts.buildSampleOutgoingMediaMultisetJs(
+                        bundle = bundle,
+                        netSinceEpochMs = sendClickWallMs,
+                    ),
                 )
-                ConfirmOutcome.RETRYABLE_FAILURE -> {
-                    val clickAborted = SendConfirmer.classifyIrreversibleClickResult(clickRes) ==
-                        ClickDispatchOutcome.ABORT_RETRYABLE
-                    if (clickAborted) {
-                        transport.evalJsObject(DouyinJsScripts.buildDismissImageModalJs())
-                    }
-                    SendExecutionResult(
+                val sample = extractImageConfirmSample(sampleObj)
+                val remoteAdded = SendConfirmer.diffMediaMultiset(beforeSample.remoteMultiset, sample.remoteMultiset)
+                val previewAdded = SendConfirmer.diffMediaMultiset(beforeSample.previewMultiset, sample.previewMultiset)
+                val settledLocalAdded = SendConfirmer.diffMediaMultiset(
+                    beforeSample.settledLocalMultiset,
+                    sample.settledLocalMultiset,
+                )
+                val tempPreviewAdded = SendConfirmer.diffMediaMultiset(
+                    beforeSample.tempPreviewMultiset,
+                    sample.tempPreviewMultiset,
+                )
+                lastModalVisible = sample.modalVisible
+                lastSendingIndicator = sample.hasSendingIndicator
+                lastImSendSucceeded = sample.imSendSucceeded
+                if (previewAdded > 0) {
+                    sawPreviewAdded = true
+                }
+                if (settledLocalAdded > 0) {
+                    sawSettledLocalAdded = true
+                }
+
+                val logKey = "${sample.failureMarkerHit}|${sample.modalVisible}|${sample.hasSendingIndicator}|" +
+                    "${sample.totalBoxes}|$remoteAdded|$settledLocalAdded|$tempPreviewAdded|" +
+                    "${sample.imSendSucceeded}|${sample.uploadOrSendInFlight}|${sample.uploadOrSendFailed}|" +
+                    "${sample.sanitizedImgSummary}"
+                if (pollNo == 1 || timedOut || logKey != lastLogKey) {
+                    lastLogKey = logKey
+                    safeLogInfo(
+                        "IMG_POLL #$pollNo elapsed=${elapsedMs}ms fail=${sample.failureMarkerHit} " +
+                            "modal=${sample.modalVisible} sending=${sample.hasSendingIndicator} " +
+                            "boxes=${sample.totalBoxes} remoteAdded=$remoteAdded " +
+                            "settledLocalAdded=$settledLocalAdded tempAdded=$tempPreviewAdded " +
+                            "imSendOk=${sample.imSendSucceeded} netInFlight=${sample.uploadOrSendInFlight} " +
+                            "netFail=${sample.uploadOrSendFailed} imgs=${sample.sanitizedImgSummary}",
+                    )
+                }
+
+                if (sample.failureMarkerHit) {
+                    logRecentUploadNetEvents(transport, uploadStartedWallMs, "failure_marker")
+                    return SendExecutionResult(
                         jobStatus = JobStatus.FAILED_RETRYABLE,
                         failureClass = FailureClass.OTHER,
                         inputMethodUsed = uploadMethod,
-                        summaryDetail = if (clickAborted) {
-                            "未能点击图片发送确认按钮"
-                        } else {
-                            "页面出现明确发送失败提示，可按退避规则重试"
-                        },
+                        summaryDetail = "页面出现明确发送失败提示，可按退避规则重试",
                     )
                 }
-                ConfirmOutcome.UNKNOWN_REQUIRES_REVIEW,
-                ConfirmOutcome.CONFIRMING_PENDING,
-                -> SendExecutionResult(
-                    jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
-                    failureClass = FailureClass.UNKNOWN_OUTCOME,
-                    inputMethodUsed = uploadMethod,
-                    summaryDetail = "已点击图片发送按钮（发送前媒体数 ${beforeMultiset.values.sum()}）但未检测到新增媒体气泡，已阻止自动重发，请人工核对",
-                    observedPlatformUserId = opened.observedPlatformUserId,
-                    observedPlatformHandle = opened.observedPlatformHandle,
-                    observedPlatformConversationId = opened.observedPlatformConversationId,
-                    observedConversationType = opened.observedConversationType,
-                )
+
+                val cleanSettledState = !sample.modalVisible &&
+                    !sample.hasSendingIndicator &&
+                    !sample.uploadOrSendInFlight &&
+                    !sample.uploadOrSendFailed
+                val confirmedByRemote = cleanSettledState && remoteAdded > 0
+                val confirmedBySettledLocalAndAck = cleanSettledState &&
+                    settledLocalAdded > 0 &&
+                    sample.imSendSucceeded
+
+                if (confirmedByRemote || confirmedBySettledLocalAndAck) {
+                    val confirmKind = if (confirmedByRemote) "remote" else "settled_local_ack"
+                    safeLogInfo(
+                        "IMG_CONFIRMED kind=$confirmKind elapsed=${elapsedMs}ms " +
+                            "remoteAdded=$remoteAdded settledLocalAdded=$settledLocalAdded " +
+                            "imSendOk=${sample.imSendSucceeded} settleMs=$IMAGE_POST_CONFIRM_SETTLE_MS",
+                    )
+                    transport.delayMs(IMAGE_POST_CONFIRM_SETTLE_MS)
+                    logRecentUploadNetEvents(transport, uploadStartedWallMs, "succeeded")
+                    return SendExecutionResult(
+                        jobStatus = JobStatus.SUCCEEDED,
+                        inputMethodUsed = uploadMethod,
+                        summaryDetail = if (confirmedByRemote) {
+                            "图片发送已通过新增非头像远程媒体签名确认"
+                        } else {
+                            "图片发送已通过正式图片气泡与服务端发送回执确认"
+                        },
+                        observedPlatformUserId = opened.observedPlatformUserId,
+                        observedPlatformHandle = opened.observedPlatformHandle,
+                        observedPlatformConversationId = opened.observedPlatformConversationId,
+                        observedConversationType = opened.observedConversationType,
+                    )
+                }
+
+                if (timedOut) {
+                    logRecentUploadNetEvents(transport, uploadStartedWallMs, "timeout_unknown")
+                    val modalDesc = if (lastModalVisible) "弹窗仍未关闭" else "弹窗已关闭"
+                    val previewDesc = when {
+                        sawSettledLocalAdded -> "仅观测到本地预览图（未见服务端回执）"
+                        sawPreviewAdded -> "仅观测到本地预览图"
+                        else -> "未观测到新增本地预览图"
+                    }
+                    val sendingDesc = if (lastSendingIndicator) "，气泡仍处于发送中" else ""
+                    val ackDesc = if (lastImSendSucceeded) "，已见发送回执" else ""
+                    return SendExecutionResult(
+                        jobStatus = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                        failureClass = FailureClass.UNKNOWN_OUTCOME,
+                        inputMethodUsed = uploadMethod,
+                        summaryDetail = "已点击图片发送按钮（发送前远程媒体数 $beforeRemoteCount；$modalDesc，$previewDesc$sendingDesc$ackDesc），未确认到最终图片发送成功，已阻止自动重发，请人工核对",
+                        observedPlatformUserId = opened.observedPlatformUserId,
+                        observedPlatformHandle = opened.observedPlatformHandle,
+                        observedPlatformConversationId = opened.observedPlatformConversationId,
+                        observedConversationType = opened.observedConversationType,
+                    )
+                }
+
+                transport.delayMs(SendConfirmer.DEFAULT_POLL_INTERVAL_MS)
             }
         }
 
@@ -2629,7 +2820,16 @@ class DouyinWebExecutor(
                     modal.boolOrDefault("hasImgPreview", false) &&
                     modal.boolOrDefault("sendButtonFound", false) &&
                     modal.boolOrDefault("sendButtonEnabled", false)
-                if (ready) return true
+                if (ready) {
+                    safeLogInfo(
+                        "IMG_MODAL_READY modalCount=${modal?.intOrNull("modalCount")} " +
+                            "visibleModals=${modal?.intOrNull("visibleModalCount")} " +
+                            "imgCount=${modal?.intOrNull("imgCount")} " +
+                            "sendMethod=${modal?.stringOrNull("sendMatchMethod")} " +
+                            "sendBtn=${modal?.stringOrNull("sendButtonText")}",
+                    )
+                    return true
+                }
                 if (transport.clockMs() >= deadline) return false
                 transport.delayMs(IMAGE_MODAL_POLL_INTERVAL_MS)
             }

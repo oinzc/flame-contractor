@@ -484,6 +484,387 @@ class ImageSendExecutorTest {
         assertEquals("uuid-1234.gif", gifPayload.fileName)
     }
 
+    @Test
+    fun blobPreviewDoesNotPrematurelyConfirmUntilRemoteSignatureArrives() = runTest {
+        val imgFile = createValidPngFile()
+        var pollCount = 0
+        val transport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                    "sendButtonText" to "发送（1）",
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true, "method" to "text_regex", "buttonText" to "发送（1）") },
+            onSampleMedia = { idx ->
+                pollCount = idx
+                when (idx) {
+                    1 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf("09:00\u001fimg:https://cdn.example/old\u001f"),
+                        "localPreviewSignatures" to emptyList<String>(),
+                    )
+                    2, 3 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf("09:00\u001fimg:https://cdn.example/old\u001f"),
+                        "localPreviewSignatures" to listOf("10:36\u001fimg:blob:https://www.douyin.com/temp-1\u001f"),
+                    )
+                    else -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf(
+                            "09:00\u001fimg:https://cdn.example/old\u001f",
+                            "10:36\u001fimg:https://p3-im.douyinpic.com/uploaded\u001f",
+                        ),
+                        "localPreviewSignatures" to emptyList<String>(),
+                    )
+                }
+            },
+        )
+
+        val result = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = transport,
+        )
+
+        assertEquals(JobStatus.SUCCEEDED, result.jobStatus)
+        assertEquals("image_chooser", result.inputMethodUsed)
+        assertEquals(4, pollCount)
+        assertTrue(transport.nowMs >= 3_500L)
+    }
+
+    @Test
+    fun blobPreviewOnlyUntilTimeoutTransitionsToUnknownWithoutResending() = runTest {
+        val imgFile = createValidPngFile()
+        var clickCount = 0
+        val transport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                )
+            },
+            onClickModalSend = {
+                clickCount += 1
+                mapOf("clicked" to true)
+            },
+            onSampleMedia = { idx ->
+                if (idx == 1) {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "signatures" to listOf("09:00\u001fimg:https://cdn.example/old\u001f"),
+                    )
+                } else {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "signatures" to listOf(
+                            "09:00\u001fimg:https://cdn.example/old\u001f",
+                            "10:36\u001fimg:blob:https://www.douyin.com/never-uploaded\u001f",
+                        ),
+                    )
+                }
+            },
+        )
+
+        val result = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = transport,
+        )
+
+        assertEquals(JobStatus.UNKNOWN_REQUIRES_REVIEW, result.jobStatus)
+        assertEquals(FailureClass.UNKNOWN_OUTCOME, result.failureClass)
+        assertEquals(1, clickCount)
+        assertTrue(result.summaryDetail.orEmpty().contains("仅观测到本地预览图"))
+    }
+
+    @Test
+    fun modalStillVisibleBlocksPrematureSuccessEvenWhenSignaturesChange() = runTest {
+        val imgFile = createValidPngFile()
+        val transport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true) },
+            onSampleMedia = { idx ->
+                if (idx == 1) {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "remoteSignatures" to listOf("09:00\u001fimg:https://cdn.example/old\u001f"),
+                    )
+                } else {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "remoteSignatures" to listOf(
+                            "09:00\u001fimg:https://cdn.example/old\u001f",
+                            "00:46\u001fimg:https://cdn.example/lazy-video-card\u001f",
+                        ),
+                    )
+                }
+            },
+        )
+
+        val result = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = transport,
+        )
+
+        assertEquals(JobStatus.UNKNOWN_REQUIRES_REVIEW, result.jobStatus)
+        assertTrue(result.summaryDetail.orEmpty().contains("弹窗仍未关闭"))
+    }
+
+    @Test
+    fun sendingIndicatorBlocksPrematureSuccessUntilCleared() = runTest {
+        val imgFile = createValidPngFile()
+        var pollCount = 0
+        val transport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true) },
+            onSampleMedia = { idx ->
+                pollCount = idx
+                when (idx) {
+                    1 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to emptyList<String>(),
+                    )
+                    2 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to true,
+                        "remoteSignatures" to listOf("10:36\u001fimg:https://cdn.example/uploading\u001f"),
+                    )
+                    else -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf("10:36\u001fimg:https://cdn.example/uploading\u001f"),
+                    )
+                }
+            },
+        )
+
+        val result = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = transport,
+        )
+
+        assertEquals(JobStatus.SUCCEEDED, result.jobStatus)
+        assertEquals(3, pollCount)
+    }
+
+    @Test
+    fun realDouyinDataUriImageFlowConfirmsAfterTempSwapAndServerAck() = runTest {
+        val imgFile = createValidPngFile()
+        var pollCount = 0
+        val existingPhotoTag = "00:46\u001fMessageItemShareAwemephotosTag:data:image/png\u001f"
+        val tempUploadSig = "11:05\u001fMessageItemImageImage MessageItemImagetemp:data:image/jpeg\u001f"
+        val settledRealSig = "11:05\u001fcommonMyImageimgReal MessageItemImageImage:data:image/jpeg\u001f"
+        val transport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                    "sendButtonText" to "发送（1）",
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true, "method" to "text_regex", "buttonText" to "发送（1）") },
+            onSampleMedia = { idx ->
+                pollCount = idx
+                when (idx) {
+                    1 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to true,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf("00:46\u001fimg:https://p3-pc-sign.douyinpic.com/old\u001f"),
+                        "localPreviewSignatures" to listOf(existingPhotoTag),
+                        "settledLocalSignatures" to listOf(existingPhotoTag),
+                        "tempPreviewSignatures" to emptyList<String>(),
+                    )
+                    2 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to true,
+                        "remoteSignatures" to listOf("00:46\u001fimg:https://p3-pc-sign.douyinpic.com/old\u001f"),
+                        "localPreviewSignatures" to listOf(existingPhotoTag, tempUploadSig),
+                        "settledLocalSignatures" to listOf(existingPhotoTag),
+                        "tempPreviewSignatures" to listOf(tempUploadSig),
+                        "imSendSucceeded" to false,
+                        "uploadOrSendInFlight" to true,
+                        "uploadOrSendFailed" to false,
+                    )
+                    3 -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to true,
+                        "remoteSignatures" to listOf("00:46\u001fimg:https://p3-pc-sign.douyinpic.com/old\u001f"),
+                        "localPreviewSignatures" to listOf(existingPhotoTag),
+                        "settledLocalSignatures" to listOf(existingPhotoTag),
+                        "tempPreviewSignatures" to emptyList<String>(),
+                        "imSendSucceeded" to true,
+                        "uploadOrSendInFlight" to false,
+                        "uploadOrSendFailed" to false,
+                    )
+                    else -> mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "remoteSignatures" to listOf("00:46\u001fimg:https://p3-pc-sign.douyinpic.com/old\u001f"),
+                        "localPreviewSignatures" to listOf(existingPhotoTag, settledRealSig),
+                        "settledLocalSignatures" to listOf(existingPhotoTag, settledRealSig),
+                        "tempPreviewSignatures" to emptyList<String>(),
+                        "imSendSucceeded" to true,
+                        "uploadOrSendInFlight" to false,
+                        "uploadOrSendFailed" to false,
+                    )
+                }
+            },
+        )
+
+        val result = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = transport,
+        )
+
+        assertEquals(JobStatus.SUCCEEDED, result.jobStatus)
+        assertEquals("image_chooser", result.inputMethodUsed)
+        assertEquals(4, pollCount)
+        assertTrue(result.summaryDetail.orEmpty().contains("服务端发送回执确认"))
+    }
+
+    @Test
+    fun tempUploadImageOrFailedNetworkBlocksSettledLocalConfirmation() = runTest {
+        val imgFile = createValidPngFile()
+        val tempUploadSig = "11:05\u001fMessageItemImagetemp:data:image/jpeg\u001f"
+        val settledRealSig = "11:05\u001fcommonMyImageimgReal:data:image/jpeg\u001f"
+
+        // 子场景 1：仍停留在 temp 占位图即使有回执也绝不判成功
+        val tempOnlyTransport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true) },
+            onSampleMedia = { idx ->
+                if (idx == 1) {
+                    mapOf("failureMarkerHit" to false, "modalVisible" to true, "signatures" to emptyList<String>())
+                } else {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "signatures" to listOf(tempUploadSig),
+                        "imSendSucceeded" to true,
+                    )
+                }
+            },
+        )
+        val res1 = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = tempOnlyTransport,
+        )
+        assertEquals(JobStatus.UNKNOWN_REQUIRES_REVIEW, res1.jobStatus)
+
+        // 子场景 2：出现 uploadOrSendFailed 时即使正式本地图可见也绝不判成功
+        val netFailTransport = ScriptedImageTransport(
+            imagePayload = DouyinWebExecutor.encodeImageFileToPayload(imgFile),
+            chooserSucceedsOnMotionTap = true,
+            onInspectModal = {
+                mapOf(
+                    "modalVisible" to true,
+                    "hasImgPreview" to true,
+                    "sendButtonFound" to true,
+                    "sendButtonEnabled" to true,
+                )
+            },
+            onClickModalSend = { mapOf("clicked" to true) },
+            onSampleMedia = { idx ->
+                if (idx == 1) {
+                    mapOf("failureMarkerHit" to false, "modalVisible" to true, "signatures" to emptyList<String>())
+                } else {
+                    mapOf(
+                        "failureMarkerHit" to false,
+                        "modalVisible" to false,
+                        "hasSendingIndicator" to false,
+                        "settledLocalSignatures" to listOf(settledRealSig),
+                        "imSendSucceeded" to true,
+                        "uploadOrSendFailed" to true,
+                    )
+                }
+            },
+        )
+        val res2 = DouyinWebExecutor.executeImageSend(
+            bundle = bundle,
+            target = sampleTarget,
+            imageFile = imgFile,
+            hasContentUri = true,
+            transport = netFailTransport,
+        )
+        assertEquals(JobStatus.UNKNOWN_REQUIRES_REVIEW, res2.jobStatus)
+    }
+
     private fun createValidPngFile(): File =
         File(tempFolder.root, "test-image.png").apply {
             writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
