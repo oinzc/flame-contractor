@@ -108,7 +108,7 @@ cd desktop && npm ci && npm run build
      - 电池省电策略设为「无限制 / 忽略电池优化」
      - 允许「精确闹钟（`SCHEDULE_EXACT_ALARM`）」权限
      - **小米 / MIUI / HyperOS** 设备务必在系统设置中开启 **自启动** 并关闭对应省电限制
-- **零打扰定时执行与安全不变量**：到点由 `AlarmManager` + 30 分钟纯 SQLite `WorkManager` 兜底拉起短时离屏 `dataSync` 前台服务，息屏/桌面状态下静默完成续火并自动释放；发送超时或中断统一收敛为「待人工复核 (`UNKNOWN_REQUIRES_REVIEW`)」，未人工终裁前全路径硬禁止重复发送。
+- **零打扰定时执行与安全不变量**：到点由 `AlarmManager` + 30 分钟纯 SQLite `WorkManager` 兜底拉起短时离屏 `dataSync` 前台服务，息屏/桌面状态下静默完成续火并自动释放；发送超时或中断统一收敛为「待人工复核 (`UNKNOWN_REQUIRES_REVIEW`)」，未人工终裁前全路径硬禁止重复发送，并在应用私域沙盒保留 7 天失败/待复核现场截图供抽屉内灯箱核对。支持 Android 13+ 主题单色图标、桌面长按快捷方式与原生状态小组件，随时一眼查看今日进度与异常提醒。
 
 ### 本地自行构建 Android APK
 
@@ -236,7 +236,7 @@ python -m venv .venv
 - 登录态在同一卷的 `profiles/` 下，是完整浏览器 Profile；换机或重建卷时必须一起拷走。
 - 诊断截图在命名卷 `flame-contractor_artifacts`。
 - `docker compose down` 会保留卷；**不要用 `docker compose down -v`**，那会连数据一起删除。
-- 控制台「系统与调度」页的「导出 JSON 备份」可导出业务数据（不含登录态）；整卷备份请在停掉应用后打包卷目录。
+- 控制台「系统与调度」页与 Android「数据备份与迁移」均支持导出/导入 `.zip` 完整备份包（含去元数据后的图片模板）与纯 `.json` 备份，三端双向无损互迁（均不含登录态与 Bark 密钥）；整卷备份请在停掉应用后打包卷目录。
 
 ## 本地开发
 
@@ -261,7 +261,7 @@ npm test         # node --test 领域纯函数单测
 npm run build    # tsc --noEmit && vite build
 ```
 
-测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（298 项，无需真实浏览器）。
+测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（332 项，无需真实浏览器）。
 
 ## 目录结构
 

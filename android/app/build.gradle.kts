@@ -6,7 +6,7 @@ plugins {
 }
 
 val requestedVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.4.0-dev"
+val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.5.0-dev"
 
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
 val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
