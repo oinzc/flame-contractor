@@ -1,71 +1,52 @@
 package io.github.oinzc.flamecontractor.ui.templates
 
 import android.content.ActivityNotFoundException
-import android.graphics.BitmapFactory
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
+import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.EmojiEmotions
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.TextFields
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.BrokenImage
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -74,35 +55,48 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
-import io.github.oinzc.flamecontractor.core.storage.TemplateImageStoreUtils
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
-import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
+import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
+import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
+import io.github.oinzc.flamecontractor.ui.components.FlameListRow
+import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
+import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
+import io.github.oinzc.flamecontractor.ui.components.FlameStreakBadge
+import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
+import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
-import java.io.File
-import kotlinx.coroutines.Dispatchers
+import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun TemplatesRoute(
@@ -127,6 +121,9 @@ fun TemplatesRoute(
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val latestOnEditorVisibleChanged by rememberUpdatedState(onEditorVisibleChanged)
+    val isEditorVisible = uiState.editorState != null
 
     val pickImageLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -136,6 +133,16 @@ fun TemplatesRoute(
             viewModel.importEditorImage(mimeTypeHint = mimeHint) {
                 context.contentResolver.openInputStream(uri)
             }
+        }
+    }
+
+    LaunchedEffect(isEditorVisible) {
+        latestOnEditorVisibleChanged(isEditorVisible)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            latestOnEditorVisibleChanged(false)
         }
     }
 
@@ -157,32 +164,23 @@ fun TemplatesRoute(
         }
     }
 
-    TemplatesScreen(
-        uiState = uiState,
-        snackbarHostState = snackbarHostState,
-        onSelectPreviewTarget = viewModel::selectPreviewTarget,
-        onOpenCreate = viewModel::openCreateTemplate,
-        onOpenEdit = viewModel::openEditTemplate,
-        onToggleTemplateEnabled = viewModel::toggleTemplateEnabled,
-        onRequestDelete = viewModel::requestDeleteTemplate,
-        onTogglePoolExpanded = viewModel::togglePoolExpanded,
-        onInlineInputChanged = viewModel::updateInlinePoolInput,
-        onToggleInlineWeekday = viewModel::toggleInlinePoolWeekday,
-        onSetInlineEveryday = viewModel::setInlinePoolEveryday,
-        onAddInlinePoolItem = viewModel::addInlinePoolItem,
-        onOpenEditPoolItem = viewModel::openEditPoolItemDialog,
-        onTogglePoolItemEnabled = viewModel::togglePoolItemEnabled,
-        onTogglePoolItemWeekday = viewModel::togglePoolItemWeekday,
-        onSetPoolItemEveryday = viewModel::setPoolItemEveryday,
-        onDeletePoolItem = viewModel::deletePoolItem,
-        modifier = modifier,
-    )
+    val previewTarget = remember(uiState.selectedPreviewTargetId, uiState.sampleTargets) {
+        uiState.sampleTargets.firstOrNull { it.id == uiState.selectedPreviewTargetId }
+            ?: uiState.sampleTargets.firstOrNull()
+    }
 
-    uiState.editorState?.let { editor ->
-        TemplateEditorDialog(
-            editor = editor,
-            previewTarget = uiState.sampleTargets.firstOrNull { it.id == uiState.selectedPreviewTargetId }
-                ?: uiState.sampleTargets.firstOrNull(),
+    val activeEditor = uiState.editorState
+    if (activeEditor != null) {
+        val editingTemplateEntity = remember(activeEditor.editingTemplateId, uiState) {
+            val editId = activeEditor.editingTemplateId ?: return@remember null
+            (uiState.poolTemplates + uiState.imageTemplates + uiState.textTemplates + uiState.stickerTemplates)
+                .firstOrNull { it.template.id == editId }
+                ?.template
+        }
+
+        TemplateEditorScreen(
+            editor = activeEditor,
+            previewTarget = previewTarget,
             busy = uiState.isBusy,
             onNameChanged = viewModel::updateEditorName,
             onTypeChanged = viewModel::updateEditorType,
@@ -210,50 +208,43 @@ fun TemplatesRoute(
             onTogglePoolDraftEnabled = viewModel::toggleEditorPoolDraftEnabled,
             onSave = viewModel::saveTemplateEditor,
             onDismiss = viewModel::dismissTemplateEditor,
+            modifier = modifier,
+            snackbarHostState = snackbarHostState,
+            onRequestDelete = editingTemplateEntity?.let { tpl ->
+                { viewModel.requestDeleteTemplate(tpl) }
+            },
         )
-    }
-
-    uiState.poolItemEditDialog?.let { dlg ->
-        PoolItemEditDialog(
-            dialogState = dlg,
-            onContentChanged = viewModel::updatePoolItemEditContent,
-            onToggleWeekday = viewModel::togglePoolItemEditWeekday,
-            onSetEveryday = viewModel::setPoolItemEditEveryday,
-            onEnabledChanged = viewModel::updatePoolItemEditEnabled,
-            onSave = viewModel::savePoolItemEditDialog,
-            onDismiss = viewModel::dismissPoolItemEditDialog,
+    } else {
+        TemplatesScreen(
+            uiState = uiState,
+            snackbarHostState = snackbarHostState,
+            listState = listState,
+            onSelectPreviewTarget = viewModel::selectPreviewTarget,
+            onOpenCreate = viewModel::openCreateTemplate,
+            onOpenEdit = viewModel::openEditTemplate,
+            onToggleTemplateEnabled = viewModel::toggleTemplateEnabled,
+            onRequestDelete = viewModel::requestDeleteTemplate,
+            onOpenSettings = { onOpenSettings(null) },
+            modifier = modifier,
         )
     }
 
     uiState.deleteConfirmState?.let { confirm ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissDeleteConfirm,
-            title = { Text("删除模板「${confirm.template.name}」？") },
-            text = {
-                Text(
-                    if (confirm.activeReferenceCount > 0) {
-                        "当前有 ${confirm.activeReferenceCount} 位活跃好友正在使用此模板。\n\n" +
-                            "删除后这些好友将转为「未绑定模板」状态（需重新绑定后才可自动发送），确定删除吗？"
-                    } else {
-                        "删除后不可恢复，确定要删除此模板吗？"
-                    },
-                )
-            },
-            confirmButton = {
-                Button(onClick = viewModel::confirmDeleteTemplate) {
-                    Text("确认删除")
+        DeleteTemplateConfirmSheet(
+            confirm = confirm,
+            busy = uiState.isBusy,
+            onConfirm = {
+                val editingId = uiState.editorState?.editingTemplateId
+                viewModel.confirmDeleteTemplate()
+                if (editingId == confirm.template.id) {
+                    viewModel.dismissTemplateEditor()
                 }
             },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissDeleteConfirm) {
-                    Text("取消")
-                }
-            },
+            onDismiss = viewModel::dismissDeleteConfirm,
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TemplatesScreen(
     uiState: TemplatesUiState,
@@ -263,1333 +254,746 @@ fun TemplatesScreen(
     onOpenEdit: (MessageTemplateEntity) -> Unit,
     onToggleTemplateEnabled: (MessageTemplateEntity, Boolean) -> Unit,
     onRequestDelete: (MessageTemplateEntity) -> Unit,
-    onTogglePoolExpanded: (String) -> Unit,
-    onInlineInputChanged: (String, String) -> Unit,
-    onToggleInlineWeekday: (String, Int) -> Unit,
-    onSetInlineEveryday: (String) -> Unit,
-    onAddInlinePoolItem: (String) -> Unit,
-    onOpenEditPoolItem: (TemplatePoolItemEntity) -> Unit,
-    onTogglePoolItemEnabled: (String, String, Boolean) -> Unit,
-    onTogglePoolItemWeekday: (String, String, Int) -> Unit,
-    onSetPoolItemEveryday: (String, String) -> Unit,
-    onDeletePoolItem: (String) -> Unit,
+    onOpenSettings: () -> Unit = {},
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
 ) {
+    val palette = FlameThemeTokens.palette
     val previewTarget = remember(uiState.selectedPreviewTargetId, uiState.sampleTargets) {
         uiState.sampleTargets.firstOrNull { it.id == uiState.selectedPreviewTargetId }
             ?: uiState.sampleTargets.firstOrNull()
     }
-    var previewMenuExpanded by remember { mutableStateOf(false) }
+    var showCreateTypeSheet by remember { mutableStateOf(false) }
+    var showPreviewTargetSheet by remember { mutableStateOf(false) }
+
+    val missingImageCards = remember(uiState.imageTemplates) {
+        uiState.imageTemplates.filter { !it.imageAvailable }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { onOpenCreate(TemplateType.TEXT) }) {
-                Icon(Icons.Default.Add, contentDescription = "新建消息模板")
-            }
+        containerColor = palette.canvas,
+        contentColor = palette.ink,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 86.dp),
+            )
+        },
+        topBar = {
+            FlameTopBar(
+                title = "模板",
+                actions = {
+                    FlameTopPillButton(
+                        text = "新建",
+                        leadingIcon = Icons.Default.Add,
+                        primary = true,
+                        onClick = { showCreateTypeSheet = true },
+                    )
+                    FlameIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        onClick = onOpenSettings,
+                    )
+                },
+            )
         },
     ) { innerPadding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            val titleBlock: @Composable (Modifier) -> Unit = { blockModifier ->
-                Column(modifier = blockModifier) {
-                    Text(
-                        text = "模板与文案池",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "固定文本 · 星期轮换文案池 · 抖音原生表情 · 本地图片",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            val actionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
-                FlowRow(
-                    modifier = blockModifier,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    OutlinedButton(onClick = { onOpenCreate(TemplateType.POOL) }) {
-                        Text("新建文案池")
-                    }
-                    FilledTonalButton(onClick = { onOpenCreate(TemplateType.STICKER) }) {
-                        Text("新建表情")
-                    }
-                    FilledTonalButton(onClick = { onOpenCreate(TemplateType.IMAGE) }) {
-                        Text("新建图片")
-                    }
-                }
-            }
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                if (maxWidth >= 600.dp) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        titleBlock(Modifier.weight(1f))
-                        actionsBlock(Modifier)
-                    }
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        titleBlock(Modifier.fillMaxWidth())
-                        actionsBlock(Modifier.fillMaxWidth())
-                    }
-                }
-            }
-
-            if (uiState.sampleTargets.isNotEmpty()) {
-                ExposedDropdownMenuBox(
-                    expanded = previewMenuExpanded,
-                    onExpandedChange = { previewMenuExpanded = !previewMenuExpanded },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    OutlinedTextField(
-                        value = previewTarget?.let {
-                            "${it.nicknameSnapshot}（本机连续 ${it.streakDays} 天）"
-                        } ?: "默认测试好友",
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("变量预览代入好友（仅只读预览，不改变轮换顺位）") },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = previewMenuExpanded)
-                        },
-                        modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth(),
-                    )
-                    ExposedDropdownMenu(
-                        expanded = previewMenuExpanded,
-                        onDismissRequest = { previewMenuExpanded = false },
-                    ) {
-                        uiState.sampleTargets.forEach { t ->
-                            DropdownMenuItem(
-                                text = { Text("${t.nicknameSnapshot}（${t.streakDays}天）") },
-                                onClick = {
-                                    onSelectPreviewTarget(t.id)
-                                    previewMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
             LazyColumn(
+                state = listState,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(bottom = 84.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .widthIn(max = 840.dp)
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 4.dp,
+                    bottom = flameDockBottomPadding(),
+                ),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                // 分组 1：TEXT
-                item(key = "section-text") {
-                    SectionHeader(
-                        icon = Icons.Default.TextFields,
-                        title = "固定文本模板 (${uiState.textTemplates.size})",
-                        onAdd = { onOpenCreate(TemplateType.TEXT) },
+                // 单行只读预览代入卡
+                item(key = "preview_target_bar") {
+                    ReadOnlyPreviewTargetCard(
+                        previewTarget = previewTarget,
+                        canSelect = uiState.sampleTargets.isNotEmpty(),
+                        onClick = { showPreviewTargetSheet = true },
                     )
                 }
-                if (uiState.textTemplates.isEmpty()) {
-                    item(key = "empty-text") {
-                        EmptyGroupHint("暂无固定文本模板")
+
+                // 缺图恢复高优提示条（仅存在待补图图片模板时显示）
+                if (missingImageCards.isNotEmpty()) {
+                    item(key = "missing_image_alert") {
+                        val firstMissing = missingImageCards.first().template
+                        FlameAlertStrip(
+                            title = "有 ${missingImageCards.size} 个图片模板待补图",
+                            subtitle = "本地图片文件缺失或来自跨机迁移，重新选图后可恢复自动续火",
+                            tone = FlameTone.DANGER,
+                            actionLabel = "去补图",
+                            icon = Icons.Outlined.BrokenImage,
+                            onClick = { onOpenEdit(firstMissing) },
+                        )
+                    }
+                }
+
+                if (uiState.totalCount == 0) {
+                    item(key = "empty_all") {
+                        FlameEmptyStateCard(
+                            icon = Icons.AutoMirrored.Outlined.Notes,
+                            title = "暂无消息模板",
+                            subtitle = "支持星期轮换文案池、本地图片、固定文本与抖音原生表情，创建后可绑定给好友自动续火。",
+                            actionLabel = "新建模板",
+                            onAction = { showCreateTypeSheet = true },
+                        )
                     }
                 } else {
-                    items(
-                        items = uiState.textTemplates,
-                        key = { it.template.id },
-                    ) { card ->
-                        TextTemplateCard(
-                            card = card,
+                    // 分组 1：星期轮换文案池
+                    item(key = "group_pool") {
+                        TemplateGroupSection(
+                            title = "星期轮换文案池",
+                            type = TemplateType.POOL,
+                            cards = uiState.poolTemplates,
+                            emptyHint = "按星期与最久未用顺序自动轮换发送",
                             previewTarget = previewTarget,
-                            onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
-                            onEdit = { onOpenEdit(card.template) },
-                            onDelete = { onRequestDelete(card.template) },
+                            onAddClick = { onOpenCreate(TemplateType.POOL) },
+                            onOpenEdit = onOpenEdit,
+                            onToggleEnabled = onToggleTemplateEnabled,
+                            onRequestDelete = onRequestDelete,
                         )
                     }
-                }
 
-                // 分组 2：POOL
-                item(key = "section-pool") {
-                    SectionHeader(
-                        icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                        title = "星期轮换文案池 (${uiState.poolTemplates.size})",
-                        onAdd = { onOpenCreate(TemplateType.POOL) },
-                    )
-                }
-                if (uiState.poolTemplates.isEmpty()) {
-                    item(key = "empty-pool") {
-                        EmptyGroupHint("暂无文案池模板，可点击「新建文案池」按星期与 LRU 轮换发送")
-                    }
-                } else {
-                    items(
-                        items = uiState.poolTemplates,
-                        key = { it.template.id },
-                    ) { card ->
-                        PoolTemplateCard(
-                            card = card,
-                            onToggleExpanded = { onTogglePoolExpanded(card.template.id) },
-                            onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
-                            onEditTemplate = { onOpenEdit(card.template) },
-                            onDeleteTemplate = { onRequestDelete(card.template) },
-                            onInlineInputChanged = { onInlineInputChanged(card.template.id, it) },
-                            onToggleInlineWeekday = { onToggleInlineWeekday(card.template.id, it) },
-                            onSetInlineEveryday = { onSetInlineEveryday(card.template.id) },
-                            onAddInlinePoolItem = { onAddInlinePoolItem(card.template.id) },
-                            onEditPoolItem = onOpenEditPoolItem,
-                            onTogglePoolItemEnabled = { itemId, enabled ->
-                                onTogglePoolItemEnabled(card.template.id, itemId, enabled)
-                            },
-                            onTogglePoolItemWeekday = { itemId, dayIdx ->
-                                onTogglePoolItemWeekday(card.template.id, itemId, dayIdx)
-                            },
-                            onSetPoolItemEveryday = { itemId ->
-                                onSetPoolItemEveryday(card.template.id, itemId)
-                            },
-                            onDeletePoolItem = onDeletePoolItem,
+                    // 分组 2：本地图片模板
+                    item(key = "group_image") {
+                        TemplateGroupSection(
+                            title = "本地图片模板",
+                            type = TemplateType.IMAGE,
+                            cards = uiState.imageTemplates,
+                            emptyHint = "从相册选图并自动剥离 EXIF 隐私信息",
+                            previewTarget = previewTarget,
+                            onAddClick = { onOpenCreate(TemplateType.IMAGE) },
+                            onOpenEdit = onOpenEdit,
+                            onToggleEnabled = onToggleTemplateEnabled,
+                            onRequestDelete = onRequestDelete,
                         )
                     }
-                }
 
-                // 分组 3：STICKER
-                item(key = "section-sticker") {
-                    SectionHeader(
-                        icon = Icons.Default.EmojiEmotions,
-                        title = "抖音原生表情模板 (${uiState.stickerTemplates.size})",
-                        onAdd = { onOpenCreate(TemplateType.STICKER) },
-                    )
-                }
-                if (uiState.stickerTemplates.isEmpty()) {
-                    item(key = "empty-sticker") {
-                        EmptyGroupHint("暂无原生表情模板")
-                    }
-                } else {
-                    items(
-                        items = uiState.stickerTemplates,
-                        key = { it.template.id },
-                    ) { card ->
-                        StickerTemplateCard(
-                            card = card,
-                            onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
-                            onEdit = { onOpenEdit(card.template) },
-                            onDelete = { onRequestDelete(card.template) },
+                    // 分组 3：固定文本模板
+                    item(key = "group_text") {
+                        TemplateGroupSection(
+                            title = "固定文本模板",
+                            type = TemplateType.TEXT,
+                            cards = uiState.textTemplates,
+                            emptyHint = "发送固定问候文案，支持好友名与连签天数变量",
+                            previewTarget = previewTarget,
+                            onAddClick = { onOpenCreate(TemplateType.TEXT) },
+                            onOpenEdit = onOpenEdit,
+                            onToggleEnabled = onToggleTemplateEnabled,
+                            onRequestDelete = onRequestDelete,
                         )
                     }
-                }
 
-                // 分组 4：IMAGE
-                item(key = "section-image") {
-                    SectionHeader(
-                        icon = Icons.Default.Image,
-                        title = "本地图片模板 (${uiState.imageTemplates.size})",
-                        onAdd = { onOpenCreate(TemplateType.IMAGE) },
-                    )
-                }
-                if (uiState.imageTemplates.isEmpty()) {
-                    item(key = "empty-image") {
-                        EmptyGroupHint("暂无本地图片模板，支持从系统相册或文件选择 JPG / PNG / WebP / GIF 发送")
-                    }
-                } else {
-                    items(
-                        items = uiState.imageTemplates,
-                        key = { it.template.id },
-                    ) { card ->
-                        ImageTemplateCard(
-                            card = card,
-                            onToggleEnabled = { onToggleTemplateEnabled(card.template, it) },
-                            onEdit = { onOpenEdit(card.template) },
-                            onDelete = { onRequestDelete(card.template) },
+                    // 分组 4：抖音原生表情
+                    item(key = "group_sticker") {
+                        TemplateGroupSection(
+                            title = "抖音原生表情",
+                            type = TemplateType.STICKER,
+                            cards = uiState.stickerTemplates,
+                            emptyHint = "匹配抖音聊天面板原生表情自动发送",
+                            previewTarget = previewTarget,
+                            onAddClick = { onOpenCreate(TemplateType.STICKER) },
+                            onOpenEdit = onOpenEdit,
+                            onToggleEnabled = onToggleTemplateEnabled,
+                            onRequestDelete = onRequestDelete,
                         )
                     }
                 }
             }
         }
     }
-}
 
-@Composable
-private fun SectionHeader(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    onAdd: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        TextButton(onClick = onAdd) {
-            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("添加")
-        }
+    if (showCreateTypeSheet) {
+        CreateTemplateTypeSheet(
+            onSelectType = { type ->
+                showCreateTypeSheet = false
+                onOpenCreate(type)
+            },
+            onDismiss = { showCreateTypeSheet = false },
+        )
     }
-}
 
-@Composable
-private fun EmptyGroupHint(text: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(14.dp),
+    if (showPreviewTargetSheet) {
+        PreviewTargetPickerSheet(
+            targets = uiState.sampleTargets,
+            selectedTargetId = previewTarget?.id,
+            onSelect = { targetId ->
+                showPreviewTargetSheet = false
+                onSelectPreviewTarget(targetId)
+            },
+            onDismiss = { showPreviewTargetSheet = false },
         )
     }
 }
 
 @Composable
-private fun TextTemplateCard(
-    card: TemplateCardUi,
+private fun ReadOnlyPreviewTargetCard(
     previewTarget: ContractTargetEntity?,
-    onToggleEnabled: (Boolean) -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
+    canSelect: Boolean,
+    onClick: () -> Unit,
 ) {
-    val tpl = card.template
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    val palette = FlameThemeTokens.palette
+    FlameCard(
         modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 16.dp,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp),
+        onClick = if (canSelect) onClick else null,
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            TemplateCardHeader(
-                name = tpl.name,
-                badgeText = "TEXT · 已绑 ${card.activeReferenceCount} 人",
-                enabled = tpl.enabled,
-                onToggleEnabled = onToggleEnabled,
-                onEdit = onEdit,
-                onDelete = onDelete,
-            )
-            Text(
-                text = tpl.content,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(),
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(palette.surfaceSubtle),
+                contentAlignment = Alignment.Center,
             ) {
+                Icon(
+                    imageVector = Icons.Outlined.Visibility,
+                    contentDescription = null,
+                    tint = palette.inkSecondary,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = previewTarget?.let { "预览代入：${it.nicknameSnapshot}" } ?: "预览代入：测试好友",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    FlameMiniTag(
+                        text = "连签 ${previewTarget?.streakDays ?: 7} 天",
+                        tone = FlameTone.EMBER,
+                    )
+                }
                 Text(
-                    text = "预览：${TemplatesViewModel.renderTemplatePreview(tpl.content, previewTarget)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    text = "仅只读预览，不改变轮换顺位",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (canSelect) {
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = "切换预览代入好友",
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StickerTemplateCard(
-    card: TemplateCardUi,
-    onToggleEnabled: (Boolean) -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
+private fun TemplateGroupSection(
+    title: String,
+    type: TemplateType,
+    cards: List<TemplateCardUi>,
+    emptyHint: String,
+    previewTarget: ContractTargetEntity?,
+    onAddClick: () -> Unit,
+    onOpenEdit: (MessageTemplateEntity) -> Unit,
+    onToggleEnabled: (MessageTemplateEntity, Boolean) -> Unit,
+    onRequestDelete: (MessageTemplateEntity) -> Unit,
 ) {
-    val tpl = card.template
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TemplateCardHeader(
-                name = tpl.name,
-                badgeText = "STICKER · 已绑 ${card.activeReferenceCount} 人",
-                enabled = tpl.enabled,
-                onToggleEnabled = onToggleEnabled,
-                onEdit = onEdit,
-                onDelete = onDelete,
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+    val palette = FlameThemeTokens.palette
+    FlameGroupedSection(
+        title = "$title (${cards.size})",
+        trailingHeader = {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(onClick = onAddClick)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    shape = MaterialTheme.shapes.small,
-                ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    tint = palette.inkSecondary,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    text = "添加",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = palette.inkSecondary,
+                )
+            }
+        },
+    ) {
+        if (cards.isEmpty()) {
+            FlameListRow(
+                title = "暂无$title",
+                subtitle = emptyHint,
+                trailing = {
                     Text(
-                        text = "表情名：${tpl.stickerName ?: TemplatesViewModel.DEFAULT_STICKER_NAME}",
+                        text = "新建 ›",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = palette.inkTertiary,
                     )
-                }
-                if (!tpl.stickerLabel.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = MaterialTheme.shapes.small,
-                    ) {
-                        Text(
-                            text = "展示标签：${tpl.stickerLabel}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
-                    }
-                }
-                if (!tpl.stickerCategory.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.small,
-                    ) {
-                        Text(
-                            text = "分类：${tpl.stickerCategory}",
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
-                    }
-                }
-                if (tpl.stickerFallbackIndex != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.small,
-                    ) {
-                        Text(
-                            text = "兜底索引：#${tpl.stickerFallbackIndex}",
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
-                    }
-                }
+                },
+                showDivider = false,
+                onClick = onAddClick,
+            )
+        } else {
+            cards.forEachIndexed { index, card ->
+                TemplateListItemRow(
+                    card = card,
+                    type = type,
+                    previewTarget = previewTarget,
+                    showDivider = index < cards.lastIndex,
+                    onClick = { onOpenEdit(card.template) },
+                    onToggleEnabled = { onToggleEnabled(card.template, it) },
+                    onDelete = { onRequestDelete(card.template) },
+                )
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PoolTemplateCard(
+private fun TemplateListItemRow(
     card: TemplateCardUi,
-    onToggleExpanded: () -> Unit,
+    type: TemplateType,
+    previewTarget: ContractTargetEntity?,
+    showDivider: Boolean,
+    onClick: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
-    onEditTemplate: () -> Unit,
-    onDeleteTemplate: () -> Unit,
-    onInlineInputChanged: (String) -> Unit,
-    onToggleInlineWeekday: (Int) -> Unit,
-    onSetInlineEveryday: () -> Unit,
-    onAddInlinePoolItem: () -> Unit,
-    onEditPoolItem: (TemplatePoolItemEntity) -> Unit,
-    onTogglePoolItemEnabled: (String, Boolean) -> Unit,
-    onTogglePoolItemWeekday: (String, Int) -> Unit,
-    onSetPoolItemEveryday: (String) -> Unit,
-    onDeletePoolItem: (String) -> Unit,
+    onDelete: () -> Unit,
 ) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     val tpl = card.template
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = tpl.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = "POOL · ${card.poolItems.size} 条候选 · 已绑 ${card.activeReferenceCount} 人",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val isMissingImage = type == TemplateType.IMAGE && !card.imageAvailable
+
+    val subtitleText = remember(card, type, previewTarget) {
+        buildTemplateRowSubtitle(
+            card = card,
+            type = type,
+            previewTarget = previewTarget,
+        )
+    }
+
+    FlameListRow(
+        title = tpl.name,
+        subtitle = subtitleText,
+        showDivider = showDivider,
+        dividerIndent = if (type == TemplateType.IMAGE) 70.dp else 60.dp,
+        onClick = onClick,
+        leading = {
+            when (type) {
+                TemplateType.IMAGE -> {
+                    if (card.imageAvailable && card.imageFile != null) {
+                        TemplateImageThumbnail(
+                            imagePath = card.imageFile.absolutePath,
+                            maxEdgePx = 176,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(1.dp, palette.hairline, RoundedCornerShape(12.dp)),
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(semantics.dangerContainer)
+                                .border(1.dp, semantics.dangerBorder, RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.BrokenImage,
+                                contentDescription = "缺少本地图片",
+                                tint = semantics.danger,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+
+                TemplateType.POOL -> {
+                    FlameRowAvatar(tone = if (tpl.enabled) FlameTone.EMBER else FlameTone.NEUTRAL) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.FormatListBulleted,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+
+                TemplateType.TEXT -> {
+                    FlameRowAvatar(tone = FlameTone.NEUTRAL) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.Notes,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+
+                TemplateType.STICKER -> {
+                    FlameRowAvatar(tone = if (tpl.enabled) FlameTone.WARNING else FlameTone.NEUTRAL) {
+                        Icon(
+                            imageVector = Icons.Outlined.EmojiEmotions,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        },
+        titleTag = {
+            when {
+                isMissingImage -> {
+                    FlameMiniTag(text = "待补图", tone = FlameTone.DANGER)
+                }
+
+                type == TemplateType.POOL -> {
+                    val enabledItems = card.poolItems.count { it.item.enabled }
+                    FlameMiniTag(
+                        text = "$enabledItems/${card.poolItems.size} 条",
+                        tone = if (enabledItems > 0 && tpl.enabled) FlameTone.EMBER else FlameTone.NEUTRAL,
                     )
                 }
+
+                type == TemplateType.STICKER -> {
+                    FlameMiniTag(
+                        text = tpl.stickerName?.takeIf { it.isNotBlank() }
+                            ?: TemplatesViewModel.DEFAULT_STICKER_NAME,
+                        tone = FlameTone.WARNING,
+                    )
+                }
+
+                !tpl.enabled -> {
+                    FlameMiniTag(text = "已停用", tone = FlameTone.NEUTRAL)
+                }
+            }
+        },
+        trailing = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Switch(
                     checked = tpl.enabled,
                     onCheckedChange = onToggleEnabled,
                 )
-                IconButton(onClick = onEditTemplate) {
-                    Icon(Icons.Default.Edit, contentDescription = "编辑文案池模板")
-                }
-                IconButton(onClick = onDeleteTemplate) {
-                    Icon(Icons.Default.Delete, contentDescription = "删除文案池模板")
-                }
-                IconButton(onClick = onToggleExpanded) {
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(34.dp),
+                ) {
                     Icon(
-                        imageVector = if (card.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (card.expanded) "收起文案池" else "展开文案池",
+                        imageVector = Icons.Outlined.DeleteOutline,
+                        contentDescription = "删除模板",
+                        tint = palette.inkTertiary,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
             }
-
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = if (card.nextPoolPreviewText != null) {
-                        "今日下一句轮换预览：${card.nextPoolPreviewText}"
-                    } else {
-                        "今日暂无可用的启用候选句子"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                )
-            }
-
-            if (card.expanded) {
-                HorizontalDivider()
-
-                if (card.poolItems.isEmpty()) {
-                    Text(
-                        text = "该文案池暂无候选句子，请在下方直接添加。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        card.poolItems.forEach { poolUi ->
-                            PoolItemCardRow(
-                                poolUi = poolUi,
-                                onEdit = { onEditPoolItem(poolUi.item) },
-                                onToggleEnabled = { onTogglePoolItemEnabled(poolUi.item.id, it) },
-                                onToggleWeekday = { onTogglePoolItemWeekday(poolUi.item.id, it) },
-                                onSetEveryday = { onSetPoolItemEveryday(poolUi.item.id) },
-                                onDelete = { onDeletePoolItem(poolUi.item.id) },
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-
-                // 展开后直接内联添加新句子
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "快速新增候选句子",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    if (card.inlineInput.errorMessage != null) {
-                        Text(
-                            text = card.inlineInput.errorMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                    OutlinedTextField(
-                        value = card.inlineInput.content,
-                        onValueChange = onInlineInputChanged,
-                        placeholder = { Text("输入候选文本（支持 {{target_name}}、{{streak_days}} 等变量）") },
-                        singleLine = false,
-                        maxLines = 3,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        TemplatesViewModel.TEMPLATE_VARIABLES.forEach { (token, desc) ->
-                            AssistChip(
-                                onClick = {
-                                    onInlineInputChanged(card.inlineInput.content + token)
-                                },
-                                label = { Text("$desc $token", style = MaterialTheme.typography.labelSmall) },
-                            )
-                        }
-                    }
-                    WeekdayMaskSelector(
-                        weekdayMask = card.inlineInput.weekdayMask,
-                        onSelectEveryday = onSetInlineEveryday,
-                        onToggleDay = onToggleInlineWeekday,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        FilledTonalButton(onClick = onAddInlinePoolItem) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("添加至文案池")
-                        }
-                    }
-                }
-            }
-        }
-    }
+        },
+    )
 }
 
-@Composable
-private fun PoolItemCardRow(
-    poolUi: PoolItemUi,
-    onEdit: () -> Unit,
-    onToggleEnabled: (Boolean) -> Unit,
-    onToggleWeekday: (Int) -> Unit,
-    onSetEveryday: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val item = poolUi.item
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = item.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Switch(
-                    checked = item.enabled,
-                    onCheckedChange = onToggleEnabled,
-                )
-                IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = "编辑候选句子")
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "删除候选句子")
-                }
-            }
-
-            WeekdayMaskSelector(
-                weekdayMask = item.weekdayMask,
-                onSelectEveryday = onSetEveryday,
-                onToggleDay = onToggleWeekday,
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "生效：${poolUi.weekdaySummary}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = poolUi.lastUsedSummary,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TemplateCardHeader(
-    name: String,
-    badgeText: String,
-    enabled: Boolean,
-    onToggleEnabled: (Boolean) -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = badgeText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Switch(
-            checked = enabled,
-            onCheckedChange = onToggleEnabled,
-        )
-        IconButton(onClick = onEdit) {
-            Icon(Icons.Default.Edit, contentDescription = "编辑模板")
-        }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Default.Delete, contentDescription = "删除模板")
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun WeekdayMaskSelector(
-    weekdayMask: Int,
-    onSelectEveryday: () -> Unit,
-    onToggleDay: (Int) -> Unit,
-) {
-    val isEveryday = TemplatesViewModel.isEverydayMask(weekdayMask)
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        FilterChip(
-            selected = isEveryday,
-            onClick = onSelectEveryday,
-            label = { Text("每天", style = MaterialTheme.typography.labelSmall) },
-        )
-        TemplatesViewModel.WEEKDAY_SHORT_LABELS.forEachIndexed { dayIndex, shortLabel ->
-            val checked = TemplatesViewModel.isSpecificDayChecked(weekdayMask, dayIndex)
-            FilterChip(
-                selected = checked,
-                onClick = { onToggleDay(dayIndex) },
-                label = { Text(shortLabel, style = MaterialTheme.typography.labelSmall) },
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ImageTemplateCard(
+private fun buildTemplateRowSubtitle(
     card: TemplateCardUi,
-    onToggleEnabled: (Boolean) -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val tpl = card.template
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TemplateCardHeader(
-                name = tpl.name,
-                badgeText = "IMAGE · 已绑 ${card.activeReferenceCount} 人",
-                enabled = tpl.enabled,
-                onToggleEnabled = onToggleEnabled,
-                onEdit = onEdit,
-                onDelete = onDelete,
-            )
-
-            if (card.imageAvailable && card.imageFile != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TemplateImageThumbnail(
-                        imagePath = card.imageFile.absolutePath,
-                        maxEdgePx = 192,
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(MaterialTheme.shapes.small),
-                        contentScale = ContentScale.Crop,
-                    )
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            shape = MaterialTheme.shapes.small,
-                        ) {
-                            Text(
-                                text = "本地图片就绪",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
-                        card.imageSummary?.let { summary ->
-                            Text(
-                                text = summary,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            } else {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Text(
-                                text = "缺少本地图片，请重新选择",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                        }
-                        TextButton(onClick = onEdit) {
-                            Text("重新选图")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TemplateImageThumbnail(
-    imagePath: String?,
-    maxEdgePx: Int,
-    modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop,
-) {
-    var bitmap by remember(imagePath, maxEdgePx) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(imagePath, maxEdgePx) {
-        bitmap = if (imagePath.isNullOrBlank()) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                decodeSampledThumbnail(imagePath = imagePath, maxEdgePx = maxEdgePx)
-            }
-        }
-    }
-
-    val currentBitmap = bitmap
-    if (currentBitmap != null) {
-        Image(
-            bitmap = currentBitmap,
-            contentDescription = "模板图片缩略图",
-            contentScale = contentScale,
-            modifier = modifier,
-        )
-    } else {
-        Box(
-            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Default.Image,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-private fun decodeSampledThumbnail(imagePath: String, maxEdgePx: Int): ImageBitmap? {
-    return try {
-        val file = File(imagePath)
-        if (!file.isFile || file.length() <= 0L) return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = TemplateImageStoreUtils.computeInSampleSize(
-                widthPx = bounds.outWidth,
-                heightPx = bounds.outHeight,
-                maxEdgePx = maxEdgePx,
-            )
-        }
-        BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
-    } catch (_: Throwable) {
-        null
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun TemplateEditorDialog(
-    editor: TemplateEditorState,
+    type: TemplateType,
     previewTarget: ContractTargetEntity?,
-    busy: Boolean,
-    onNameChanged: (String) -> Unit,
-    onTypeChanged: (TemplateType) -> Unit,
-    onContentChanged: (String) -> Unit,
-    onStickerNameChanged: (String) -> Unit,
-    onStickerLabelChanged: (String) -> Unit,
-    onStickerCategoryChanged: (String) -> Unit,
-    onStickerFallbackIndexChanged: (String) -> Unit,
-    onApplyStickerPreset: (String) -> Unit,
-    onPickImage: () -> Unit,
-    onEnabledChanged: (Boolean) -> Unit,
-    onAddPoolDraft: () -> Unit,
-    onRemovePoolDraft: (Int) -> Unit,
-    onPoolDraftContentChanged: (Int, String) -> Unit,
-    onTogglePoolDraftWeekday: (Int, Int) -> Unit,
-    onSetPoolDraftEveryday: (Int) -> Unit,
-    onTogglePoolDraftEnabled: (Int, Boolean) -> Unit,
-    onSave: () -> Unit,
+): String {
+    val tpl = card.template
+    val refPart = "已绑 ${card.activeReferenceCount} 人"
+    val disabledSuffix = if (!tpl.enabled) " · 已停用" else ""
+
+    return when (type) {
+        TemplateType.POOL -> {
+            val cleanPreview = card.nextPoolPreviewText
+                ?.replace('\n', ' ')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            if (cleanPreview != null) {
+                "$refPart$disabledSuffix · 下句：$cleanPreview"
+            } else {
+                "$refPart$disabledSuffix · 今日暂无可用启用文案"
+            }
+        }
+
+        TemplateType.IMAGE -> {
+            if (!card.imageAvailable) {
+                "$refPart · 缺少本地图片，点击重新选图"
+            } else {
+                val summary = card.imageSummary ?: "本地图片就绪"
+                "$refPart$disabledSuffix · $summary"
+            }
+        }
+
+        TemplateType.TEXT -> {
+            val cleanPreview = TemplatesViewModel.renderTemplatePreview(tpl.content, previewTarget)
+                .replace('\n', ' ')
+                .trim()
+            "$refPart$disabledSuffix · 预览：$cleanPreview"
+        }
+
+        TemplateType.STICKER -> {
+            val meta = buildList {
+                add(refPart + disabledSuffix)
+                tpl.stickerLabel?.takeIf { it.isNotBlank() && it != tpl.stickerName }?.let { add("标签 $it") }
+                tpl.stickerCategory?.takeIf { it.isNotBlank() }?.let { add(it) }
+                tpl.stickerFallbackIndex?.let { add("兜底 #$it") }
+            }
+            meta.joinToString(" · ")
+        }
+    }
+}
+
+private data class CreateTypeOption(
+    val type: TemplateType,
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val tone: FlameTone,
+)
+
+@Composable
+private fun CreateTemplateTypeSheet(
+    onSelectType: (TemplateType) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    val palette = FlameThemeTokens.palette
+    val options = remember {
+        listOf(
+            CreateTypeOption(
+                type = TemplateType.POOL,
+                title = "星期轮换文案池",
+                subtitle = "多条候选按星期掩码与最久未用顺序自动轮换",
+                icon = Icons.AutoMirrored.Outlined.FormatListBulleted,
+                tone = FlameTone.EMBER,
+            ),
+            CreateTypeOption(
+                type = TemplateType.IMAGE,
+                title = "本地图片模板",
+                subtitle = "相册选图，自动缩图去 EXIF 并私密保存",
+                icon = Icons.Outlined.Image,
+                tone = FlameTone.HEALTHY,
+            ),
+            CreateTypeOption(
+                type = TemplateType.TEXT,
+                title = "固定文本模板",
+                subtitle = "单条固定文案，支持好友名与连签天数变量",
+                icon = Icons.AutoMirrored.Outlined.Notes,
+                tone = FlameTone.NEUTRAL,
+            ),
+            CreateTypeOption(
+                type = TemplateType.STICKER,
+                title = "抖音原生表情",
+                subtitle = "匹配抖音聊天面板原生表情自动发送",
+                icon = Icons.Outlined.EmojiEmotions,
+                tone = FlameTone.WARNING,
+            ),
+        )
+    }
+
+    FlameModalSheet(
         onDismissRequest = onDismiss,
-        title = {
-            Text(if (editor.isNew) "新建消息模板" else "编辑模板 · ${editor.name}")
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                    if (editor.errorMessage != null) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            shape = MaterialTheme.shapes.small,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                text = editor.errorMessage,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(10.dp),
+        title = "新建消息模板",
+        subtitle = "选择要创建的续火消息类型",
+    ) {
+        FlameGroupedSection {
+            options.forEachIndexed { idx, opt ->
+                FlameListRow(
+                    title = opt.title,
+                    subtitle = opt.subtitle,
+                    showDivider = idx < options.lastIndex,
+                    dividerIndent = 60.dp,
+                    onClick = { onSelectType(opt.type) },
+                    leading = {
+                        FlameRowAvatar(tone = opt.tone) {
+                            Icon(
+                                imageVector = opt.icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
-                    }
-
-                    OutlinedTextField(
-                        value = editor.name,
-                        onValueChange = onNameChanged,
-                        label = { Text("模板名称") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "模板类型",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    },
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.Outlined.ChevronRight,
+                            contentDescription = null,
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(18.dp),
                         )
-                        val types = listOf(
-                            TemplateType.TEXT to "文本",
-                            TemplateType.POOL to "文案池",
-                            TemplateType.STICKER to "表情",
-                            TemplateType.IMAGE to "图片",
-                        )
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            types.forEachIndexed { idx, (type, label) ->
-                                SegmentedButton(
-                                    selected = editor.type == type,
-                                    onClick = { onTypeChanged(type) },
-                                    enabled = editor.isNew && !editor.isImportingImage,
-                                    shape = SegmentedButtonDefaults.itemShape(index = idx, count = types.size),
-                                ) {
-                                    Text(
-                                        text = label,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    },
+                )
+            }
+        }
+    }
+}
 
-                    when (editor.type) {
-                        TemplateType.TEXT -> {
-                            OutlinedTextField(
-                                value = editor.content,
-                                onValueChange = onContentChanged,
-                                label = { Text("固定文本内容") },
-                                minLines = 2,
-                                maxLines = 5,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                TemplatesViewModel.TEMPLATE_VARIABLES.forEach { (token, desc) ->
-                                    AssistChip(
-                                        onClick = { onContentChanged(editor.content + token) },
-                                        label = { Text("$desc $token", style = MaterialTheme.typography.labelSmall) },
-                                    )
-                                }
-                            }
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    text = "实时预览：${TemplatesViewModel.renderTemplatePreview(editor.content, previewTarget)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(10.dp),
-                                )
-                            }
-                        }
-
-                        TemplateType.STICKER -> {
-                            OutlinedTextField(
-                                value = editor.stickerName,
-                                onValueChange = onStickerNameChanged,
-                                label = { Text("抖音原生表情名称") },
-                                placeholder = { Text("例如：比心 / 早上好 / 续火花") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                TemplatesViewModel.PRESET_STICKER_NAMES.forEach { preset ->
-                                    AssistChip(
-                                        onClick = { onApplyStickerPreset(preset) },
-                                        label = { Text(preset, style = MaterialTheme.typography.labelSmall) },
-                                    )
-                                }
-                            }
-                            OutlinedTextField(
-                                value = editor.stickerLabel,
-                                onValueChange = onStickerLabelChanged,
-                                label = { Text("展示标签（stickerLabel，可选）") },
-                                placeholder = { Text("留空则沿用表情名称") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = editor.stickerCategory,
-                                onValueChange = onStickerCategoryChanged,
-                                label = { Text("表情分类（stickerCategory，可选）") },
-                                placeholder = { Text("例如：常用") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = editor.stickerFallbackIndexInput,
-                                onValueChange = onStickerFallbackIndexChanged,
-                                label = { Text("兜底索引（stickerFallbackIndex，可选非负整数）") },
-                                placeholder = { Text("例如：0") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-
-                        TemplateType.POOL -> {
-                            Text(
-                                text = "候选句子（支持「每天」或独立多选「周一..周日」；全选 7 天自动保存为每天）",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            editor.poolDrafts.forEachIndexed { idx, draft ->
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    shape = MaterialTheme.shapes.medium,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            OutlinedTextField(
-                                                value = draft.content,
-                                                onValueChange = { onPoolDraftContentChanged(idx, it) },
-                                                label = { Text("候选 ${idx + 1}") },
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 3,
-                                            )
-                                            if (editor.poolDrafts.size > 1) {
-                                                IconButton(onClick = { onRemovePoolDraft(idx) }) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "删除候选")
-                                                }
-                                            }
-                                        }
-                                        WeekdayMaskSelector(
-                                            weekdayMask = draft.weekdayMask,
-                                            onSelectEveryday = { onSetPoolDraftEveryday(idx) },
-                                            onToggleDay = { day -> onTogglePoolDraftWeekday(idx, day) },
-                                        )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(
-                                                text = TemplatesViewModel.formatLastUsedAt(draft.lastUsedAt),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                            Switch(
-                                                checked = draft.enabled,
-                                                onCheckedChange = { onTogglePoolDraftEnabled(idx, it) },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            OutlinedButton(onClick = onAddPoolDraft) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("添加一条候选句子")
-                            }
-                        }
-
-                        TemplateType.IMAGE -> {
-                            if (editor.isImportingImage) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                Text(
-                                    text = "正在压缩并剥离 EXIF 隐私元数据…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-
-                            if (editor.imageAvailable && !editor.imagePath.isNullOrBlank()) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    shape = MaterialTheme.shapes.medium,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        TemplateImageThumbnail(
-                                            imagePath = editor.imagePath,
-                                            maxEdgePx = 512,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(160.dp)
-                                                .clip(MaterialTheme.shapes.small),
-                                            contentScale = ContentScale.Fit,
-                                        )
-                                        Text(
-                                            text = TemplatesViewModel.formatImageSummary(
-                                                mimeType = editor.imageMimeType,
-                                                sizeBytes = editor.imageSizeBytes,
-                                                widthPx = editor.imageWidthPx,
-                                                heightPx = editor.imageHeightPx,
-                                            ),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Medium,
-                                        )
-                                        Text(
-                                            text = "已剥离 EXIF 隐私信息并保存在应用私有目录，跨端备份不会上传原图字节。",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                                OutlinedButton(
-                                    onClick = onPickImage,
-                                    enabled = !busy && !editor.isImportingImage,
-                                ) {
-                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("更换本地图片")
-                                }
-                            } else {
-                                if (!editor.isNew || !editor.imagePath.isNullOrBlank()) {
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.errorContainer,
-                                        shape = MaterialTheme.shapes.small,
-                                        modifier = Modifier.fillMaxWidth(),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(10.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Warning,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                            Text(
-                                                text = "缺少本地图片，请重新选择",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    Text(
-                                        text = "支持 JPG / PNG / WebP（≤15 MB，自动缩至 2048px 并剥离 EXIF）及 GIF 动图（≤5 MB）",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                FilledTonalButton(
-                                    onClick = onPickImage,
-                                    enabled = !busy && !editor.isImportingImage,
-                                ) {
-                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("选择本地图片")
-                                }
-                            }
-                        }
-                    }
-
+@Composable
+private fun PreviewTargetPickerSheet(
+    targets: List<ContractTargetEntity>,
+    selectedTargetId: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "选择预览代入好友",
+        subtitle = "仅用于只读预览变量替换效果，绝不改写文案池轮换顺位",
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 4.dp),
+        ) {
+            items(items = targets, key = { it.id }) { target ->
+                val isSelected = target.id == selectedTargetId
+                FlameCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 16.dp,
+                    containerColor = if (isSelected) palette.surfaceSubtle else palette.surface,
+                    borderColor = if (isSelected) palette.monoCtaContainer.copy(alpha = 0.45f) else palette.hairline,
+                    contentPadding = PaddingValues(horizontal = 13.dp, vertical = 11.dp),
+                    onClick = { onSelect(target.id) },
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text("启用此模板", style = MaterialTheme.typography.bodyMedium)
-                        Switch(
-                            checked = editor.enabled,
-                            onCheckedChange = onEnabledChanged,
+                        Icon(
+                            imageVector = if (isSelected) {
+                                Icons.Filled.CheckCircle
+                            } else {
+                                Icons.Outlined.RadioButtonUnchecked
+                            },
+                            contentDescription = null,
+                            tint = if (isSelected) palette.monoCtaContainer else palette.hairlineStrong,
+                            modifier = Modifier.size(20.dp),
                         )
+                        Text(
+                            text = target.nicknameSnapshot,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FlameStreakBadge(days = target.streakDays)
                     }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun DeleteTemplateConfirmSheet(
+    confirm: DeleteTemplateConfirmState,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val hasRefs = confirm.activeReferenceCount > 0
+
+    FlameModalSheet(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = "删除模板「${confirm.template.name}」？",
+        subtitle = if (hasRefs) {
+            "当前有 ${confirm.activeReferenceCount} 位活跃好友正在使用此模板"
+        } else {
+            "删除后不可恢复"
         },
-        confirmButton = {
-            Button(
-                onClick = onSave,
-                enabled = !busy &&
-                    !editor.isImportingImage &&
-                    (editor.type != TemplateType.IMAGE || editor.imageAvailable),
+    ) {
+        if (hasRefs) {
+            Surface(
+                color = semantics.warningContainer,
+                border = BorderStroke(1.dp, semantics.warningBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (editor.isNew) "创建模板" else "保存修改")
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.WarningAmber,
+                        contentDescription = null,
+                        tint = semantics.warning,
+                        modifier = Modifier
+                            .padding(top = 1.dp)
+                            .size(18.dp),
+                    )
+                    Text(
+                        text = "当前有 ${confirm.activeReferenceCount} 位活跃好友正在使用此模板。删除后这些好友将转为「未绑定模板」状态，需重新绑定后才可自动发送。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onWarningContainer,
+                    )
+                }
             }
-        },
-        dismissButton = {
-            TextButton(
+        } else {
+            Text(
+                text = "删除后不可恢复，确定要删除此模板吗？",
+                style = MaterialTheme.typography.bodyMedium,
+                color = palette.inkSecondary,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlameSheetActionRow(
+                text = "确认删除",
+                trailingText = if (hasRefs) "解绑 ${confirm.activeReferenceCount} 位好友" else null,
+                onClick = onConfirm,
+                primary = true,
+                danger = true,
+                enabled = !busy,
+            )
+            FlameSheetActionRow(
+                text = "取消",
                 onClick = onDismiss,
                 enabled = !busy,
-            ) {
-                Text("取消")
-            }
-        },
-    )
-}
-
-@Composable
-private fun PoolItemEditDialog(
-    dialogState: PoolItemEditDialogState,
-    onContentChanged: (String) -> Unit,
-    onToggleWeekday: (Int) -> Unit,
-    onSetEveryday: () -> Unit,
-    onEnabledChanged: (Boolean) -> Unit,
-    onSave: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("编辑候选句子") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (dialogState.errorMessage != null) {
-                    Text(
-                        text = dialogState.errorMessage,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                OutlinedTextField(
-                    value = dialogState.content,
-                    onValueChange = onContentChanged,
-                    label = { Text("句子内容") },
-                    minLines = 2,
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                WeekdayMaskSelector(
-                    weekdayMask = dialogState.weekdayMask,
-                    onSelectEveryday = onSetEveryday,
-                    onToggleDay = onToggleWeekday,
-                )
-                Text(
-                    text = "${TemplatesViewModel.formatLastUsedAt(dialogState.lastUsedAt)}（编辑不改变轮换顺位）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("启用此句子", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
-                        checked = dialogState.enabled,
-                        onCheckedChange = onEnabledChanged,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = onSave) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        },
-    )
+            )
+        }
+    }
 }
