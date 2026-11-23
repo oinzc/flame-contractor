@@ -13,6 +13,7 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
+import io.github.oinzc.flamecontractor.data.db.TargetSucceededJobCounts
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -851,5 +852,16 @@ class DouyinJsScriptsTest {
             attempts.filter { it.jobId == jobId }.sortedBy { it.attemptNo }
 
         override fun observeAttemptsForJob(jobId: String): Flow<List<SendAttemptEntity>> = emptyFlow()
+
+        override suspend fun listSucceededJobCountsByTarget(status: JobStatus): List<TargetSucceededJobCounts> =
+            jobs.values.filter { it.status == status }
+                .groupBy { it.targetId }
+                .map { (tid, list) ->
+                    TargetSucceededJobCounts(
+                        targetId = tid,
+                        totalSucceeded = list.size,
+                        distinctBusinessDates = list.map { it.businessDate }.distinct().size,
+                    )
+                }
     }
 }

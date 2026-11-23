@@ -15,6 +15,7 @@ import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
+import io.github.oinzc.flamecontractor.domain.LocalStreakCounter
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.domain.TemplatePoolPicker
 import io.github.oinzc.flamecontractor.execution.DouyinWebExecutor
@@ -22,7 +23,10 @@ import io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
 import io.github.oinzc.flamecontractor.execution.ExecutionRuntimeBus
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -77,7 +81,15 @@ class AppContainer(context: Context) {
     val accountHealthReducer: AccountHealthReducer = AccountHealthReducer
     val templatePoolPicker: TemplatePoolPicker = TemplatePoolPicker
 
+    private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     init {
         ExecutionForegroundService.attachDatabase(database)
+        maintenanceScope.launch {
+            LocalStreakCounter.runStartupSameDayStreakReconciliationOnce(
+                context = appContext,
+                database = database,
+            )
+        }
     }
 }

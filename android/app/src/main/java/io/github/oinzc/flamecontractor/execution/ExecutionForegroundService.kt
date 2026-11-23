@@ -1674,7 +1674,12 @@ class ExecutionForegroundService : Service() {
 
         return when (finalStatus) {
             JobStatus.SUCCEEDED -> {
-                database.targetDao().recordSendConfirmed(freshTarget.id, doneMs)
+                val accountZone = DailySchedulePlanner.resolveZoneId(account.timezone)
+                database.targetDao().recordSendConfirmedOncePerDay(
+                    id = freshTarget.id,
+                    confirmedAt = doneMs,
+                    zoneId = accountZone,
+                )
                 database.accountDao().updateLastSuccessAt(account.id, doneMs)
                 TargetRunOutcome(
                     outcomeType = TargetRunKind.SUCCEEDED,

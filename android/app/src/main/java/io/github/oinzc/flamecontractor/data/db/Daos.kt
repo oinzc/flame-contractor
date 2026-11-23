@@ -1,12 +1,25 @@
 package io.github.oinzc.flamecontractor.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import androidx.room.Upsert
+import io.github.oinzc.flamecontractor.domain.LocalStreakCounter
+import java.time.ZoneId
 import kotlinx.coroutines.flow.Flow
+
+data class TargetSucceededJobCounts(
+    @ColumnInfo(name = "target_id")
+    val targetId: String,
+    @ColumnInfo(name = "total_succeeded")
+    val totalSucceeded: Int,
+    @ColumnInfo(name = "distinct_business_dates")
+    val distinctBusinessDates: Int,
+)
 
 @Dao
 interface AccountDao {
@@ -234,6 +247,48 @@ interface TargetDao {
     @Query(
         """
         UPDATE contract_targets
+        SET last_sent_at = :confirmedAt,
+            last_confirmed_at = :confirmedAt,
+            updated_at = :confirmedAt
+        WHERE id = :id
+        """,
+    )
+    suspend fun touchSendConfirmedTimestampsOnly(id: String, confirmedAt: Long)
+
+    @Query(
+        """
+        UPDATE contract_targets
+        SET streak_days = :streakDays,
+            updated_at = :updatedAt
+        WHERE id = :id
+        """,
+    )
+    suspend fun updateStreakDays(id: String, streakDays: Int, updatedAt: Long)
+
+    @Transaction
+    suspend fun recordSendConfirmedOncePerDay(
+        id: String,
+        confirmedAt: Long,
+        zoneId: ZoneId,
+    ): Boolean {
+        val current = getById(id) ?: return false
+        return if (LocalStreakCounter.shouldIncrementStreakForConfirmation(
+                previousConfirmedAtEpochMs = current.lastConfirmedAt,
+                newConfirmedAtEpochMs = confirmedAt,
+                zoneId = zoneId,
+            )
+        ) {
+            recordSendConfirmed(id, confirmedAt)
+            true
+        } else {
+            touchSendConfirmedTimestampsOnly(id, confirmedAt)
+            false
+        }
+    }
+
+    @Query(
+        """
+        UPDATE contract_targets
         SET platform_user_id = NULL,
             platform_handle = NULL,
             platform_conversation_id = NULL,
@@ -447,6 +502,20 @@ interface SendJobDao {
 
     @Query("SELECT * FROM send_attempts WHERE job_id = :jobId ORDER BY attempt_no ASC")
     fun observeAttemptsForJob(jobId: String): Flow<List<SendAttemptEntity>>
+
+    @Query(
+        """
+        SELECT target_id,
+               COUNT(*) AS total_succeeded,
+               COUNT(DISTINCT business_date) AS distinct_business_dates
+        FROM send_jobs
+        WHERE status = :status
+        GROUP BY target_id
+        """,
+    )
+    suspend fun listSucceededJobCountsByTarget(
+        status: JobStatus = JobStatus.SUCCEEDED,
+    ): List<TargetSucceededJobCounts>
 }
 
 @Dao

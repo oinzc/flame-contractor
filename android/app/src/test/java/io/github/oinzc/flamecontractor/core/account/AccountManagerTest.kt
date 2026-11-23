@@ -26,6 +26,7 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TargetDao
+import io.github.oinzc.flamecontractor.data.db.TargetSucceededJobCounts
 import io.github.oinzc.flamecontractor.data.db.TemplateDao
 import io.github.oinzc.flamecontractor.data.db.TemplatePoolItemEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
@@ -573,6 +574,8 @@ class AccountManagerTest {
         }
         override suspend fun updateOfficialSparkSnapshot(id: String, sparkDays: Int?, sparkKind: String?, sparkLabel: String?, scannedAt: Long) {}
         override suspend fun recordSendConfirmed(id: String, confirmedAt: Long) {}
+        override suspend fun touchSendConfirmedTimestampsOnly(id: String, confirmedAt: Long) {}
+        override suspend fun updateStreakDays(id: String, streakDays: Int, updatedAt: Long) {}
         override suspend fun unbindIdentitiesAndDisableAll(accountId: String, updatedAt: Long) {}
         override suspend fun deleteAllByAccount(accountId: String) {
             items.value = items.value.filterNot { it.accountId == accountId }
@@ -663,6 +666,16 @@ class AccountManagerTest {
             attempts.value.filter { it.jobId == jobId }
         override fun observeAttemptsForJob(jobId: String): Flow<List<SendAttemptEntity>> =
             attempts.map { list -> list.filter { it.jobId == jobId } }
+        override suspend fun listSucceededJobCountsByTarget(status: JobStatus): List<TargetSucceededJobCounts> =
+            jobs.value.filter { it.status == status }
+                .groupBy { it.targetId }
+                .map { (tid, list) ->
+                    TargetSucceededJobCounts(
+                        targetId = tid,
+                        totalSucceeded = list.size,
+                        distinctBusinessDates = list.map { it.businessDate }.distinct().size,
+                    )
+                }
     }
 
     private class InMemoryScanRunDao(initial: List<ScanRunEntity>) : ScanRunDao {

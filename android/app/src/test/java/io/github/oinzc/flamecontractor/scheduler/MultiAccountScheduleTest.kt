@@ -18,6 +18,7 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TargetDao
+import io.github.oinzc.flamecontractor.data.db.TargetSucceededJobCounts
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.DeduplicatingCommandQueue
 import io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
@@ -604,6 +605,8 @@ class MultiAccountScheduleTest {
             scannedAt: Long,
         ) = Unit
         override suspend fun recordSendConfirmed(id: String, confirmedAt: Long) = Unit
+        override suspend fun touchSendConfirmedTimestampsOnly(id: String, confirmedAt: Long) = Unit
+        override suspend fun updateStreakDays(id: String, streakDays: Int, updatedAt: Long) = Unit
         override suspend fun unbindIdentitiesAndDisableAll(accountId: String, updatedAt: Long) = Unit
         override suspend fun deleteAllByAccount(accountId: String) {
             targets.values.removeAll { it.accountId == accountId }
@@ -685,6 +688,16 @@ class MultiAccountScheduleTest {
         override suspend fun listAttemptsForJob(jobId: String): List<SendAttemptEntity> =
             attempts.filter { it.jobId == jobId }.sortedBy { it.attemptNo }
         override fun observeAttemptsForJob(jobId: String): Flow<List<SendAttemptEntity>> = emptyFlow()
+        override suspend fun listSucceededJobCountsByTarget(status: JobStatus): List<TargetSucceededJobCounts> =
+            jobs.values.filter { it.status == status }
+                .groupBy { it.targetId }
+                .map { (tid, list) ->
+                    TargetSucceededJobCounts(
+                        targetId = tid,
+                        totalSucceeded = list.size,
+                        distinctBusinessDates = list.map { it.businessDate }.distinct().size,
+                    )
+                }
     }
 
     private class FakeScanRunDao : ScanRunDao {
