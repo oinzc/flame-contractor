@@ -2,18 +2,25 @@ package io.github.oinzc.flamecontractor.ui.today
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -87,6 +94,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -116,12 +124,16 @@ import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
+import io.github.oinzc.flamecontractor.ui.components.flamePressScale
+import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.MainTab
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
@@ -506,13 +518,21 @@ private fun TodayAccountSwitcherPill(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val haptics = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
     val statusStyle = accountStatusStyle(account?.status ?: AccountStatus.PENDING_LOGIN)
     val displayName = account?.displayName?.takeIf { it.isNotBlank() } ?: "默认抖音号"
 
     Box {
         Surface(
-            onClick = onClick,
-            modifier = Modifier.heightIn(min = 38.dp),
+            onClick = {
+                haptics.performFlameLightTick()
+                onClick()
+            },
+            interactionSource = interactionSource,
+            modifier = Modifier
+                .flamePressScale(interactionSource = interactionSource)
+                .heightIn(min = 38.dp),
             shape = RoundedCornerShape(999.dp),
             color = palette.surface,
             contentColor = palette.ink,
@@ -784,69 +804,99 @@ private fun HeroFlameCtaButton(
     onClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val reducedMotion = rememberReducedMotion()
     val shape = RoundedCornerShape(18.dp)
 
-    if (isRunning) {
-        Surface(
-            modifier = Modifier.size(60.dp),
-            shape = shape,
-            color = palette.emberContainer,
-            contentColor = palette.ember,
-            border = BorderStroke(1.5.dp, palette.emberBorder),
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = palette.ember,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "执行中",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.ember,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+    AnimatedContent(
+        targetState = isRunning,
+        transitionSpec = {
+            if (reducedMotion) {
+                EnterTransition.None togetherWith ExitTransition.None
+            } else {
+                (fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
+                    scaleIn(
+                        initialScale = 0.94f,
+                        animationSpec = tween(180, easing = FlameMotionSpec.easeOut),
+                    )) togetherWith fadeOut(tween(130, easing = FlameMotionSpec.easeOut))
             }
-        }
-    } else {
-        val ctaContentColor = Color.White
-        val emberBrush = Brush.linearGradient(
-            colors = listOf(palette.emberBright, palette.ember),
-        )
-        Box(
-            modifier = Modifier
-                .size(60.dp)
-                .clip(shape)
-                .background(emberBrush)
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
+        },
+        label = "hero_flame_cta_state",
+    ) { running ->
+        if (running) {
+            Surface(
+                modifier = Modifier.size(60.dp),
+                shape = shape,
+                color = palette.emberContainer,
+                contentColor = palette.ember,
+                border = BorderStroke(1.5.dp, palette.emberBorder),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.LocalFireDepartment,
-                    contentDescription = "立即执行今日续火",
-                    tint = ctaContentColor,
-                    modifier = Modifier.size(22.dp),
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "续火",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = ctaContentColor,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = palette.ember,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "执行中",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ember,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        } else {
+            val interactionSource = remember { MutableInteractionSource() }
+            val ctaContentColor = Color.White
+            val emberBrush = Brush.linearGradient(
+                colors = listOf(palette.emberBright, palette.ember),
+            )
+            Box(
+                modifier = Modifier
+                    .flamePressScale(
+                        interactionSource = interactionSource,
+                        pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
+                    )
+                    .size(60.dp)
+                    .clip(shape)
+                    .background(emberBrush)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = LocalIndication.current,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onClick()
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = "立即执行今日续火",
+                        tint = ctaContentColor,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "续火",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = ctaContentColor,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
             }
         }
     }

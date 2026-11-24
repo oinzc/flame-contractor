@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
@@ -28,10 +30,14 @@ import io.github.oinzc.flamecontractor.ui.shell.MainActivity
 import io.github.oinzc.flamecontractor.ui.shell.MainNavState
 import java.time.Instant
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -144,7 +150,7 @@ abstract class BaseFlameAppWidgetProvider(
         val appContext = context.applicationContext ?: context
         when (intent.action) {
             ACTION_REFRESH -> {
-                FlameStatusWidgetUpdater.requestUpdateAll(appContext)
+                performInteractiveRefreshAllAsync(appContext)
                 return
             }
 
@@ -194,35 +200,15 @@ abstract class BaseFlameAppWidgetProvider(
             try {
                 withTimeoutOrNull(UPDATE_TIMEOUT_MS) {
                     val queryData = loadWidgetQueryData(appContext)
-                    val theme = resolveVisualTheme(queryData.surface)
-                    val density = appContext.resources.displayMetrics.density
-                    for (widgetId in appWidgetIds) {
-                        val widthDp = overrideWidthById[widgetId]
-                            ?: runCatching {
-                                appWidgetManager.getAppWidgetOptions(widgetId)
-                                    ?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
-                                    ?: 0
-                            }.getOrDefault(0)
-
-                        val snapshot = FlameStatusWidgetCalculator.calculate(
-                            account = queryData.account,
-                            enabledTargets = queryData.enabledTargets,
-                            todayJobs = queryData.todayJobs,
-                            unknownReviewCount = queryData.unknownReviewCount,
-                            now = queryData.now,
-                            minWidthDp = widthDp,
-                            networkDeferCountToday = queryData.networkDeferCountToday,
-                            recentJobs7Days = queryData.recentJobs7Days,
-                        )
-                        val views = buildRemoteViews(
-                            context = appContext,
-                            snapshot = snapshot,
-                            theme = theme,
-                            density = density,
-                            hideFriendNames = queryData.hideFriendNames,
-                        )
-                        appWidgetManager.updateAppWidget(widgetId, views)
-                    }
+                    pushWidgetsForKind(
+                        context = appContext,
+                        appWidgetManager = appWidgetManager,
+                        targetKind = kind,
+                        appWidgetIds = appWidgetIds,
+                        overrideWidthById = overrideWidthById,
+                        queryData = queryData,
+                        refreshState = WidgetRefreshState.IDLE,
+                    )
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -233,6 +219,163 @@ abstract class BaseFlameAppWidgetProvider(
             }
         }
     }
+
+    /**
+     * 交互式手动刷新：立即显示原生 60fps 旋转进度圈与“同步中…”，
+     * 完成后展示约 1.8s 的“✓ 已刷新 HH:mm”状态回执，再平滑恢复常态。
+     * 连续快速点击通过 generation 编号防抖，避免前一次延迟回调覆盖新状态。
+     */
+    private fun performInteractiveRefreshAllAsync(appContext: Context) {
+        val pendingResult = goAsync()
+        val generation = refreshGeneration.incrementAndGet()
+        widgetScope.launch {
+            try {
+                withTimeoutOrNull(INTERACTIVE_REFRESH_TIMEOUT_MS) {
+                    val appWidgetManager = runCatching { AppWidgetManager.getInstance(appContext) }.getOrNull()
+                        ?: return@withTimeoutOrNull
+                    val placedByKind = collectPlacedWidgetIdsByKind(appContext, appWidgetManager)
+                    if (placedByKind.isEmpty()) return@withTimeoutOrNull
+
+                    val reducedMotion = isSystemReducedMotion(appContext)
+                    val startedAtMs = SystemClock.elapsedRealtime()
+                    val initialData = loadWidgetQueryData(appContext)
+
+                    if (refreshGeneration.get() != generation) return@withTimeoutOrNull
+                    if (!reducedMotion) {
+                        pushAllPlacedWidgets(
+                            context = appContext,
+                            appWidgetManager = appWidgetManager,
+                            placedByKind = placedByKind,
+                            queryData = initialData,
+                            refreshState = WidgetRefreshState(phase = WidgetRefreshPhase.REFRESHING),
+                        )
+                        val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+                        val remainingSpinMs = (MIN_REFRESH_SPIN_MS - elapsedMs).coerceAtLeast(0L)
+                        if (remainingSpinMs > 0L) {
+                            delay(remainingSpinMs)
+                        }
+                    }
+
+                    if (refreshGeneration.get() != generation) return@withTimeoutOrNull
+                    val freshData = if (reducedMotion) initialData else loadWidgetQueryData(appContext)
+                    val zoneId = DailySchedulePlanner.resolveZoneId(freshData.account?.timezone)
+                    val hhmm = ZonedDateTime.ofInstant(freshData.now, zoneId).format(REFRESH_HHMM_FORMATTER)
+
+                    pushAllPlacedWidgets(
+                        context = appContext,
+                        appWidgetManager = appWidgetManager,
+                        placedByKind = placedByKind,
+                        queryData = freshData,
+                        refreshState = WidgetRefreshState(
+                            phase = WidgetRefreshPhase.JUST_UPDATED,
+                            updatedAtHhmm = hhmm,
+                        ),
+                    )
+
+                    delay(REFRESH_RECEIPT_HOLD_MS)
+                    if (refreshGeneration.get() != generation) return@withTimeoutOrNull
+
+                    pushAllPlacedWidgets(
+                        context = appContext,
+                        appWidgetManager = appWidgetManager,
+                        placedByKind = placedByKind,
+                        queryData = freshData,
+                        refreshState = WidgetRefreshState.IDLE,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (exc: Throwable) {
+                Log.w(TAG, "交互刷新小组件失败: ${exc.javaClass.simpleName}")
+            } finally {
+                runCatching { pendingResult.finish() }
+            }
+        }
+    }
+
+    private fun collectPlacedWidgetIdsByKind(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+    ): Map<FlameWidgetKind, IntArray> = buildMap {
+        for (widgetKind in FlameWidgetKind.entries) {
+            val ids = runCatching {
+                appWidgetManager.getAppWidgetIds(ComponentName(context, widgetKind.providerClass))
+            }.getOrNull()
+            if (ids != null && ids.isNotEmpty()) {
+                put(widgetKind, ids)
+            }
+        }
+    }
+
+    private fun pushAllPlacedWidgets(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        placedByKind: Map<FlameWidgetKind, IntArray>,
+        queryData: WidgetQueryData,
+        refreshState: WidgetRefreshState,
+    ) {
+        for ((widgetKind, ids) in placedByKind) {
+            pushWidgetsForKind(
+                context = context,
+                appWidgetManager = appWidgetManager,
+                targetKind = widgetKind,
+                appWidgetIds = ids,
+                overrideWidthById = emptyMap(),
+                queryData = queryData,
+                refreshState = refreshState,
+            )
+        }
+    }
+
+    private fun pushWidgetsForKind(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        targetKind: FlameWidgetKind,
+        appWidgetIds: IntArray,
+        overrideWidthById: Map<Int, Int>,
+        queryData: WidgetQueryData,
+        refreshState: WidgetRefreshState,
+    ) {
+        val theme = resolveVisualTheme(queryData.surface)
+        val density = context.resources.displayMetrics.density
+        for (widgetId in appWidgetIds) {
+            val widthDp = overrideWidthById[widgetId]
+                ?: runCatching {
+                    appWidgetManager.getAppWidgetOptions(widgetId)
+                        ?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+                        ?: 0
+                }.getOrDefault(0)
+
+            val snapshot = FlameStatusWidgetCalculator.calculate(
+                account = queryData.account,
+                enabledTargets = queryData.enabledTargets,
+                todayJobs = queryData.todayJobs,
+                unknownReviewCount = queryData.unknownReviewCount,
+                now = queryData.now,
+                minWidthDp = widthDp,
+                networkDeferCountToday = queryData.networkDeferCountToday,
+                recentJobs7Days = queryData.recentJobs7Days,
+            )
+            val views = buildRemoteViews(
+                context = context,
+                targetKind = targetKind,
+                snapshot = snapshot,
+                theme = theme,
+                density = density,
+                hideFriendNames = queryData.hideFriendNames,
+                refreshState = refreshState,
+            )
+            appWidgetManager.updateAppWidget(widgetId, views)
+        }
+    }
+
+    private fun isSystemReducedMotion(context: Context): Boolean = runCatching {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        ) == 0f
+    }.getOrDefault(false)
 
     private suspend fun loadWidgetQueryData(context: Context): WidgetQueryData {
         val now = Instant.now()
@@ -302,23 +445,61 @@ abstract class BaseFlameAppWidgetProvider(
 
     private fun buildRemoteViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
         density: Float,
         hideFriendNames: Boolean,
-    ): RemoteViews = when (kind) {
-        FlameWidgetKind.RING_PANORAMA -> buildRingPanoramaViews(context, snapshot, theme, density)
-        FlameWidgetKind.COMPACT_RING -> buildCompactRingViews(context, snapshot, theme, density)
-        FlameWidgetKind.MINI_STRIP -> buildMiniStripViews(context, snapshot, theme)
-        FlameWidgetKind.STREAK_7DAY -> buildStreak7DayViews(context, snapshot, theme, density)
-        FlameWidgetKind.FRIENDS_BOARD -> buildFriendsBoardViews(context, snapshot, theme, hideFriendNames)
+        refreshState: WidgetRefreshState,
+    ): RemoteViews = when (targetKind) {
+        FlameWidgetKind.RING_PANORAMA -> buildRingPanoramaViews(
+            context = context,
+            targetKind = targetKind,
+            snapshot = snapshot,
+            theme = theme,
+            density = density,
+            refreshState = refreshState,
+        )
+        FlameWidgetKind.COMPACT_RING -> buildCompactRingViews(
+            context = context,
+            targetKind = targetKind,
+            snapshot = snapshot,
+            theme = theme,
+            density = density,
+            refreshState = refreshState,
+        )
+        FlameWidgetKind.MINI_STRIP -> buildMiniStripViews(
+            context = context,
+            targetKind = targetKind,
+            snapshot = snapshot,
+            theme = theme,
+            refreshState = refreshState,
+        )
+        FlameWidgetKind.STREAK_7DAY -> buildStreak7DayViews(
+            context = context,
+            targetKind = targetKind,
+            snapshot = snapshot,
+            theme = theme,
+            density = density,
+            refreshState = refreshState,
+        )
+        FlameWidgetKind.FRIENDS_BOARD -> buildFriendsBoardViews(
+            context = context,
+            targetKind = targetKind,
+            snapshot = snapshot,
+            theme = theme,
+            hideFriendNames = hideFriendNames,
+            refreshState = refreshState,
+        )
     }
 
     private fun buildRingPanoramaViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
         density: Float,
+        refreshState: WidgetRefreshState,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_flame_status)
         views.setInt(
@@ -349,27 +530,27 @@ abstract class BaseFlameAppWidgetProvider(
                 else -> theme.textPrimary
             },
         )
-        views.setTextViewText(
-            R.id.widget_ring_caption,
-            when {
-                snapshot.isAlert -> "需人工处理"
-                snapshot.isAllDoneToday -> "✓ 已完成"
-                else -> "今日进度"
-            },
-        )
-        views.setTextColor(
-            R.id.widget_ring_caption,
-            when {
-                snapshot.isAlert -> theme.dangerColor
-                snapshot.isAllDoneToday -> theme.healthyColor
-                else -> theme.textSecondary
-            },
-        )
+        val ringCaptionText = when {
+            snapshot.isAlert && refreshState.isRefreshing -> refreshState.compactStatusHintText
+            snapshot.isAlert && refreshState.isJustUpdated -> refreshState.compactStatusHintText
+            snapshot.isAlert -> "需人工处理"
+            snapshot.isAllDoneToday -> "✓ 已完成"
+            else -> "今日进度"
+        }
+        val ringCaptionColor = when {
+            snapshot.isAlert && refreshState.isRefreshing -> theme.sparkColor
+            snapshot.isAlert && refreshState.isJustUpdated -> theme.healthyColor
+            snapshot.isAlert -> theme.dangerColor
+            snapshot.isAllDoneToday -> theme.healthyColor
+            else -> theme.textSecondary
+        }
+        views.setTextViewText(R.id.widget_ring_caption, ringCaptionText)
+        views.setTextColor(R.id.widget_ring_caption, ringCaptionColor)
 
         views.setTextViewText(R.id.widget_account_name, snapshot.accountName)
         views.setTextColor(R.id.widget_account_name, theme.textPrimary)
         bindStatusPill(views, R.id.widget_status_pill, snapshot.statusPillText, snapshot.statusTone, theme)
-        bindRefreshButton(context, views, theme)
+        bindRefreshButton(context, views, targetKind, theme, refreshState)
 
         if (snapshot.isAlert) {
             views.setViewVisibility(R.id.widget_kpi_row, View.GONE)
@@ -400,12 +581,19 @@ abstract class BaseFlameAppWidgetProvider(
 
             views.setInt(R.id.widget_action_bar, "setBackgroundResource", theme.tileBg)
             val leftHint = when {
+                refreshState.isRefreshing -> refreshState.statusHintText
+                refreshState.isJustUpdated -> refreshState.statusHintText
                 snapshot.enabledTargetCount == 0 -> "先去导入续火好友"
                 snapshot.isAllDoneToday -> "今日已全部续完"
                 else -> "待续 ${snapshot.remainingCount} 位"
             }
+            val leftColor = when {
+                refreshState.isRefreshing -> theme.sparkColor
+                refreshState.isJustUpdated -> theme.healthyColor
+                else -> theme.textSecondary
+            }
             views.setTextViewText(R.id.widget_action_left, leftHint)
-            views.setTextColor(R.id.widget_action_left, theme.textSecondary)
+            views.setTextColor(R.id.widget_action_left, leftColor)
             views.setTextViewText(R.id.widget_action_right, "扫描对账 →")
             views.setTextColor(R.id.widget_action_right, theme.textPrimary)
         }
@@ -428,9 +616,11 @@ abstract class BaseFlameAppWidgetProvider(
 
     private fun buildCompactRingViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
         density: Float,
+        refreshState: WidgetRefreshState,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_flame_compact_ring)
         views.setInt(
@@ -453,7 +643,7 @@ abstract class BaseFlameAppWidgetProvider(
                 else -> theme.textPrimary
             },
         )
-        bindRefreshButton(context, views, theme)
+        bindRefreshButton(context, views, targetKind, theme, refreshState)
 
         val ringBitmap = WidgetCanvasRenderer.renderProgressRingBitmap(
             density = density,
@@ -480,6 +670,8 @@ abstract class BaseFlameAppWidgetProvider(
         views.setTextViewText(
             R.id.widget_ring_caption,
             when {
+                refreshState.isRefreshing -> refreshState.compactStatusHintText
+                refreshState.isJustUpdated -> refreshState.compactStatusHintText
                 snapshot.isAlert -> "点此处理"
                 snapshot.isAllDoneToday -> "✓ 已完成"
                 else -> "今日续火"
@@ -488,6 +680,8 @@ abstract class BaseFlameAppWidgetProvider(
         views.setTextColor(
             R.id.widget_ring_caption,
             when {
+                refreshState.isRefreshing -> theme.sparkColor
+                refreshState.isJustUpdated -> theme.healthyColor
                 snapshot.isAlert -> theme.dangerColor
                 snapshot.isAllDoneToday -> theme.healthyColor
                 else -> theme.textSecondary
@@ -508,8 +702,10 @@ abstract class BaseFlameAppWidgetProvider(
 
     private fun buildMiniStripViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
+        refreshState: WidgetRefreshState,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_flame_mini_strip)
         views.setInt(
@@ -526,14 +722,20 @@ abstract class BaseFlameAppWidgetProvider(
         val compactStatus = if (snapshot.statusLabel == "运行正常") "● 正常" else snapshot.statusPillText
         bindStatusPill(views, R.id.widget_status_pill, compactStatus, snapshot.statusTone, theme)
 
-        val metaText = if (snapshot.isAlert) {
-            snapshot.footerHint
-        } else {
-            "${snapshot.sparkHighlightText.removePrefix("🔥 ").let { "最高 $it" }} · 下次 ${snapshot.nextScheduleShort}"
+        val metaText = when {
+            refreshState.isRefreshing -> refreshState.statusHintText
+            refreshState.isJustUpdated -> refreshState.statusHintText
+            snapshot.isAlert -> snapshot.footerHint
+            else -> "${snapshot.sparkHighlightText.removePrefix("🔥 ").let { "最高 $it" }} · 下次 ${snapshot.nextScheduleShort}"
+        }
+        val metaColor = when {
+            refreshState.isRefreshing -> theme.sparkColor
+            refreshState.isJustUpdated -> theme.healthyColor
+            else -> theme.textSecondary
         }
         views.setTextViewText(R.id.widget_strip_meta, metaText)
-        views.setTextColor(R.id.widget_strip_meta, theme.textSecondary)
-        bindRefreshButton(context, views, theme)
+        views.setTextColor(R.id.widget_strip_meta, metaColor)
+        bindRefreshButton(context, views, targetKind, theme, refreshState)
 
         if (snapshot.isAlert) {
             views.setInt(R.id.widget_action_pill, "setBackgroundResource", R.drawable.widget_cta_alert_bg)
@@ -563,9 +765,11 @@ abstract class BaseFlameAppWidgetProvider(
 
     private fun buildStreak7DayViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
         density: Float,
+        refreshState: WidgetRefreshState,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_flame_streak_7day)
         views.setInt(
@@ -576,9 +780,19 @@ abstract class BaseFlameAppWidgetProvider(
         views.setTextViewText(R.id.widget_account_name, "🔥 ${snapshot.accountName}")
         views.setTextColor(R.id.widget_account_name, theme.textPrimary)
         bindStatusPill(views, R.id.widget_status_pill, snapshot.statusPillText, snapshot.statusTone, theme)
-        views.setTextViewText(R.id.widget_next_time, snapshot.nextScheduleShort)
-        views.setTextColor(R.id.widget_next_time, theme.textMuted)
-        bindRefreshButton(context, views, theme)
+        val topMetaText = when {
+            refreshState.isRefreshing -> refreshState.compactStatusHintText
+            refreshState.isJustUpdated -> refreshState.compactStatusHintText
+            else -> snapshot.nextScheduleShort
+        }
+        val topMetaColor = when {
+            refreshState.isRefreshing -> theme.sparkColor
+            refreshState.isJustUpdated -> theme.healthyColor
+            else -> theme.textMuted
+        }
+        views.setTextViewText(R.id.widget_next_time, topMetaText)
+        views.setTextColor(R.id.widget_next_time, topMetaColor)
+        bindRefreshButton(context, views, targetKind, theme, refreshState)
 
         views.setTextViewText(R.id.widget_hero_done, snapshot.succeededTodayCount.toString())
         views.setTextColor(
@@ -642,9 +856,11 @@ abstract class BaseFlameAppWidgetProvider(
 
     private fun buildFriendsBoardViews(
         context: Context,
+        targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
         theme: WidgetVisualTheme,
         hideFriendNames: Boolean,
+        refreshState: WidgetRefreshState,
     ): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_flame_friends_board)
         views.setInt(
@@ -659,10 +875,14 @@ abstract class BaseFlameAppWidgetProvider(
         )
         views.setTextColor(R.id.widget_friends_progress, theme.sparkColor)
 
-        val pillText = if (snapshot.isAlert) snapshot.statusPillText else "${snapshot.nextScheduleShort} 自动"
-        val pillTone = if (snapshot.isAlert) snapshot.statusTone else WidgetStatusTone.HEALTHY
+        val (pillText, pillTone) = when {
+            refreshState.isRefreshing -> refreshState.compactStatusHintText to WidgetStatusTone.WARNING
+            refreshState.isJustUpdated -> refreshState.statusHintText to WidgetStatusTone.HEALTHY
+            snapshot.isAlert -> snapshot.statusPillText to snapshot.statusTone
+            else -> "${snapshot.nextScheduleShort} 自动" to WidgetStatusTone.HEALTHY
+        }
         bindStatusPill(views, R.id.widget_status_pill, pillText, pillTone, theme)
-        bindRefreshButton(context, views, theme)
+        bindRefreshButton(context, views, targetKind, theme, refreshState)
 
         val rowSlots = listOf(
             Triple(R.id.widget_friend_row_1, R.id.widget_friend_icon_1, R.id.widget_friend_name_1 to R.id.widget_friend_badge_1),
@@ -748,13 +968,23 @@ abstract class BaseFlameAppWidgetProvider(
     private fun bindRefreshButton(
         context: Context,
         views: RemoteViews,
+        targetKind: FlameWidgetKind,
         theme: WidgetVisualTheme,
+        refreshState: WidgetRefreshState,
     ) {
         views.setInt(R.id.widget_refresh_button, "setBackgroundResource", theme.refreshBg)
         views.setImageViewResource(R.id.widget_refresh_button, theme.refreshIcon)
+        views.setInt(R.id.widget_refresh_spinner, "setBackgroundResource", theme.refreshBg)
+        if (refreshState.isRefreshing) {
+            views.setViewVisibility(R.id.widget_refresh_button, View.GONE)
+            views.setViewVisibility(R.id.widget_refresh_spinner, View.VISIBLE)
+        } else {
+            views.setViewVisibility(R.id.widget_refresh_button, View.VISIBLE)
+            views.setViewVisibility(R.id.widget_refresh_spinner, View.GONE)
+        }
         views.setOnClickPendingIntent(
             R.id.widget_refresh_button,
-            createRefreshPendingIntent(context),
+            createRefreshPendingIntent(context, targetKind),
         )
     }
 
@@ -836,13 +1066,16 @@ abstract class BaseFlameAppWidgetProvider(
         )
     }
 
-    private fun createRefreshPendingIntent(context: Context): PendingIntent {
-        val intent = Intent(context, kind.providerClass).apply {
+    private fun createRefreshPendingIntent(
+        context: Context,
+        targetKind: FlameWidgetKind,
+    ): PendingIntent {
+        val intent = Intent(context, targetKind.providerClass).apply {
             action = ACTION_REFRESH
         }
         return PendingIntent.getBroadcast(
             context,
-            5400 + kind.ordinal,
+            5400 + targetKind.ordinal,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -855,6 +1088,11 @@ abstract class BaseFlameAppWidgetProvider(
 
         private const val TAG = "FlameWidgets"
         private const val UPDATE_TIMEOUT_MS = 8_000L
+        private const val INTERACTIVE_REFRESH_TIMEOUT_MS = 6_000L
+        private const val MIN_REFRESH_SPIN_MS = 520L
+        private const val REFRESH_RECEIPT_HOLD_MS = 1_800L
+        private val REFRESH_HHMM_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
+        private val refreshGeneration = AtomicLong(0L)
         private val widgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
@@ -920,6 +1158,16 @@ object FlameStatusWidgetUpdater {
     }
 
     fun requestUpdate(context: Context) = requestUpdateAll(context)
+
+    fun requestInteractiveRefreshAll(context: Context) {
+        val appContext = context.applicationContext ?: context
+        runCatching {
+            val intent = Intent(appContext, FlameStatusAppWidgetProvider::class.java).apply {
+                action = BaseFlameAppWidgetProvider.ACTION_REFRESH
+            }
+            appContext.sendBroadcast(intent)
+        }
+    }
 
     fun requestUpdateAll(context: Context) {
         val appContext = context.applicationContext ?: context

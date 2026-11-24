@@ -13,10 +13,13 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -93,7 +96,9 @@ import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
@@ -362,12 +367,79 @@ fun SettingsRoute(
         }
     }
 
+    val reducedMotion = rememberReducedMotion()
     AnimatedContent(
         targetState = activeSection,
         modifier = modifier.fillMaxSize(),
         transitionSpec = {
-            fadeIn(animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)) togetherWith
-                fadeOut(animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing))
+            when {
+                reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
+                targetState != null && initialState == null -> {
+                    (fadeIn(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + slideInHorizontally(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                        initialOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                    )) togetherWith (fadeOut(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + slideOutHorizontally(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                        targetOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
+                    ))
+                }
+
+                targetState == null && initialState != null -> {
+                    (fadeIn(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + slideInHorizontally(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                        initialOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
+                    )) togetherWith (fadeOut(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + slideOutHorizontally(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                        targetOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                    ))
+                }
+
+                else -> {
+                    fadeIn(
+                        animationSpec = tween(
+                            durationMillis = 160,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) togetherWith fadeOut(
+                        animationSpec = tween(
+                            durationMillis = 130,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    )
+                }
+            }
         },
         label = "settings_section_transition",
     ) { section ->

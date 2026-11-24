@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,11 +42,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -166,6 +169,8 @@ fun FlameTopPillButton(
     leadingIcon: ImageVector? = null,
 ) {
     val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
     val targetContainer = when {
         !enabled && primary -> palette.monoCtaContainer.copy(alpha = 0.38f)
         !enabled -> palette.surfaceSubtle
@@ -191,9 +196,15 @@ fun FlameTopPillButton(
     val borderStroke = if (primary) null else BorderStroke(1.dp, palette.hairline)
 
     Surface(
-        onClick = onClick,
+        onClick = {
+            haptics.performFlameLightTick()
+            onClick()
+        },
         enabled = enabled,
-        modifier = modifier.heightIn(min = 36.dp),
+        interactionSource = interactionSource,
+        modifier = modifier
+            .flamePressScale(interactionSource = interactionSource, enabled = enabled)
+            .heightIn(min = 36.dp),
         shape = RoundedCornerShape(999.dp),
         color = containerColor,
         contentColor = contentColor,
@@ -234,10 +245,18 @@ fun FlameIconButton(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val haptics = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
     Box(modifier = modifier) {
         Surface(
-            onClick = onClick,
-            modifier = Modifier.size(38.dp),
+            onClick = {
+                haptics.performFlameLightTick()
+                onClick()
+            },
+            interactionSource = interactionSource,
+            modifier = Modifier
+                .flamePressScale(interactionSource = interactionSource)
+                .size(38.dp),
             shape = CircleShape,
             color = palette.surface,
             contentColor = palette.ink,

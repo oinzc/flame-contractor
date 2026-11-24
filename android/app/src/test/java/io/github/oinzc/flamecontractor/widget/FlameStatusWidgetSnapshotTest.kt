@@ -490,4 +490,28 @@ class FlameStatusWidgetSnapshotTest {
             ),
         )
     }
+
+    @Test
+    fun `widget refresh state formats spinning and receipt copy cleanly`() {
+        assertFalse(WidgetRefreshState.IDLE.isRefreshing)
+        assertFalse(WidgetRefreshState.IDLE.isJustUpdated)
+        assertEquals("", WidgetRefreshState.IDLE.statusHintText)
+        assertEquals("", WidgetRefreshState.IDLE.compactStatusHintText)
+
+        val spinning = WidgetRefreshState(phase = WidgetRefreshPhase.REFRESHING)
+        assertTrue(spinning.isRefreshing)
+        assertFalse(spinning.isJustUpdated)
+        assertEquals("同步中…", spinning.statusHintText)
+        assertEquals("同步中…", spinning.compactStatusHintText)
+
+        val receipt = WidgetRefreshState(phase = WidgetRefreshPhase.JUST_UPDATED, updatedAtHhmm = "11:28")
+        assertFalse(receipt.isRefreshing)
+        assertTrue(receipt.isJustUpdated)
+        assertEquals("✓ 已刷新 11:28", receipt.statusHintText)
+        assertEquals("✓ 11:28", receipt.compactStatusHintText)
+
+        val receiptFallback = WidgetRefreshState(phase = WidgetRefreshPhase.JUST_UPDATED, updatedAtHhmm = "  ")
+        assertEquals("✓ 已刷新", receiptFallback.statusHintText)
+        assertEquals("✓ 已刷新", receiptFallback.compactStatusHintText)
+    }
 }

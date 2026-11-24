@@ -3,9 +3,16 @@ package io.github.oinzc.flamecontractor.ui.history
 import android.content.ActivityNotFoundException
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -45,7 +52,6 @@ import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.History
@@ -76,8 +82,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -103,6 +111,9 @@ import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
@@ -939,6 +950,8 @@ private fun DayStackedBarColumn(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val haptics = LocalHapticFeedback.current
+    val reducedMotion = rememberReducedMotion()
     val maxBarHeightDp = 96f
     val targetBarHeight = if (bucket.total == 0) {
         3.dp
@@ -949,7 +962,11 @@ private fun DayStackedBarColumn(
     }
     val animatedHeight by animateDpAsState(
         targetValue = targetBarHeight,
-        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        animationSpec = if (reducedMotion) {
+            tween(durationMillis = 0)
+        } else {
+            tween(durationMillis = 200, easing = FlameMotionSpec.easeOut)
+        },
         label = "history_bar_height_${bucket.date}",
     )
 
@@ -961,7 +978,12 @@ private fun DayStackedBarColumn(
             .clip(RoundedCornerShape(10.dp))
             .background(containerColor)
             .border(width = 1.dp, color = borderColor, shape = RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onClick()
+                },
+            )
             .padding(vertical = 5.dp, horizontal = horizontalPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp),
@@ -1074,6 +1096,20 @@ private fun HistoryDateGroupSection(
     onSelectJob: (String) -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val reducedMotion = rememberReducedMotion()
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        animationSpec = if (reducedMotion) {
+            tween(durationMillis = 0)
+        } else {
+            tween(
+                durationMillis = FlameMotionSpec.CHEVRON_ROTATE_MS,
+                easing = FlameMotionSpec.easeOut,
+            )
+        },
+        label = "history_group_chevron_$businessDate",
+    )
     val summaryText = remember(groupItems) {
         val succeededCount = groupItems.count { it.job.status == JobStatus.SUCCEEDED }
         val unknownCount = groupItems.count { it.job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW }
@@ -1092,7 +1128,12 @@ private fun HistoryDateGroupSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onToggleExpand)
+                .clickable(
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onToggleExpand()
+                    },
+                )
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1120,49 +1161,90 @@ private fun HistoryDateGroupSection(
                 Spacer(modifier = Modifier.weight(1f))
             }
             Icon(
-                imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                imageVector = Icons.Outlined.ExpandMore,
                 contentDescription = if (isExpanded) "收起该日明细" else "展开该日明细",
                 tint = palette.inkTertiary,
-                modifier = Modifier.size(19.dp),
+                modifier = Modifier
+                    .size(19.dp)
+                    .graphicsLayer { rotationZ = chevronRotation },
             )
         }
 
-        if (isExpanded) {
-            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
-
-            val visibleItems = if (showAllForDate) {
-                groupItems
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = if (reducedMotion) {
+                EnterTransition.None
             } else {
-                groupItems.take(DEFAULT_VISIBLE_JOBS_PER_DAY)
-            }
-            val hasPagination = groupItems.size > DEFAULT_VISIBLE_JOBS_PER_DAY
-
-            visibleItems.forEachIndexed { idx, item ->
-                HistoryJobListRow(
-                    item = item,
-                    showDivider = idx < visibleItems.lastIndex || hasPagination,
-                    onClick = { onSelectJob(item.job.id) },
+                fadeIn(
+                    animationSpec = tween(
+                        durationMillis = FlameMotionSpec.COLLAPSE_ENTER_MS,
+                        easing = FlameMotionSpec.easeOut,
+                    ),
+                ) + expandVertically(
+                    animationSpec = tween(
+                        durationMillis = FlameMotionSpec.COLLAPSE_ENTER_MS,
+                        easing = FlameMotionSpec.easeOut,
+                    ),
                 )
-            }
+            },
+            exit = if (reducedMotion) {
+                ExitTransition.None
+            } else {
+                fadeOut(
+                    animationSpec = tween(
+                        durationMillis = FlameMotionSpec.COLLAPSE_EXIT_MS,
+                        easing = FlameMotionSpec.easeOut,
+                    ),
+                ) + shrinkVertically(
+                    animationSpec = tween(
+                        durationMillis = FlameMotionSpec.COLLAPSE_EXIT_MS,
+                        easing = FlameMotionSpec.easeOut,
+                    ),
+                )
+            },
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
-            if (hasPagination) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onToggleShowAll)
-                        .padding(vertical = 11.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = if (showAllForDate) {
-                            "收起至前 $DEFAULT_VISIBLE_JOBS_PER_DAY 条"
-                        } else {
-                            "展开当日剩余 ${groupItems.size - DEFAULT_VISIBLE_JOBS_PER_DAY} 条（共 ${groupItems.size} 条）"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.inkSecondary,
+                val visibleItems = if (showAllForDate) {
+                    groupItems
+                } else {
+                    groupItems.take(DEFAULT_VISIBLE_JOBS_PER_DAY)
+                }
+                val hasPagination = groupItems.size > DEFAULT_VISIBLE_JOBS_PER_DAY
+
+                visibleItems.forEachIndexed { idx, item ->
+                    HistoryJobListRow(
+                        item = item,
+                        showDivider = idx < visibleItems.lastIndex || hasPagination,
+                        onClick = { onSelectJob(item.job.id) },
                     )
+                }
+
+                if (hasPagination) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                onClick = {
+                                    haptics.performFlameLightTick()
+                                    onToggleShowAll()
+                                },
+                            )
+                            .padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (showAllForDate) {
+                                "收起至前 $DEFAULT_VISIBLE_JOBS_PER_DAY 条"
+                            } else {
+                                "展开当日剩余 ${groupItems.size - DEFAULT_VISIBLE_JOBS_PER_DAY} 条（共 ${groupItems.size} 条）"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkSecondary,
+                        )
+                    }
                 }
             }
         }

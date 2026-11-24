@@ -78,16 +78,33 @@
             android:textSize="10.5sp" />
     </LinearLayout>
 
-    <ImageView
-        android:id="@+id/widget_refresh_button"
+    <FrameLayout
         android:layout_width="26dp"
         android:layout_height="26dp"
-        android:layout_marginEnd="6dp"
-        android:background="@drawable/widget_refresh_bg_dark"
-        android:contentDescription="@string/widget_refresh_content_description"
-        android:padding="5dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/widget_ic_refresh_dark" />
+        android:layout_marginEnd="6dp">
+
+        <ImageView
+            android:id="@+id/widget_refresh_button"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/widget_refresh_bg_dark"
+            android:contentDescription="@string/widget_refresh_content_description"
+            android:padding="5dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/widget_ic_refresh_dark" />
+
+        <ProgressBar
+            android:id="@+id/widget_refresh_spinner"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/widget_refresh_bg_dark"
+            android:indeterminate="true"
+            android:indeterminateTint="#FFF97316"
+            android:indeterminateTintMode="src_in"
+            android:padding="5dp"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <TextView
         android:id="@+id/widget_action_pill"

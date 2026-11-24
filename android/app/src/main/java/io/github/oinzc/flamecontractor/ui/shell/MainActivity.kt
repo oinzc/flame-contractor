@@ -10,6 +10,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +39,8 @@ import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.history.HistoryRoute
 import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
 import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
@@ -245,7 +255,47 @@ class MainActivity : AppCompatActivity() {
                         },
                     )
 
+                    val reducedMotion = rememberReducedMotion()
+                    var renderedSettingsSection by remember { mutableStateOf(navState.activeSettingsSection) }
                     if (navState.isSettingsOpen) {
+                        renderedSettingsSection = navState.activeSettingsSection
+                    }
+
+                    AnimatedVisibility(
+                        visible = navState.isSettingsOpen,
+                        enter = if (reducedMotion) {
+                            EnterTransition.None
+                        } else {
+                            fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideInHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                initialOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                            )
+                        },
+                        exit = if (reducedMotion) {
+                            ExitTransition.None
+                        } else {
+                            fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideOutHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                targetOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                            )
+                        },
+                    ) {
                         Surface(
                             modifier = Modifier.fillMaxSize(),
                             color = FlameThemeTokens.palette.canvas,
@@ -257,7 +307,7 @@ class MainActivity : AppCompatActivity() {
                                 barkNotifier = container.barkNotifier,
                                 scheduleCoordinator = container.scheduleCoordinator,
                                 themePreferencesStore = container.themePreferencesStore,
-                                activeSection = navState.activeSettingsSection,
+                                activeSection = renderedSettingsSection,
                                 onSelectSection = { section ->
                                     navState = navState.openSettings(section)
                                 },

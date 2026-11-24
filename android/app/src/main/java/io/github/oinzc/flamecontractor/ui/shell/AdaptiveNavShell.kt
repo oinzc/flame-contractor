@@ -1,17 +1,25 @@
 package io.github.oinzc.flamecontractor.ui.shell
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -47,16 +55,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.flamePressScale
+import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
 /**
@@ -82,12 +97,42 @@ fun AdaptiveNavShell(
     historyContent: @Composable () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val reducedMotion = rememberReducedMotion()
     val activeContent: @Composable () -> Unit = {
-        when (selectedTab) {
-            MainTab.TODAY -> todayContent()
-            MainTab.TARGETS -> targetsContent()
-            MainTab.TEMPLATES -> templatesContent()
-            MainTab.HISTORY -> historyContent()
+        AnimatedContent(
+            targetState = selectedTab,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                if (reducedMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    (fadeIn(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.TAB_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + scaleIn(
+                        initialScale = FlameMotionSpec.TAB_INITIAL_SCALE,
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.TAB_ENTER_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    )) togetherWith fadeOut(
+                        animationSpec = tween(
+                            durationMillis = FlameMotionSpec.TAB_EXIT_MS,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    )
+                }
+            },
+            label = "main_tab_transition",
+        ) { tab ->
+            when (tab) {
+                MainTab.TODAY -> todayContent()
+                MainTab.TARGETS -> targetsContent()
+                MainTab.TEMPLATES -> templatesContent()
+                MainTab.HISTORY -> historyContent()
+            }
         }
     }
 
@@ -135,16 +180,24 @@ fun AdaptiveNavShell(
 
                 AnimatedVisibility(
                     visible = !hideNavigationChrome,
-                    enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
-                        slideInVertically(
-                            animationSpec = tween(200, easing = FastOutSlowInEasing),
-                            initialOffsetY = { it / 2 },
-                        ),
-                    exit = fadeOut(animationSpec = tween(150, easing = FastOutSlowInEasing)) +
-                        slideOutVertically(
-                            animationSpec = tween(170, easing = FastOutSlowInEasing),
-                            targetOffsetY = { it / 2 },
-                        ),
+                    enter = if (reducedMotion) {
+                        EnterTransition.None
+                    } else {
+                        fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                            slideInVertically(
+                                animationSpec = tween(200, easing = FastOutSlowInEasing),
+                                initialOffsetY = { it / 2 },
+                            )
+                    },
+                    exit = if (reducedMotion) {
+                        ExitTransition.None
+                    } else {
+                        fadeOut(animationSpec = tween(150, easing = FastOutSlowInEasing)) +
+                            slideOutVertically(
+                                animationSpec = tween(170, easing = FastOutSlowInEasing),
+                                targetOffsetY = { it / 2 },
+                            )
+                    },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
@@ -169,6 +222,7 @@ private fun FlameFloatingPillDock(
 ) {
     val palette = FlameThemeTokens.palette
     val isDark = FlameThemeTokens.isDark
+    val haptics = LocalHapticFeedback.current
 
     Surface(
         modifier = Modifier
@@ -190,6 +244,7 @@ private fun FlameFloatingPillDock(
         ) {
             MainTab.entries.forEach { tab ->
                 val selected = tab == selectedTab
+                val tabInteraction = remember(tab) { MutableInteractionSource() }
                 val itemContainer by animateColorAsState(
                     targetValue = if (selected) palette.dockActiveContainer else Color.Transparent,
                     animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
@@ -205,11 +260,22 @@ private fun FlameFloatingPillDock(
                 Column(
                     modifier = Modifier
                         .weight(1f)
+                        .flamePressScale(
+                            interactionSource = tabInteraction,
+                            pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
+                        )
                         .clip(RoundedCornerShape(20.dp))
                         .background(itemContainer)
                         .clickable(
+                            interactionSource = tabInteraction,
+                            indication = LocalIndication.current,
                             role = Role.Tab,
-                            onClick = { onSelectTab(tab) },
+                            onClick = {
+                                if (!selected) {
+                                    haptics.performFlameLightTick()
+                                }
+                                onSelectTab(tab)
+                            },
                         )
                         .padding(vertical = 7.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -393,8 +459,24 @@ private fun TabIconWithBadge(
     badgeRingColor: Color,
 ) {
     val semantics = FlameThemeTokens.semanticColors
+    val reducedMotion = rememberReducedMotion()
+    val iconScale by animateFloatAsState(
+        targetValue = if (!reducedMotion && selected) FlameMotionSpec.TAB_SELECTED_ICON_SCALE else 1f,
+        animationSpec = FlameMotionSpec.tabIconSpringSpec(),
+        label = "tab_icon_scale_${tab.name}",
+    )
     val icon = if (selected) tab.selectedIcon else tab.unselectedIcon
-    Box(contentAlignment = Alignment.Center) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = if (reducedMotion) {
+            Modifier
+        } else {
+            Modifier.graphicsLayer {
+                scaleX = iconScale
+                scaleY = iconScale
+            }
+        },
+    ) {
         Icon(
             imageVector = icon,
             contentDescription = tab.label,

@@ -31,6 +31,47 @@ enum class WidgetDayStatus {
     EMPTY,
 }
 
+enum class WidgetRefreshPhase {
+    IDLE,
+    REFRESHING,
+    JUST_UPDATED,
+}
+
+data class WidgetRefreshState(
+    val phase: WidgetRefreshPhase = WidgetRefreshPhase.IDLE,
+    val updatedAtHhmm: String = "",
+) {
+    val isRefreshing: Boolean
+        get() = phase == WidgetRefreshPhase.REFRESHING
+
+    val isJustUpdated: Boolean
+        get() = phase == WidgetRefreshPhase.JUST_UPDATED
+
+    val statusHintText: String
+        get() = when (phase) {
+            WidgetRefreshPhase.IDLE -> ""
+            WidgetRefreshPhase.REFRESHING -> "同步中…"
+            WidgetRefreshPhase.JUST_UPDATED -> {
+                val clean = updatedAtHhmm.trim()
+                if (clean.isNotEmpty()) "✓ 已刷新 $clean" else "✓ 已刷新"
+            }
+        }
+
+    val compactStatusHintText: String
+        get() = when (phase) {
+            WidgetRefreshPhase.IDLE -> ""
+            WidgetRefreshPhase.REFRESHING -> "同步中…"
+            WidgetRefreshPhase.JUST_UPDATED -> {
+                val clean = updatedAtHhmm.trim()
+                if (clean.isNotEmpty()) "✓ $clean" else "✓ 已刷新"
+            }
+        }
+
+    companion object {
+        val IDLE = WidgetRefreshState(phase = WidgetRefreshPhase.IDLE)
+    }
+}
+
 data class WidgetFriendItem(
     val targetId: String,
     val displayName: String,

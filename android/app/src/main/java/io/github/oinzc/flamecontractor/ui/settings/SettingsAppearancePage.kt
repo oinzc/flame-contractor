@@ -4,9 +4,19 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,8 +65,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -67,10 +80,14 @@ import io.github.oinzc.flamecontractor.core.theme.ThemePreference
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameStreakBadge
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.flamePressScale
+import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import io.github.oinzc.flamecontractor.widget.FlameStatusWidgetUpdater
@@ -344,6 +361,7 @@ internal fun SettingsAppearancePage(
                             style = MaterialTheme.typography.titleSmall,
                             color = palette.ink,
                         )
+                        val styleHaptics = LocalHapticFeedback.current
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -351,17 +369,35 @@ internal fun SettingsAppearancePage(
                         ) {
                             WidgetAppearanceStyle.entries.forEach { style ->
                                 val selected = widgetPrefs.appearanceStyle == style
+                                val chipInteraction = remember(style) { MutableInteractionSource() }
+                                val chipBg by animateColorAsState(
+                                    targetValue = if (selected) palette.monoCtaContainer else palette.surfaceSubtle,
+                                    animationSpec = tween(160, easing = FlameMotionSpec.standardEasing),
+                                    label = "widget_style_bg_${style.name}",
+                                )
+                                val chipFg by animateColorAsState(
+                                    targetValue = if (selected) palette.monoCtaContent else palette.inkSecondary,
+                                    animationSpec = tween(160, easing = FlameMotionSpec.standardEasing),
+                                    label = "widget_style_fg_${style.name}",
+                                )
+                                val chipBorder by animateColorAsState(
+                                    targetValue = if (selected) palette.monoCtaContainer else palette.hairline,
+                                    animationSpec = tween(160, easing = FlameMotionSpec.standardEasing),
+                                    label = "widget_style_border_${style.name}",
+                                )
                                 Surface(
                                     shape = RoundedCornerShape(999.dp),
-                                    color = if (selected) palette.monoCtaContainer else palette.surfaceSubtle,
-                                    contentColor = if (selected) palette.monoCtaContent else palette.inkSecondary,
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (selected) palette.monoCtaContainer else palette.hairline,
-                                    ),
+                                    color = chipBg,
+                                    contentColor = chipFg,
+                                    border = BorderStroke(1.dp, chipBorder),
                                     modifier = Modifier
+                                        .flamePressScale(interactionSource = chipInteraction)
                                         .clip(RoundedCornerShape(999.dp))
-                                        .clickable {
+                                        .clickable(
+                                            interactionSource = chipInteraction,
+                                            indication = LocalIndication.current,
+                                        ) {
+                                            styleHaptics.performFlameLightTick()
                                             widgetPrefsStore.setAppearanceStyle(style)
                                             FlameStatusWidgetUpdater.requestUpdateAll(context)
                                         },
@@ -426,11 +462,32 @@ internal fun SettingsAppearancePage(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    feedback?.let { fb ->
-                        WidgetPinFeedbackBanner(
-                            feedback = fb,
-                            onGoHome = { openLauncherHomeScreen(context) },
-                        )
+                    val reducedMotion = rememberReducedMotion()
+                    var lastFeedback by remember { mutableStateOf<WidgetCenterFeedback?>(null) }
+                    if (feedback != null) {
+                        lastFeedback = feedback
+                    }
+                    AnimatedVisibility(
+                        visible = feedback != null,
+                        enter = if (reducedMotion) {
+                            fadeIn(tween(0))
+                        } else {
+                            fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
+                                expandVertically(tween(FlameMotionSpec.COLLAPSE_ENTER_MS, easing = FlameMotionSpec.easeOut))
+                        },
+                        exit = if (reducedMotion) {
+                            fadeOut(tween(0))
+                        } else {
+                            fadeOut(tween(140, easing = FlameMotionSpec.easeOut)) +
+                                shrinkVertically(tween(FlameMotionSpec.COLLAPSE_EXIT_MS, easing = FlameMotionSpec.easeOut))
+                        },
+                    ) {
+                        lastFeedback?.let { fb ->
+                            WidgetPinFeedbackBanner(
+                                feedback = fb,
+                                onGoHome = { openLauncherHomeScreen(context) },
+                            )
+                        }
                     }
 
                     FlameWidgetKind.entries.forEach { kind ->
@@ -442,10 +499,10 @@ internal fun SettingsAppearancePage(
                             isBusy = isBusy,
                             onAddClick = { triggerPinWidget(kind) },
                             onRefreshClick = {
-                                FlameStatusWidgetUpdater.requestUpdateAll(context)
+                                FlameStatusWidgetUpdater.requestInteractiveRefreshAll(context)
                                 placedCounts = FlameStatusWidgetUpdater.getPlacedCountsByKind(context)
                                 feedback = WidgetCenterFeedback(
-                                    message = "已刷新桌面上所有「${kind.title}」最新状态",
+                                    message = "已触发桌面上所有小组件同步刷新（「${kind.title}」最新状态已推送）",
                                     tone = FlameTone.HEALTHY,
                                     showGoHomeAction = true,
                                 )
@@ -503,6 +560,17 @@ private fun WidgetOptionCard(
     onGoHomeClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val reducedMotion = rememberReducedMotion()
+    var refreshSpinTurns by remember(kind) { mutableIntStateOf(0) }
+    val refreshIconRotation by animateFloatAsState(
+        targetValue = if (reducedMotion) 0f else refreshSpinTurns * 360f,
+        animationSpec = tween(
+            durationMillis = FlameMotionSpec.ICON_SPIN_MS,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "widget_card_refresh_spin_${kind.name}",
+    )
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -545,9 +613,18 @@ private fun WidgetOptionCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (placedCount <= 0) {
+                    val addInteraction = remember(kind) { MutableInteractionSource() }
                     Button(
-                        onClick = onAddClick,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onAddClick()
+                        },
                         enabled = !isBusy,
+                        interactionSource = addInteraction,
+                        modifier = Modifier.flamePressScale(
+                            interactionSource = addInteraction,
+                            enabled = !isBusy,
+                        ),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.monoCtaContainer,
@@ -568,8 +645,15 @@ private fun WidgetOptionCard(
                         )
                     }
                 } else {
+                    val refreshInteraction = remember(kind) { MutableInteractionSource() }
                     Button(
-                        onClick = onRefreshClick,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            refreshSpinTurns += 1
+                            onRefreshClick()
+                        },
+                        interactionSource = refreshInteraction,
+                        modifier = Modifier.flamePressScale(interactionSource = refreshInteraction),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.monoCtaContainer,
@@ -580,7 +664,9 @@ private fun WidgetOptionCard(
                         Icon(
                             imageVector = Icons.Outlined.Refresh,
                             contentDescription = null,
-                            modifier = Modifier.size(15.dp),
+                            modifier = Modifier
+                                .size(15.dp)
+                                .graphicsLayer { rotationZ = refreshIconRotation },
                         )
                         Text(
                             text = "刷新组件",
@@ -590,8 +676,14 @@ private fun WidgetOptionCard(
                         )
                     }
 
+                    val goHomeInteraction = remember(kind) { MutableInteractionSource() }
                     OutlinedButton(
-                        onClick = onGoHomeClick,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onGoHomeClick()
+                        },
+                        interactionSource = goHomeInteraction,
+                        modifier = Modifier.flamePressScale(interactionSource = goHomeInteraction),
                         shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, palette.hairlineStrong),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
@@ -610,7 +702,10 @@ private fun WidgetOptionCard(
                     }
 
                     TextButton(
-                        onClick = onAddClick,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onAddClick()
+                        },
                         enabled = !isBusy,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                     ) {
