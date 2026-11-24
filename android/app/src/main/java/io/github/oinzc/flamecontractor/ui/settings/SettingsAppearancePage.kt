@@ -46,6 +46,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -134,6 +137,7 @@ private data class WidgetCenterFeedback(
 )
 
 private const val PIN_DEBOUNCE_MS = 1_500L
+private const val INLINE_REFRESH_RECEIPT_MS = 1_600L
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -146,6 +150,7 @@ internal fun SettingsAppearancePage(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val isDark = FlameThemeTokens.isDark
@@ -157,7 +162,24 @@ internal fun SettingsAppearancePage(
         mutableStateOf(FlameStatusWidgetUpdater.getPlacedCountsByKind(context))
     }
     val busyKinds = remember { mutableStateMapOf<FlameWidgetKind, Boolean>() }
+    val justRefreshedKinds = remember { mutableStateMapOf<FlameWidgetKind, Boolean>() }
+    val refreshNonces = remember { mutableStateMapOf<FlameWidgetKind, Int>() }
     var feedback by remember { mutableStateOf<WidgetCenterFeedback?>(null) }
+
+    fun showActionSnackbar(message: String, showGoHome: Boolean = false) {
+        coroutineScope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val result = snackbarHostState.showSnackbar(
+                message = message,
+                actionLabel = if (showGoHome) "去桌面看" else null,
+                withDismissAction = !showGoHome,
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed && showGoHome) {
+                openLauncherHomeScreen(context)
+            }
+        }
+    }
 
     LaunchedEffect(context) {
         WidgetPinEventBus.events.collect { event ->
@@ -167,6 +189,7 @@ internal fun SettingsAppearancePage(
                 tone = FlameTone.HEALTHY,
                 showGoHomeAction = true,
             )
+            showActionSnackbar("「${event.kind.title}」已添加到桌面", showGoHome = true)
         }
     }
 
@@ -178,6 +201,26 @@ internal fun SettingsAppearancePage(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    fun triggerRefreshWidget(kind: FlameWidgetKind) {
+        FlameStatusWidgetUpdater.requestInteractiveRefreshAll(context)
+        placedCounts = FlameStatusWidgetUpdater.getPlacedCountsByKind(context)
+        val nextNonce = (refreshNonces[kind] ?: 0) + 1
+        refreshNonces[kind] = nextNonce
+        justRefreshedKinds[kind] = true
+        feedback = WidgetCenterFeedback(
+            message = "已触发桌面上所有小组件同步刷新（「${kind.title}」最新状态已推送）",
+            tone = FlameTone.HEALTHY,
+            showGoHomeAction = true,
+        )
+        showActionSnackbar("已刷新桌面「${kind.title}」最新状态", showGoHome = true)
+        coroutineScope.launch {
+            delay(INLINE_REFRESH_RECEIPT_MS)
+            if (refreshNonces[kind] == nextNonce) {
+                justRefreshedKinds[kind] = false
+            }
+        }
     }
 
     fun triggerPinWidget(kind: FlameWidgetKind) {
@@ -198,12 +241,14 @@ internal fun SettingsAppearancePage(
                             tone = FlameTone.HEALTHY,
                             showGoHomeAction = true,
                         )
+                        showActionSnackbar("「${kind.title}」已添加到桌面", showGoHome = true)
                     } else {
                         delay(650L)
                         val finalCounts = FlameStatusWidgetUpdater.getPlacedCountsByKind(context)
                         placedCounts = finalCounts
                         val finalAfter = finalCounts[kind] ?: 0
                         feedback = if (finalAfter > beforeCount) {
+                            showActionSnackbar("「${kind.title}」已添加到桌面", showGoHome = true)
                             WidgetCenterFeedback(
                                 message = "「${kind.title}」已添加到桌面（共 $finalAfter 个）",
                                 tone = FlameTone.HEALTHY,
@@ -243,6 +288,7 @@ internal fun SettingsAppearancePage(
     FlameSubpageScaffold(
         title = SettingsSection.APPEARANCE.title,
         onBack = onBack,
+        snackbarHostState = snackbarHostState,
         modifier = modifier,
     ) { innerPadding ->
         SettingsPageScrollColumn(contentPadding = innerPadding) {
@@ -493,20 +539,14 @@ internal fun SettingsAppearancePage(
                     FlameWidgetKind.entries.forEach { kind ->
                         val count = placedCounts[kind] ?: 0
                         val isBusy = busyKinds[kind] == true
+                        val justRefreshed = justRefreshedKinds[kind] == true
                         WidgetOptionCard(
                             kind = kind,
                             placedCount = count,
                             isBusy = isBusy,
+                            justRefreshed = justRefreshed,
                             onAddClick = { triggerPinWidget(kind) },
-                            onRefreshClick = {
-                                FlameStatusWidgetUpdater.requestInteractiveRefreshAll(context)
-                                placedCounts = FlameStatusWidgetUpdater.getPlacedCountsByKind(context)
-                                feedback = WidgetCenterFeedback(
-                                    message = "已触发桌面上所有小组件同步刷新（「${kind.title}」最新状态已推送）",
-                                    tone = FlameTone.HEALTHY,
-                                    showGoHomeAction = true,
-                                )
-                            },
+                            onRefreshClick = { triggerRefreshWidget(kind) },
                             onGoHomeClick = { openLauncherHomeScreen(context) },
                         )
                     }
@@ -555,11 +595,13 @@ private fun WidgetOptionCard(
     kind: FlameWidgetKind,
     placedCount: Int,
     isBusy: Boolean,
+    justRefreshed: Boolean,
     onAddClick: () -> Unit,
     onRefreshClick: () -> Unit,
     onGoHomeClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     val haptics = LocalHapticFeedback.current
     val reducedMotion = rememberReducedMotion()
     var refreshSpinTurns by remember(kind) { mutableIntStateOf(0) }
@@ -570,6 +612,22 @@ private fun WidgetOptionCard(
             easing = FlameMotionSpec.easeOut,
         ),
         label = "widget_card_refresh_spin_${kind.name}",
+    )
+    val refreshContainerColor by animateColorAsState(
+        targetValue = if (justRefreshed) semantics.healthy else palette.monoCtaContainer,
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 180,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "widget_card_refresh_bg_${kind.name}",
+    )
+    val refreshContentColor by animateColorAsState(
+        targetValue = if (justRefreshed) Color.White else palette.monoCtaContent,
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 180,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "widget_card_refresh_fg_${kind.name}",
     )
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -656,20 +714,22 @@ private fun WidgetOptionCard(
                         modifier = Modifier.flamePressScale(interactionSource = refreshInteraction),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = palette.monoCtaContainer,
-                            contentColor = palette.monoCtaContent,
+                            containerColor = refreshContainerColor,
+                            contentColor = refreshContentColor,
                         ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Refresh,
+                            imageVector = if (justRefreshed) Icons.Outlined.CheckCircle else Icons.Outlined.Refresh,
                             contentDescription = null,
                             modifier = Modifier
                                 .size(15.dp)
-                                .graphicsLayer { rotationZ = refreshIconRotation },
+                                .graphicsLayer {
+                                    rotationZ = if (justRefreshed) 0f else refreshIconRotation
+                                },
                         )
                         Text(
-                            text = "刷新组件",
+                            text = if (justRefreshed) "已刷新" else "刷新组件",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(start = 5.dp),
