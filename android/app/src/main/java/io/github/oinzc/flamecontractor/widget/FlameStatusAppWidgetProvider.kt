@@ -357,10 +357,38 @@ class FlameStatusAppWidgetProvider : AppWidgetProvider() {
     }
 }
 
+enum class WidgetPinOutcome {
+    DISPATCHED,
+    UNSUPPORTED,
+    FAILED,
+}
+
 /**
- * 桌面小组件安全刷新触发器：若桌面未放置小组件则直接空操作返回。
+ * 桌面小组件安全刷新与固定触发器：若桌面未放置小组件则刷新直接空操作返回。
  */
 object FlameStatusWidgetUpdater {
+
+    fun getPlacedWidgetCount(context: Context): Int {
+        return runCatching {
+            val appContext = context.applicationContext ?: context
+            val manager = AppWidgetManager.getInstance(appContext) ?: return 0
+            val component = ComponentName(appContext, FlameStatusAppWidgetProvider::class.java)
+            manager.getAppWidgetIds(component)?.size ?: 0
+        }.getOrDefault(0)
+    }
+
+    fun requestPinToHomeScreen(context: Context): WidgetPinOutcome {
+        return runCatching {
+            val appContext = context.applicationContext ?: context
+            val manager = AppWidgetManager.getInstance(appContext) ?: return WidgetPinOutcome.UNSUPPORTED
+            if (!manager.isRequestPinAppWidgetSupported) {
+                return WidgetPinOutcome.UNSUPPORTED
+            }
+            val component = ComponentName(appContext, FlameStatusAppWidgetProvider::class.java)
+            val accepted = manager.requestPinAppWidget(component, null, null)
+            if (accepted) WidgetPinOutcome.DISPATCHED else WidgetPinOutcome.UNSUPPORTED
+        }.getOrElse { WidgetPinOutcome.FAILED }
+    }
 
     fun requestUpdate(context: Context) {
         runCatching {

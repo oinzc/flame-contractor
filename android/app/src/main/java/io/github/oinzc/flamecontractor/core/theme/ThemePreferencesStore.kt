@@ -21,7 +21,6 @@ enum class ThemeMode {
 
 data class ThemePreference(
     val mode: ThemeMode = ThemeMode.SYSTEM,
-    val dynamicColorEnabled: Boolean = false,
 )
 
 class ThemePreferencesStore(
@@ -39,34 +38,23 @@ class ThemePreferencesStore(
         onPersist(next)
     }
 
-    fun setDynamicColorEnabled(enabled: Boolean) {
-        val next = _preference.value.copy(dynamicColorEnabled = enabled)
-        if (_preference.value != next) {
-            _preference.value = next
-        }
-        onPersist(next)
-    }
-
     companion object {
         private const val PREFS_NAME = "flame_theme_prefs"
         private const val KEY_THEME_MODE = "theme_mode"
-        private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
-        const val MIN_DYNAMIC_COLOR_SDK = 31
+        private const val LEGACY_KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
 
         fun fromContext(context: Context): ThemePreferencesStore {
             val prefs = (context.applicationContext ?: context)
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (prefs.contains(LEGACY_KEY_DYNAMIC_COLOR_ENABLED)) {
+                prefs.edit().remove(LEGACY_KEY_DYNAMIC_COLOR_ENABLED).apply()
+            }
             val savedMode = ThemeMode.fromStorageValue(prefs.getString(KEY_THEME_MODE, null))
-            val savedDynamic = prefs.getBoolean(KEY_DYNAMIC_COLOR_ENABLED, false)
             return ThemePreferencesStore(
-                initialPreference = ThemePreference(
-                    mode = savedMode,
-                    dynamicColorEnabled = savedDynamic,
-                ),
+                initialPreference = ThemePreference(mode = savedMode),
                 onPersist = { pref ->
                     prefs.edit()
                         .putString(KEY_THEME_MODE, pref.mode.name)
-                        .putBoolean(KEY_DYNAMIC_COLOR_ENABLED, pref.dynamicColorEnabled)
                         .apply()
                 },
             )
@@ -77,8 +65,5 @@ class ThemePreferencesStore(
             ThemeMode.LIGHT -> false
             ThemeMode.DARK -> true
         }
-
-        fun resolveEffectiveDynamicColor(enabled: Boolean, sdkInt: Int): Boolean =
-            enabled && sdkInt >= MIN_DYNAMIC_COLOR_SDK
     }
 }

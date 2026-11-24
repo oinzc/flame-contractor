@@ -195,11 +195,7 @@ private fun FlameFloatingPillDock(
                     animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
                     label = "dock_item_bg_${tab.name}",
                 )
-                val targetContentColor = when {
-                    selected && FlameThemeTokens.isDynamicColorActive -> palette.monoCtaContainer
-                    selected -> palette.ink
-                    else -> palette.inkTertiary
-                }
+                val targetContentColor = if (selected) palette.ink else palette.inkTertiary
                 val itemTint by animateColorAsState(
                     targetValue = targetContentColor,
                     animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
@@ -328,11 +324,6 @@ private fun FlameWideNavigationRail(
     ) {
         MainTab.entries.forEach { tab ->
             val selected = tab == selectedTab
-            val selectedTint = if (FlameThemeTokens.isDynamicColorActive) {
-                palette.monoCtaContainer
-            } else {
-                palette.ink
-            }
             NavigationRailItem(
                 selected = selected,
                 onClick = { onSelectTab(tab) },
@@ -340,7 +331,7 @@ private fun FlameWideNavigationRail(
                     TabIconWithBadge(
                         tab = tab,
                         selected = selected,
-                        tint = if (selected) selectedTint else palette.inkTertiary,
+                        tint = if (selected) palette.ink else palette.inkTertiary,
                         showBadge = tab == MainTab.TODAY && todayAlertBadge,
                         badgeRingColor = if (selected) palette.dockActiveContainer else palette.surface,
                     )
@@ -354,8 +345,8 @@ private fun FlameWideNavigationRail(
                 },
                 alwaysShowLabel = true,
                 colors = NavigationRailItemDefaults.colors(
-                    selectedIconColor = selectedTint,
-                    selectedTextColor = selectedTint,
+                    selectedIconColor = palette.ink,
+                    selectedTextColor = palette.ink,
                     indicatorColor = palette.dockActiveContainer,
                     unselectedIconColor = palette.inkTertiary,
                     unselectedTextColor = palette.inkTertiary,

@@ -25,11 +25,10 @@ class ThemePreferencesStoreTest {
         val store = ThemePreferencesStore(onPersist = { persisted += it })
 
         store.setThemeMode(ThemeMode.DARK)
-        store.setDynamicColorEnabled(true)
 
-        assertEquals(ThemePreference(ThemeMode.DARK, true), store.preference.value)
-        assertEquals(2, persisted.size)
-        assertEquals(ThemePreference(ThemeMode.DARK, true), persisted.last())
+        assertEquals(ThemePreference(ThemeMode.DARK), store.preference.value)
+        assertEquals(1, persisted.size)
+        assertEquals(ThemePreference(ThemeMode.DARK), persisted.last())
     }
 
     @Test
@@ -41,28 +40,22 @@ class ThemePreferencesStoreTest {
     }
 
     @Test
-    fun `resolveEffectiveDynamicColor disables below Android 12`() {
-        assertFalse(ThemePreferencesStore.resolveEffectiveDynamicColor(enabled = true, sdkInt = 30))
-        assertTrue(ThemePreferencesStore.resolveEffectiveDynamicColor(enabled = true, sdkInt = 31))
-        assertFalse(ThemePreferencesStore.resolveEffectiveDynamicColor(enabled = false, sdkInt = 35))
-    }
-
-    @Test
-    fun `fromContext restores saved preference and safely recovers invalid mode`() {
+    fun `fromContext restores saved preference, clears legacy dynamic key, and recovers invalid mode`() {
         val fakeContext = FakeSharedPrefsContext()
+        fakeContext.prefs.edit().putBoolean("dynamic_color_enabled", true).apply()
 
         val initialStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.SYSTEM, false), initialStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.SYSTEM), initialStore.preference.value)
+        assertFalse(fakeContext.prefs.contains("dynamic_color_enabled"))
 
         initialStore.setThemeMode(ThemeMode.LIGHT)
-        initialStore.setDynamicColorEnabled(true)
 
         val reloadedStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.LIGHT, true), reloadedStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.LIGHT), reloadedStore.preference.value)
 
         fakeContext.prefs.edit().putString("theme_mode", "UNKNOWN_CORRUPTED").apply()
         val recoveredStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.SYSTEM, true), recoveredStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.SYSTEM), recoveredStore.preference.value)
     }
 
     private class FakeSharedPrefsContext : ContextWrapper(null) {

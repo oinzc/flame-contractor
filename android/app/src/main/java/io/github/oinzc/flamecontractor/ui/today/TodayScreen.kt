@@ -816,11 +816,7 @@ private fun HeroFlameCtaButton(
             }
         }
     } else {
-        val ctaContentColor = if (FlameThemeTokens.isDynamicColorActive) {
-            MaterialTheme.colorScheme.onPrimary
-        } else {
-            Color.White
-        }
+        val ctaContentColor = Color.White
         val emberBrush = Brush.linearGradient(
             colors = listOf(palette.emberBright, palette.ember),
         )

@@ -1,6 +1,5 @@
 package io.github.oinzc.flamecontractor.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -8,8 +7,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -17,7 +14,6 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -150,56 +146,11 @@ private val DarkSemanticColors = FlameSemanticColors(
     sparkGoldBorder = Color(0xFF5A351E),
 )
 
-private fun deriveDynamicPalette(
-    basePalette: FlamePaletteTokens,
-    dynamic: ColorScheme,
-    isDark: Boolean,
-): FlamePaletteTokens {
-    val resolvedSurface = if (isDark) dynamic.surfaceContainerLow else dynamic.surfaceContainerLowest
-    return basePalette.copy(
-        canvas = if (isDark) dynamic.surface else dynamic.surfaceContainerLow,
-        surface = resolvedSurface,
-        surfaceSubtle = dynamic.surfaceContainerHigh,
-        surfacePress = dynamic.surfaceContainerHighest,
-        hairline = dynamic.outlineVariant,
-        hairlineStrong = dynamic.outline,
-        ink = dynamic.onSurface,
-        inkSecondary = dynamic.onSurfaceVariant,
-        inkTertiary = dynamic.outline,
-        monoCtaContainer = dynamic.primary,
-        monoCtaContent = dynamic.onPrimary,
-        ember = dynamic.primary,
-        emberBright = dynamic.primary,
-        emberContainer = dynamic.primaryContainer,
-        emberBorder = dynamic.outlineVariant,
-        dockContainer = resolvedSurface,
-        dockActiveContainer = dynamic.secondaryContainer,
-    )
-}
-
 private fun buildMaterialColorScheme(
     palette: FlamePaletteTokens,
     semanticColors: FlameSemanticColors,
     isDark: Boolean,
-    dynamicScheme: ColorScheme?,
 ): ColorScheme {
-    if (dynamicScheme != null) {
-        return dynamicScheme.copy(
-            background = palette.canvas,
-            onBackground = palette.ink,
-            surface = palette.surface,
-            onSurface = palette.ink,
-            surfaceVariant = palette.surfaceSubtle,
-            onSurfaceVariant = palette.inkSecondary,
-            outline = palette.hairlineStrong,
-            outlineVariant = palette.hairline,
-            error = semanticColors.danger,
-            onError = if (isDark) Color(0xFF1F0A0B) else Color.White,
-            errorContainer = semanticColors.dangerContainer,
-            onErrorContainer = semanticColors.onDangerContainer,
-        )
-    }
-
     return if (isDark) {
         darkColorScheme(
             primary = palette.monoCtaContainer,
@@ -270,7 +221,6 @@ private fun buildMaterialColorScheme(
 private val LocalFlamePalette = staticCompositionLocalOf { LightFlamePalette }
 private val LocalFlameColors = staticCompositionLocalOf { LightSemanticColors }
 private val LocalFlameIsDark = staticCompositionLocalOf { false }
-private val LocalFlameDynamicColorActive = staticCompositionLocalOf { false }
 
 private val FlameTypography = Typography(
     displaySmall = TextStyle(
@@ -362,42 +312,18 @@ fun FlameTheme(
 ) {
     val systemDark = isSystemInDarkTheme()
     val isDark = ThemePreferencesStore.resolveIsDark(preference.mode, systemDark)
-    val dynamicActive = ThemePreferencesStore.resolveEffectiveDynamicColor(
-        enabled = preference.dynamicColorEnabled,
-        sdkInt = Build.VERSION.SDK_INT,
-    )
-    val context = LocalContext.current
-    val basePalette = if (isDark) DarkFlamePalette else LightFlamePalette
+    val palette = if (isDark) DarkFlamePalette else LightFlamePalette
     val semanticColors = if (isDark) DarkSemanticColors else LightSemanticColors
-
-    val dynamicScheme = if (dynamicActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else {
-        null
-    }
-
-    val palette = if (dynamicScheme != null) {
-        deriveDynamicPalette(
-            basePalette = basePalette,
-            dynamic = dynamicScheme,
-            isDark = isDark,
-        )
-    } else {
-        basePalette
-    }
-
     val colorScheme = buildMaterialColorScheme(
         palette = palette,
         semanticColors = semanticColors,
         isDark = isDark,
-        dynamicScheme = dynamicScheme,
     )
 
     CompositionLocalProvider(
         LocalFlamePalette provides palette,
         LocalFlameColors provides semanticColors,
         LocalFlameIsDark provides isDark,
-        LocalFlameDynamicColorActive provides (dynamicScheme != null),
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
@@ -423,9 +349,4 @@ object FlameThemeTokens {
         @Composable
         @ReadOnlyComposable
         get() = LocalFlameIsDark.current
-
-    val isDynamicColorActive: Boolean
-        @Composable
-        @ReadOnlyComposable
-        get() = LocalFlameDynamicColorActive.current
 }

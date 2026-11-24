@@ -382,7 +382,6 @@ fun SettingsRoute(
             SettingsSection.APPEARANCE -> SettingsAppearancePage(
                 themePreference = themePreference,
                 onSelectThemeMode = resolvedThemeStore::setThemeMode,
-                onSetDynamicColorEnabled = resolvedThemeStore::setDynamicColorEnabled,
                 onBack = onBack,
             )
 

@@ -1,6 +1,5 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
-import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
@@ -23,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
-import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
@@ -82,13 +80,7 @@ internal fun SettingsHubScreen(
             }
 
             // 1. 个性化
-            val dynamicSupported = Build.VERSION.SDK_INT >= ThemePreferencesStore.MIN_DYNAMIC_COLOR_SDK
-            val appearanceSummary = buildString {
-                append(themeModeLabel(themePreference.mode))
-                if (dynamicSupported) {
-                    append(if (themePreference.dynamicColorEnabled) " · Material You 已开" else " · 默认中性配色")
-                }
-            }
+            val appearanceSummary = "${themeModeLabel(themePreference.mode)} · 桌面状态小组件"
 
             FlameGroupedSection(title = "个性化") {
                 FlameListRow(
