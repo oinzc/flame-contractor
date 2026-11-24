@@ -13,8 +13,8 @@ body:
     id: version
     attributes:
       label: 版本或提交
-      description: 控制台「关于」里的版本号，或 `git rev-parse --short HEAD`
-      placeholder: v0.1.0 / 4b60a34
+      description: Android「设置 → 关于与问题反馈」或控制台版本号，或 `git rev-parse --short HEAD`
+      placeholder: v0.5.0 / 234799f
     validations:
       required: true
   - type: dropdown
@@ -22,6 +22,8 @@ body:
     attributes:
       label: 运行方式
       options:
+        - Android App
+        - Windows 桌面端（安装包）
         - Docker Compose（推荐）
         - 本地开发（uvicorn + vite）
         - 其他
@@ -30,8 +32,8 @@ body:
   - type: input
     id: os
     attributes:
-      label: 操作系统与 Docker 版本
-      placeholder: Windows 11 + Docker Desktop 4.x / Ubuntu 24.04
+      label: 操作系统 / 设备环境
+      placeholder: Android 15 / Windows 11 / Ubuntu 24.04 + Docker
     validations:
       required: true
   - type: textarea

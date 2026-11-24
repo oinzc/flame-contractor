@@ -526,6 +526,11 @@ fun SettingsRoute(
                 onShareDiagnostics = { text -> shareDiagnosticsText(context, text) },
                 onBack = onBack,
             )
+
+            SettingsSection.ABOUT -> SettingsAboutPage(
+                uiState = uiState,
+                onBack = onBack,
+            )
         }
     }
 }

@@ -1330,6 +1330,47 @@
   font-weight: 500;
 }
 
+/* Open Source & Feedback Card */
+a.fc-btn {
+  text-decoration: none;
+}
+
+.fc-support-repo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+}
+
+.fc-support-repo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-decoration: none;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.fc-support-repo-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.fc-support-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .fc-scan-search-row {
   display: flex;
   align-items: center;
@@ -1417,5 +1458,15 @@
 
   .fc-shot-img-btn:hover {
     border-color: var(--hairline-strong);
+  }
+
+  .fc-sidebar-ext-link:hover {
+    color: var(--ink);
+    background: var(--surface-hover);
+  }
+
+  .fc-support-repo-link:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 }

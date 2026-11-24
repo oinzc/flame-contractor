@@ -1,8 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type MouseEvent,
+} from 'react'
+import packageMeta from '../../../package.json'
 import { api, ApiError } from '../../api.ts'
 import {
   getDesktopAutostart,
+  isTauriDesktop,
   openDesktopDataDir,
+  openDesktopExternalUrl,
   setDesktopAutostart,
   type DesktopBootstrap,
 } from '../../lib/desktop.ts'
@@ -11,6 +22,12 @@ import {
   SCHEDULE_STATUS_LIGHT_TONES,
   formatDateTime,
 } from '../../lib/format.ts'
+import {
+  PROJECT_LINKS,
+  buildBugReportUrl,
+  buildFeatureRequestUrl,
+  formatProjectVersion,
+} from '../../lib/links.ts'
 import { paginateItems } from '../../lib/pagination.ts'
 import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
 import {
@@ -23,7 +40,17 @@ import {
   type BackupImportSummaryView,
 } from '../../lib/workspace.ts'
 import type { Account, AuthSessionRead, SchedulerStatus, User } from '../../types.ts'
-import { CloseIcon, DownloadIcon, SendIcon, UploadIcon } from '../ui/Icons.tsx'
+import {
+  CheckIcon,
+  CloseIcon,
+  CopyIcon,
+  DownloadIcon,
+  ExternalLinkIcon,
+  FeedbackIcon,
+  GithubIcon,
+  SendIcon,
+  UploadIcon,
+} from '../ui/Icons.tsx'
 import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs, type PillTabItem } from '../ui/PillTabs.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -56,7 +83,46 @@ export function SettingsView({
   onLogout,
 }: SettingsViewProps) {
   const isDesktop = Boolean(desktopBootstrap?.desktopMode)
+  const appVersionLabel = formatProjectVersion(desktopBootstrap?.version ?? packageMeta.version)
+  const bugReportUrl = useMemo(
+    () => buildBugReportUrl({ version: appVersionLabel, isDesktop }),
+    [appVersionLabel, isDesktop],
+  )
+  const featureRequestUrl = useMemo(() => buildFeatureRequestUrl(), [])
   const [tab, setTab] = useState<SettingsTabKey>('scheduler')
+  const [copiedRepoUrl, setCopiedRepoUrl] = useState(false)
+  const copyRepoTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copyRepoTimerRef.current !== null) {
+        window.clearTimeout(copyRepoTimerRef.current)
+      }
+    }
+  }, [])
+
+  function handleExternalClick(event: MouseEvent<HTMLAnchorElement>, url: string) {
+    if (!isTauriDesktop()) return
+    event.preventDefault()
+    void openDesktopExternalUrl(url).catch(() => {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    })
+  }
+
+  async function handleCopyRepoUrl() {
+    try {
+      await navigator.clipboard.writeText(PROJECT_LINKS.repoUrl)
+      setCopiedRepoUrl(true)
+      if (copyRepoTimerRef.current !== null) {
+        window.clearTimeout(copyRepoTimerRef.current)
+      }
+      copyRepoTimerRef.current = window.setTimeout(() => {
+        setCopiedRepoUrl(false)
+      }, 1800)
+    } catch {
+      setNotice(`项目源码地址：${PROJECT_LINKS.repoUrl}`)
+    }
+  }
 
   // Scheduler form
   const [scanInterval, setScanInterval] = useState('6')
@@ -806,6 +872,92 @@ export function SettingsView({
                     </form>
                   </>
                 )}
+              </section>
+
+              <section className="fc-card" aria-labelledby="fc-about-support-heading">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <h2 id="fc-about-support-heading" style={{ fontSize: 15.5, fontWeight: 600 }}>
+                        开源源码与问题反馈
+                      </h2>
+                      <StatusPill tone="neutral">{appVersionLabel}</StatusPill>
+                      <StatusPill tone="neutral">MIT 开源</StatusPill>
+                    </div>
+                    <p className="fc-hint" style={{ marginTop: 4 }}>
+                      遇到异常、界面体验问题或有新想法，欢迎直接通过 GitHub 提交反馈；公开反馈前请先移除好友昵称、Cookie 与密钥等敏感信息。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="fc-support-repo-row">
+                  <a
+                    href={PROJECT_LINKS.repoUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="fc-support-repo-link fc-mono"
+                    onClick={(e) => handleExternalClick(e, PROJECT_LINKS.repoUrl)}
+                  >
+                    <GithubIcon width={15} height={15} />
+                    <span>{PROJECT_LINKS.repoDisplayPath}</span>
+                    <ExternalLinkIcon width={13} height={13} />
+                  </a>
+                  <button
+                    type="button"
+                    className="fc-btn fc-btn-ghost fc-btn-sm"
+                    onClick={() => void handleCopyRepoUrl()}
+                  >
+                    {copiedRepoUrl ? (
+                      <>
+                        <CheckIcon width={14} height={14} /> 已复制
+                      </>
+                    ) : (
+                      <>
+                        <CopyIcon width={14} height={14} /> 复制地址
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="fc-support-actions">
+                  <a
+                    href={bugReportUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="fc-btn fc-btn-primary fc-btn-sm"
+                    onClick={(e) => handleExternalClick(e, bugReportUrl)}
+                  >
+                    <FeedbackIcon width={14} height={14} />
+                    提交 Bug 报告
+                  </a>
+                  <a
+                    href={featureRequestUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
+                    onClick={(e) => handleExternalClick(e, featureRequestUrl)}
+                  >
+                    功能建议
+                  </a>
+                  <a
+                    href={PROJECT_LINKS.discussionsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
+                    onClick={(e) => handleExternalClick(e, PROJECT_LINKS.discussionsUrl)}
+                  >
+                    社区讨论
+                  </a>
+                  <a
+                    href={PROJECT_LINKS.releasesUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="fc-btn fc-btn-secondary fc-btn-sm"
+                    onClick={(e) => handleExternalClick(e, PROJECT_LINKS.releasesUrl)}
+                  >
+                    版本发布
+                  </a>
+                </div>
               </section>
             </div>
           </div>

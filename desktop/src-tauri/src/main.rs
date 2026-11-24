@@ -316,6 +316,51 @@ fn open_data_dir(state: State<'_, DesktopState>) {
     open_directory_in_shell(&state.data_dir);
 }
 
+fn is_allowed_project_url(url: &str) -> bool {
+    const PREFIX: &str = "https://github.com/oinzc/flame-contractor";
+    if !url.starts_with(PREFIX) {
+        return false;
+    }
+    if let Some(next_ch) = url[PREFIX.len()..].chars().next() {
+        if next_ch != '/' && next_ch != '?' && next_ch != '#' {
+            return false;
+        }
+    }
+    !url.chars()
+        .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '|'))
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !is_allowed_project_url(trimmed) {
+        return Err("仅允许打开官方项目仓库链接".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", trimmed])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -330,6 +375,7 @@ fn main() {
             get_autostart,
             set_autostart,
             open_data_dir,
+            open_external_url,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

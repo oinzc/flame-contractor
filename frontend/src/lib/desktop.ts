@@ -48,3 +48,13 @@ export async function openDesktopDataDir(): Promise<void> {
   if (!invoke) return
   await invoke('open_data_dir')
 }
+
+/**
+ * 桌面端通过系统默认浏览器打开项目外链；普通浏览器模式返回 false 以沿用原生 <a> 跳转。
+ */
+export async function openDesktopExternalUrl(url: string): Promise<boolean> {
+  const invoke = getTauriInvoke()
+  if (!invoke) return false
+  await invoke('open_external_url', { url })
+  return true
+}

@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.ImportExport
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Palette
@@ -19,8 +21,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.oinzc.flamecontractor.BuildConfig
+import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
@@ -31,6 +37,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
@@ -42,6 +49,8 @@ internal fun SettingsHubScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     val palette = FlameThemeTokens.palette
     val statusTone = settingsAccountStatusTone(uiState.accountStatus)
     val statusLabel = settingsAccountStatusLabel(uiState.accountStatus)
@@ -278,6 +287,47 @@ internal fun SettingsHubScreen(
                     trailing = { HubChevron() },
                     showDivider = false,
                     onClick = { onSelectSection(SettingsSection.DIAGNOSTICS) },
+                )
+            }
+
+            // 4. 关于、问题反馈与开源源码
+            val versionTag = ProjectLinks.formatVersionLabel(BuildConfig.VERSION_NAME, versionCode = 0)
+            FlameGroupedSection(title = "关于与反馈") {
+                FlameListRow(
+                    title = "问题反馈与建议",
+                    subtitle = "提交 Bug、改进建议或一键复制脱敏环境信息",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.EMBER) {
+                            Icon(
+                                imageVector = Icons.Outlined.Feedback,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = { HubChevron() },
+                    showDivider = true,
+                    onClick = { onSelectSection(SettingsSection.ABOUT) },
+                )
+
+                FlameListRow(
+                    title = "GitHub 项目源码",
+                    subtitle = "${ProjectLinks.REPO_DISPLAY_PATH} · $versionTag",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.NEUTRAL) {
+                            Icon(
+                                imageVector = Icons.Outlined.Code,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = { ExternalLinkTrailingIcon() },
+                    showDivider = false,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        openExternalUrlOrCopyToast(context, ProjectLinks.REPO_URL)
+                    },
                 )
             }
         }

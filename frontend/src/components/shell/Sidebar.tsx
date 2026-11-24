@@ -1,7 +1,17 @@
+import type { MouseEvent } from 'react'
 import type { BackgroundTasksController } from '../../hooks/useBackgroundTasks.ts'
+import { isTauriDesktop, openDesktopExternalUrl } from '../../lib/desktop.ts'
+import { PROJECT_LINKS, buildBugReportUrl } from '../../lib/links.ts'
 import type { ThemePreference } from '../../lib/theme.ts'
 import type { Account, WorkspaceView } from '../../types.ts'
-import { FlameIcon, HistoryIcon, SettingsIcon, TemplateIcon } from '../ui/Icons.tsx'
+import {
+  FeedbackIcon,
+  FlameIcon,
+  GithubIcon,
+  HistoryIcon,
+  SettingsIcon,
+  TemplateIcon,
+} from '../ui/Icons.tsx'
 import { ThemeSwitcher } from '../ui/ThemeSwitcher.tsx'
 import { AccountSwitcher } from './AccountSwitcher.tsx'
 import { BackgroundTaskStack } from './BackgroundTaskStack.tsx'
@@ -45,6 +55,14 @@ export function Sidebar({
     onSelectView(next)
     onCloseMobile()
   }
+
+  function handleExternalClick(event: MouseEvent<HTMLAnchorElement>, url: string) {
+    if (!isTauriDesktop()) return
+    event.preventDefault()
+    void openDesktopExternalUrl(url)
+  }
+
+  const feedbackUrl = buildBugReportUrl({ isDesktop: isTauriDesktop() })
 
   return (
     <>
@@ -138,6 +156,29 @@ export function Sidebar({
 
         <div style={{ marginTop: 10 }}>
           <ThemeSwitcher value={themePreference} onChange={onChangeTheme} compact />
+        </div>
+
+        <div className="fc-sidebar-links" aria-label="项目源码与问题反馈">
+          <a
+            href={PROJECT_LINKS.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="fc-sidebar-ext-link"
+            onClick={(e) => handleExternalClick(e, PROJECT_LINKS.repoUrl)}
+          >
+            <GithubIcon width={13} height={13} />
+            <span>GitHub 源码</span>
+          </a>
+          <a
+            href={feedbackUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="fc-sidebar-ext-link"
+            onClick={(e) => handleExternalClick(e, feedbackUrl)}
+          >
+            <FeedbackIcon width={13} height={13} />
+            <span>反馈问题</span>
+          </a>
         </div>
       </aside>
     </>
