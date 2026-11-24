@@ -8,13 +8,23 @@
     <string name="shortcut_templates_short">消息模板</string>
     <string name="shortcut_templates_long">管理续火消息模板</string>
 
-    <string name="widget_flame_status_label">续火状态</string>
-    <string name="widget_flame_status_description">在桌面查看今日续火进度、账号状态与下次排程</string>
+    <string name="widget_ring_panorama_label">圆环全景</string>
+    <string name="widget_ring_panorama_desc">4×2 渐变进度圆环、最高官方火花、下次排程与异常直达</string>
+
+    <string name="widget_compact_ring_label">进度圆环</string>
+    <string name="widget_compact_ring_desc">2×2 精致小号进度圆环、最高火花与下次排程</string>
+
+    <string name="widget_mini_strip_label">极简状态条</string>
+    <string name="widget_mini_strip_desc">4×1 单行超薄状态条，省空间一眼看进度</string>
+
+    <string name="widget_streak_7day_label">7 日连胜</string>
+    <string name="widget_streak_7day_desc">4×2 大数字进度条与近 7 日续火打卡方格</string>
+
+    <string name="widget_friends_board_label">好友火花榜</string>
+    <string name="widget_friends_board_desc">4×2 置顶 Top 3 好友今日发送状态与真实火花天数</string>
+
     <string name="widget_refresh_content_description">刷新今日续火状态</string>
     <string name="widget_placeholder_account">默认抖音号</string>
-    <string name="widget_placeholder_status">● 运行正常</string>
-    <string name="widget_placeholder_progress">今日已完成 0 / 0 位</string>
-    <string name="widget_placeholder_footer">点击打开应用查看</string>
+    <string name="widget_placeholder_status">● 正常</string>
     <string name="widget_action_scan_targets">扫描对账 →</string>
-    <string name="widget_action_handle_now">立即处理 →</string>
 </resources>

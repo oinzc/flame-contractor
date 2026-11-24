@@ -1,5 +1,6 @@
 package io.github.oinzc.flamecontractor.widget
 
+import io.github.oinzc.flamecontractor.core.theme.ThemeMode
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -380,5 +381,113 @@ class FlameStatusWidgetSnapshotTest {
         assertEquals(1, filtered.enabledTargetCount)
         assertEquals(0, filtered.succeededTodayCount)
         assertEquals("今日已完成 0 / 1 位", filtered.progressHeadline)
+    }
+
+    @Test
+    fun `maskFriendDisplayName handles single char, group, emoji and blank safely`() {
+        assertEquals("林**", FlameStatusWidgetCalculator.maskFriendDisplayName("林测试"))
+        assertEquals("时**（群）", FlameStatusWidgetCalculator.maskFriendDisplayName("时光小队", isGroup = true))
+        assertEquals("友**", FlameStatusWidgetCalculator.maskFriendDisplayName("   "))
+        assertEquals("群**", FlameStatusWidgetCalculator.maskFriendDisplayName("", isGroup = true))
+        assertEquals("🔥**", FlameStatusWidgetCalculator.maskFriendDisplayName("🔥小火伴"))
+    }
+
+    @Test
+    fun `recent7Days strip and topFriends ranking compute accurate multi-widget metrics`() {
+        val now = instantAt(2026, 11, 24, 18, 0)
+        val targets = listOf(
+            sampleTarget("t1", nickname = "好友甲").copy(sparkDays = 1031, streakDays = 1),
+            sampleTarget("t2", nickname = "群聊乙").copy(
+                conversationType = "group",
+                sparkDays = 935,
+                streakDays = 2,
+            ),
+            sampleTarget("t3", nickname = "好友丙").copy(sparkLabel = "重燃中 2/3"),
+            sampleTarget("t4", nickname = "好友丁").copy(sparkDays = 12),
+        )
+        val recentJobs = listOf(
+            sampleJob("t1", businessDate = "2026-11-18", status = JobStatus.SUCCEEDED),
+            sampleJob("t1", businessDate = "2026-11-20", status = JobStatus.FAILED_TERMINAL),
+            sampleJob("t1", businessDate = "2026-11-23", status = JobStatus.SUCCEEDED),
+            sampleJob("t1", businessDate = "2026-11-24", status = JobStatus.SUCCEEDED),
+            sampleJob("t2", businessDate = "2026-11-24", status = JobStatus.SUCCEEDED),
+        )
+
+        val snapshot = FlameStatusWidgetCalculator.calculate(
+            account = sampleAccount(status = AccountStatus.HEALTHY),
+            enabledTargets = targets,
+            todayJobs = recentJobs.filter { it.businessDate == "2026-11-24" },
+            unknownReviewCount = 0,
+            now = now,
+            recentJobs7Days = recentJobs,
+        )
+
+        assertEquals(1031, snapshot.maxOfficialSparkDays)
+        assertEquals("🔥 1031天", snapshot.sparkHighlightText)
+        assertEquals(
+            listOf(
+                WidgetDayStatus.DONE, // 11-18
+                WidgetDayStatus.EMPTY, // 11-19
+                WidgetDayStatus.ALERT, // 11-20
+                WidgetDayStatus.EMPTY, // 11-21
+                WidgetDayStatus.EMPTY, // 11-22
+                WidgetDayStatus.DONE, // 11-23
+                WidgetDayStatus.TODAY_IN_PROGRESS, // 11-24
+            ),
+            snapshot.recent7Days,
+        )
+        assertEquals(3, snapshot.topFriends.size)
+        assertEquals("好友甲", snapshot.topFriends[0].displayName)
+        assertEquals("好**", snapshot.topFriends[0].maskedName)
+        assertTrue(snapshot.topFriends[0].isSentToday)
+        assertEquals("🔥 1031天", snapshot.topFriends[0].badgeText)
+        assertEquals("群聊乙（群）", snapshot.topFriends[1].displayName)
+        assertEquals("群**（群）", snapshot.topFriends[1].maskedName)
+        assertEquals("好友丁", snapshot.topFriends[2].displayName)
+        assertFalse(snapshot.topFriends[2].isSentToday)
+    }
+
+    @Test
+    fun `widget appearance style resolves surface independently of system night mode`() {
+        assertEquals(
+            ResolvedWidgetSurface.DARK_CARBON,
+            WidgetPreferencesStore.resolveSurface(
+                style = WidgetAppearanceStyle.DARK_CARBON,
+                appThemeMode = ThemeMode.LIGHT,
+                systemDark = false,
+            ),
+        )
+        assertEquals(
+            ResolvedWidgetSurface.LIGHT,
+            WidgetPreferencesStore.resolveSurface(
+                style = WidgetAppearanceStyle.LIGHT_PURE,
+                appThemeMode = ThemeMode.DARK,
+                systemDark = true,
+            ),
+        )
+        assertEquals(
+            ResolvedWidgetSurface.GLASS_DARK,
+            WidgetPreferencesStore.resolveSurface(
+                style = WidgetAppearanceStyle.GLASS_DARK,
+                appThemeMode = ThemeMode.LIGHT,
+                systemDark = false,
+            ),
+        )
+        assertEquals(
+            ResolvedWidgetSurface.DARK_CARBON,
+            WidgetPreferencesStore.resolveSurface(
+                style = WidgetAppearanceStyle.FOLLOW_APP,
+                appThemeMode = ThemeMode.DARK,
+                systemDark = false,
+            ),
+        )
+        assertEquals(
+            ResolvedWidgetSurface.LIGHT,
+            WidgetPreferencesStore.resolveSurface(
+                style = WidgetAppearanceStyle.FOLLOW_APP,
+                appThemeMode = ThemeMode.SYSTEM,
+                systemDark = false,
+            ),
+        )
     }
 }

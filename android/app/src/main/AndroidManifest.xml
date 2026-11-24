@@ -65,13 +65,61 @@
         <receiver
             android:name=".widget.FlameStatusAppWidgetProvider"
             android:exported="true"
-            android:label="@string/widget_flame_status_label">
+            android:label="@string/widget_ring_panorama_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/flame_status_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.FlameCompactRingWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_compact_ring_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_compact_ring" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.FlameStripWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_mini_strip_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_mini_strip" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.FlameStreak7DayWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_streak_7day_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_streak_7day" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.FlameFriendsListWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_friends_board_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info_friends_board" />
         </receiver>
 
         <provider

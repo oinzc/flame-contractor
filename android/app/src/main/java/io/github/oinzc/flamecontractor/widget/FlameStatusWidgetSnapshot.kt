@@ -10,6 +10,7 @@ import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.ui.shell.MainNavState
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -21,6 +22,23 @@ enum class WidgetStatusTone {
     NEUTRAL,
     RUNNING,
 }
+
+enum class WidgetDayStatus {
+    DONE,
+    TODAY_DONE,
+    TODAY_IN_PROGRESS,
+    ALERT,
+    EMPTY,
+}
+
+data class WidgetFriendItem(
+    val targetId: String,
+    val displayName: String,
+    val maskedName: String,
+    val isSentToday: Boolean,
+    val badgeText: String,
+    val isSparkBadge: Boolean,
+)
 
 data class FlameStatusWidgetSnapshot(
     val accountId: String,
@@ -37,14 +55,43 @@ data class FlameStatusWidgetSnapshot(
     val actionCategory: String,
     val isCompactWidth: Boolean,
     val showActionPill: Boolean,
+    val maxOfficialSparkDays: Int? = null,
+    val maxLocalStreakDays: Int = 0,
+    val nextScheduleShort: String = "--:--",
+    val alertDetailText: String = "",
+    val recent7Days: List<WidgetDayStatus> = emptyList(),
+    val topFriends: List<WidgetFriendItem> = emptyList(),
 ) {
     val statusPillText: String
         get() = "● $statusLabel"
+
+    val remainingCount: Int
+        get() = (enabledTargetCount - succeededTodayCount).coerceAtLeast(0)
+
+    val isAllDoneToday: Boolean
+        get() = enabledTargetCount > 0 && succeededTodayCount >= enabledTargetCount && !isAlert
+
+    val progressFraction: Float
+        get() = if (enabledTargetCount <= 0) 0f else (succeededTodayCount.toFloat() / enabledTargetCount.toFloat()).coerceIn(0f, 1f)
+
+    val sparkHighlightText: String
+        get() = when {
+            maxOfficialSparkDays != null && maxOfficialSparkDays > 0 -> "🔥 ${maxOfficialSparkDays}天"
+            maxLocalStreakDays > 0 -> "🔥 本机${maxLocalStreakDays}天"
+            else -> "🔥 待扫描"
+        }
+
+    val sparkCompactText: String
+        get() = when {
+            maxOfficialSparkDays != null && maxOfficialSparkDays > 0 -> "🔥${maxOfficialSparkDays}天"
+            maxLocalStreakDays > 0 -> "🔥${maxLocalStreakDays}天"
+            else -> "🔥待扫"
+        }
 }
 
 /**
  * 纯 JVM 桌面状态小组件数据模型计算器（零 android.* 依赖），
- * 负责将账号健康状态、今日完成进度、待核对数量、下次排程时间与小组件宽度映射为可渲染快照。
+ * 同时驱动 5 款多尺寸小组件（圆环全景 / 2×2 进度圆环 / 4×1 极简状态条 / 7 日连胜 / 好友火花榜）。
  */
 object FlameStatusWidgetCalculator {
 
@@ -52,10 +99,20 @@ object FlameStatusWidgetCalculator {
     const val DEFAULT_ACCOUNT_FALLBACK_NAME = "默认抖音号"
     const val ACTION_LABEL_SCAN_TARGETS = "扫描对账 →"
     const val ACTION_LABEL_HANDLE_NOW = "立即处理 →"
+    private const val MAX_TOP_FRIENDS = 3
+    private const val DAYS_WINDOW = 7
 
     private val HHMM_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
 
     fun isCompactWidth(minWidthDp: Int): Boolean = minWidthDp in 1..COMPACT_WIDTH_THRESHOLD_DP
+
+    fun maskFriendDisplayName(rawName: String, isGroup: Boolean = false): String {
+        val clean = rawName.trim()
+        if (clean.isEmpty()) return if (isGroup) "群**" else "友**"
+        val firstCodePoint = clean.codePointAt(0)
+        val firstChar = String(Character.toChars(firstCodePoint))
+        return if (isGroup) "${firstChar}**（群）" else "${firstChar}**"
+    }
 
     fun calculate(
         account: AccountEntity?,
@@ -65,6 +122,7 @@ object FlameStatusWidgetCalculator {
         now: Instant = Instant.now(),
         minWidthDp: Int = 0,
         networkDeferCountToday: Int = 0,
+        recentJobs7Days: List<SendJobEntity> = todayJobs,
     ): FlameStatusWidgetSnapshot {
         val cleanAccountId = account?.id?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_ACCOUNT_ID
         val cleanAccountName = account?.displayName?.trim()?.takeIf { it.isNotEmpty() }
@@ -75,9 +133,10 @@ object FlameStatusWidgetCalculator {
         val enabledIds = activeEnabledTargets.mapTo(HashSet()) { it.id }
 
         val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
-        val todayStr = ZonedDateTime.ofInstant(now, zoneId).toLocalDate().toString()
+        val todayDate = ZonedDateTime.ofInstant(now, zoneId).toLocalDate()
+        val todayStr = todayDate.toString()
 
-        val succeededCount = todayJobs
+        val succeededTodayTargetIds = todayJobs
             .filter {
                 it.businessDate == todayStr &&
                     it.messageSlotId == SendGuard.DAILY_SLOT_ID &&
@@ -85,7 +144,7 @@ object FlameStatusWidgetCalculator {
                     it.targetId in enabledIds
             }
             .mapTo(HashSet()) { it.targetId }
-            .size
+        val succeededCount = succeededTodayTargetIds.size
 
         val safeUnknownCount = unknownReviewCount.coerceAtLeast(0)
 
@@ -176,6 +235,12 @@ object FlameStatusWidgetCalculator {
                 ?: eval.nextWakeAt
         }
 
+        val nextWakeFormatted = nextWakeAt?.let {
+            val zdt = ZonedDateTime.ofInstant(it, zoneId)
+            val hhmm = zdt.format(HHMM_FORMATTER)
+            if (zdt.toLocalDate() > todayDate) "明日$hhmm" else hhmm
+        }
+
         val footerHint = when {
             safeUnknownCount > 0 -> "待核对 $safeUnknownCount 条"
             account == null -> "点击打开应用登录"
@@ -190,12 +255,49 @@ object FlameStatusWidgetCalculator {
             account.status == AccountStatus.RUNNING -> "正在执行今日续火"
             enabledCount > 0 && succeededCount >= enabledCount -> "今日已全部完成"
             nextWakeAt != null -> {
-                val formatted = ZonedDateTime.ofInstant(nextWakeAt, zoneId).format(HHMM_FORMATTER)
-                "下次排程 $formatted"
+                val hhmm = ZonedDateTime.ofInstant(nextWakeAt, zoneId).format(HHMM_FORMATTER)
+                "下次排程 $hhmm"
             }
 
             else -> "发送窗口 ${account.sendWindowStart}-${account.sendWindowEnd}"
         }
+
+        val nextScheduleShort = when {
+            safeUnknownCount > 0 -> "待核对"
+            account == null -> "待登录"
+            !account.enabled || account.status == AccountStatus.PAUSED -> "已停用"
+            account.status == AccountStatus.RUNNING -> "执行中"
+            nextWakeFormatted != null -> nextWakeFormatted
+            enabledCount > 0 && succeededCount >= enabledCount -> "明日${account.sendWindowStart}"
+            else -> account.sendWindowStart
+        }
+
+        val alertDetailText = when {
+            safeUnknownCount > 0 -> "发送结果未明，系统已拦截自动重发并留存现场截图，请点击人工核对。"
+            account?.status == AccountStatus.AUTH_EXPIRED -> "抖音登录态已失效，自动续火已暂停，请点击重新扫码恢复。"
+            account?.status == AccountStatus.VERIFICATION_REQUIRED -> "触发抖音安全验证，请点击打开应用完成验证后恢复续火。"
+            account?.status == AccountStatus.DOM_BROKEN -> "检测到页面结构变化，请点击前往结构体检核对定位器。"
+            account?.status == AccountStatus.COOLDOWN -> "连续失败已触发冷却保护，请点击查看原因并解除冷却。"
+            else -> ""
+        }
+
+        val maxOfficialSparkDays = activeEnabledTargets
+            .mapNotNull { it.sparkDays?.takeIf { days -> days > 0 } }
+            .maxOrNull()
+        val maxLocalStreakDays = activeEnabledTargets.maxOfOrNull { it.streakDays } ?: 0
+
+        val recent7Days = computeRecent7Days(
+            todayDate = todayDate,
+            recentJobs = recentJobs7Days,
+            enabledCount = enabledCount,
+            succeededTodayCount = succeededCount,
+            hasAlertToday = isAlert,
+        )
+
+        val topFriends = buildTopFriends(
+            targets = activeEnabledTargets,
+            succeededTodayIds = succeededTodayTargetIds,
+        )
 
         val compact = isCompactWidth(minWidthDp)
         val actionLabel = if (isAlert) ACTION_LABEL_HANDLE_NOW else ACTION_LABEL_SCAN_TARGETS
@@ -216,6 +318,72 @@ object FlameStatusWidgetCalculator {
             actionCategory = actionCategory,
             isCompactWidth = compact,
             showActionPill = !compact,
+            maxOfficialSparkDays = maxOfficialSparkDays,
+            maxLocalStreakDays = maxLocalStreakDays,
+            nextScheduleShort = nextScheduleShort,
+            alertDetailText = alertDetailText,
+            recent7Days = recent7Days,
+            topFriends = topFriends,
         )
+    }
+
+    private fun computeRecent7Days(
+        todayDate: LocalDate,
+        recentJobs: List<SendJobEntity>,
+        enabledCount: Int,
+        succeededTodayCount: Int,
+        hasAlertToday: Boolean,
+    ): List<WidgetDayStatus> {
+        val jobsByDate = recentJobs.groupBy { it.businessDate }
+        return (DAYS_WINDOW - 1 downTo 0).map { offset ->
+            val date = todayDate.minusDays(offset.toLong())
+            val dateStr = date.toString()
+            val dayJobs = jobsByDate[dateStr].orEmpty()
+            val isToday = offset == 0
+            val hasAlert = dayJobs.any {
+                it.status == JobStatus.UNKNOWN_REQUIRES_REVIEW || it.status == JobStatus.FAILED_TERMINAL
+            }
+            val hasSuccess = dayJobs.any { it.status == JobStatus.SUCCEEDED }
+
+            when {
+                isToday && (hasAlertToday || hasAlert) -> WidgetDayStatus.ALERT
+                isToday && enabledCount > 0 && succeededTodayCount >= enabledCount -> WidgetDayStatus.TODAY_DONE
+                isToday -> WidgetDayStatus.TODAY_IN_PROGRESS
+                hasAlert -> WidgetDayStatus.ALERT
+                hasSuccess -> WidgetDayStatus.DONE
+                else -> WidgetDayStatus.EMPTY
+            }
+        }
+    }
+
+    private fun buildTopFriends(
+        targets: List<ContractTargetEntity>,
+        succeededTodayIds: Set<String>,
+    ): List<WidgetFriendItem> {
+        val sorted = targets.sortedWith(
+            compareByDescending<ContractTargetEntity> { it.sparkDays ?: -1 }
+                .thenByDescending { !it.sparkLabel.isNullOrBlank() }
+                .thenByDescending { it.streakDays }
+                .thenBy { it.nicknameSnapshot },
+        )
+        return sorted.take(MAX_TOP_FRIENDS).map { target ->
+            val sent = target.id in succeededTodayIds
+            val isGroup = target.conversationType == "group"
+            val cleanLabel = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+            val (badgeText, isSpark) = when {
+                target.sparkDays != null && target.sparkDays > 0 -> "🔥 ${target.sparkDays}天" to true
+                cleanLabel != null -> (if (sent) cleanLabel else "待续 · $cleanLabel") to false
+                sent -> "今日已续" to false
+                else -> "待发送" to false
+            }
+            WidgetFriendItem(
+                targetId = target.id,
+                displayName = if (isGroup) "${target.nicknameSnapshot}（群）" else target.nicknameSnapshot,
+                maskedName = maskFriendDisplayName(target.nicknameSnapshot, isGroup),
+                isSentToday = sent,
+                badgeText = badgeText,
+                isSparkBadge = isSpark,
+            )
+        }
     }
 }

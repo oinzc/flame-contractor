@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:description="@string/widget_mini_strip_desc"
+    android:initialLayout="@layout/widget_flame_mini_strip"
+    android:minHeight="44dp"
+    android:minResizeHeight="44dp"
+    android:minResizeWidth="220dp"
+    android:minWidth="250dp"
+    android:previewImage="@drawable/widget_preview_mini_strip"
+    android:resizeMode="horizontal"
+    android:targetCellHeight="1"
+    android:targetCellWidth="4"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen"
+    tools:targetApi="s" />

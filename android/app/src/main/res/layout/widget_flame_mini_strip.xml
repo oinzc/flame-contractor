@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 极简状态条 4×1（FlameStripWidgetProvider） -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg_dark"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="12dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="8dp">
+
+    <ImageView
+        android:id="@+id/widget_strip_icon"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:background="@drawable/widget_flame_badge_bg"
+        android:contentDescription="@null"
+        android:padding="7dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/widget_ic_flame_white" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="8dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/widget_strip_progress"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1"
+                android:text="今日 0/0"
+                android:textColor="#FFF4F5F7"
+                android:textSize="13.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_status_pill"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/widget_pill_ok_dark"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:paddingStart="6dp"
+                android:paddingTop="1.5dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="1.5dp"
+                android:text="● 正常"
+                android:textColor="#FF34D399"
+                android:textSize="9.5sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/widget_strip_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:fontFeatureSettings="tnum"
+            android:maxLines="1"
+            android:text="点击查看今日状态"
+            android:textColor="#FFA9B1BF"
+            android:textSize="10.5sp" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/widget_refresh_button"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_marginEnd="6dp"
+        android:background="@drawable/widget_refresh_bg_dark"
+        android:contentDescription="@string/widget_refresh_content_description"
+        android:padding="5dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/widget_ic_refresh_dark" />
+
+    <TextView
+        android:id="@+id/widget_action_pill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/widget_tile_dark"
+        android:maxLines="1"
+        android:paddingStart="10dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="5dp"
+        android:text="对账 ›"
+        android:textColor="#FFF4F5F7"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+</LinearLayout>
