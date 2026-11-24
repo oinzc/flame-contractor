@@ -68,6 +68,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FLAME_FEEDBACK_ENDPOINT: ${{ vars.FLAME_FEEDBACK_ENDPOINT }}
           VERSION_NAME: ${{ steps.meta.outputs.version }}
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
         run: |

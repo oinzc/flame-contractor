@@ -295,7 +295,7 @@ internal fun SettingsHubScreen(
             FlameGroupedSection(title = "关于与反馈") {
                 FlameListRow(
                     title = "问题反馈与建议",
-                    subtitle = "提交 Bug、改进建议或一键复制脱敏环境信息",
+                    subtitle = "应用内直接填写提交，免跳转免代理，也可一键复制环境信息",
                     leading = {
                         FlameRowAvatar(tone = FlameTone.EMBER) {
                             Icon(

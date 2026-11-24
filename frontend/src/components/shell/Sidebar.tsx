@@ -1,7 +1,7 @@
 import type { MouseEvent } from 'react'
 import type { BackgroundTasksController } from '../../hooks/useBackgroundTasks.ts'
 import { isTauriDesktop, openDesktopExternalUrl } from '../../lib/desktop.ts'
-import { PROJECT_LINKS, buildBugReportUrl } from '../../lib/links.ts'
+import { PROJECT_LINKS } from '../../lib/links.ts'
 import type { ThemePreference } from '../../lib/theme.ts'
 import type { Account, WorkspaceView } from '../../types.ts'
 import {
@@ -62,7 +62,13 @@ export function Sidebar({
     void openDesktopExternalUrl(url)
   }
 
-  const feedbackUrl = buildBugReportUrl({ isDesktop: isTauriDesktop() })
+  function handleOpenInAppFeedback() {
+    navTo('settings')
+    window.setTimeout(() => {
+      const el = document.getElementById('fc-about-support-heading')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 80)
+  }
 
   return (
     <>
@@ -169,16 +175,14 @@ export function Sidebar({
             <GithubIcon width={13} height={13} />
             <span>GitHub 源码</span>
           </a>
-          <a
-            href={feedbackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="fc-sidebar-ext-link"
-            onClick={(e) => handleExternalClick(e, feedbackUrl)}
+          <button
+            type="button"
+            className="fc-sidebar-ext-link fc-sidebar-ext-btn"
+            onClick={handleOpenInAppFeedback}
           >
             <FeedbackIcon width={13} height={13} />
             <span>反馈问题</span>
-          </a>
+          </button>
         </div>
       </aside>
     </>

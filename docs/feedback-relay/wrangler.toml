@@ -1,0 +1,13 @@
+name = "flame-contractor-feedback-relay"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+GITHUB_REPO = "oinzc/flame-contractor"
+RATE_LIMIT_MAX = "5"
+RATE_LIMIT_WINDOW_SEC = "600"
+
+# 可选：若需要跨边缘节点共享限流计数，取消下方注释并填入你创建的 KV namespace id
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

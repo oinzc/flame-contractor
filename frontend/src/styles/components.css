@@ -1359,7 +1359,7 @@ a.fc-btn {
 }
 
 .fc-support-repo-link:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
   border-radius: var(--radius-xs);
 }
@@ -1369,6 +1369,108 @@ a.fc-btn {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.fc-feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.fc-feedback-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fc-feedback-kind-pill {
+  border: 1px solid var(--hairline);
+  background: var(--surface-soft);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out-quart),
+    color var(--dur-fast) var(--ease-out-quart),
+    border-color var(--dur-fast) var(--ease-out-quart);
+}
+
+.fc-feedback-kind-pill.is-active {
+  background: var(--ink);
+  color: var(--on-primary);
+  border-color: var(--ink);
+  font-weight: 600;
+}
+
+.fc-feedback-kind-pill:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.fc-feedback-env-check {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--body);
+  cursor: pointer;
+}
+
+.fc-feedback-env-check input {
+  margin-top: 2px;
+  accent-color: var(--ink);
+}
+
+.fc-feedback-status {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  padding: 9px 11px;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fc-feedback-status.is-ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+.fc-feedback-status.is-err {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+  color: var(--err);
+}
+
+.fc-feedback-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fc-feedback-inline-link {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.fc-sidebar-ext-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
 }
 
 .fc-scan-search-row {
@@ -1468,5 +1570,10 @@ a.fc-btn {
   .fc-support-repo-link:hover {
     text-decoration: underline;
     text-underline-offset: 3px;
+  }
+
+  .fc-feedback-kind-pill:not(.is-active):hover {
+    background: var(--surface-hover);
+    color: var(--ink);
   }
 }

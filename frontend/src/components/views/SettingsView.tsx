@@ -25,9 +25,18 @@ import {
 import {
   PROJECT_LINKS,
   buildBugReportUrl,
-  buildFeatureRequestUrl,
   formatProjectVersion,
 } from '../../lib/links.ts'
+import {
+  FEEDBACK_KIND_OPTIONS,
+  FEEDBACK_LIMITS,
+  buildFeedbackFallbackText,
+  buildWebEnvSummary,
+  getConfiguredFeedbackEndpoint,
+  submitInAppFeedback,
+  type FeedbackKind,
+  type FeedbackSubmitOutcome,
+} from '../../lib/feedback.ts'
 import { paginateItems } from '../../lib/pagination.ts'
 import type { ResolvedTheme, ThemePreference } from '../../lib/theme.ts'
 import {
@@ -84,19 +93,33 @@ export function SettingsView({
 }: SettingsViewProps) {
   const isDesktop = Boolean(desktopBootstrap?.desktopMode)
   const appVersionLabel = formatProjectVersion(desktopBootstrap?.version ?? packageMeta.version)
+  const feedbackEndpoint = useMemo(() => getConfiguredFeedbackEndpoint(), [])
   const bugReportUrl = useMemo(
     () => buildBugReportUrl({ version: appVersionLabel, isDesktop }),
     [appVersionLabel, isDesktop],
   )
-  const featureRequestUrl = useMemo(() => buildFeatureRequestUrl(), [])
   const [tab, setTab] = useState<SettingsTabKey>('scheduler')
   const [copiedRepoUrl, setCopiedRepoUrl] = useState(false)
   const copyRepoTimerRef = useRef<number | null>(null)
+
+  // In-app direct feedback form state
+  const [feedbackKind, setFeedbackKind] = useState<FeedbackKind>('bug')
+  const [feedbackTitle, setFeedbackTitle] = useState('')
+  const [feedbackContent, setFeedbackContent] = useState('')
+  const [feedbackContact, setFeedbackContact] = useState('')
+  const [feedbackIncludeEnv, setFeedbackIncludeEnv] = useState(true)
+  const [submittingFeedback, setSubmittingFeedback] = useState(false)
+  const [feedbackOutcome, setFeedbackOutcome] = useState<FeedbackSubmitOutcome | null>(null)
+  const [copiedFeedbackDraft, setCopiedFeedbackDraft] = useState(false)
+  const copyDraftTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     return () => {
       if (copyRepoTimerRef.current !== null) {
         window.clearTimeout(copyRepoTimerRef.current)
+      }
+      if (copyDraftTimerRef.current !== null) {
+        window.clearTimeout(copyDraftTimerRef.current)
       }
     }
   }, [])
@@ -121,6 +144,56 @@ export function SettingsView({
       }, 1800)
     } catch {
       setNotice(`项目源码地址：${PROJECT_LINKS.repoUrl}`)
+    }
+  }
+
+  function buildCurrentFeedbackPayload() {
+    return {
+      kind: feedbackKind,
+      title: feedbackTitle,
+      content: feedbackContent,
+      contact: feedbackContact,
+      includeEnv: feedbackIncludeEnv,
+      client: (isDesktop ? 'desktop' : 'web') as 'desktop' | 'web',
+      version: appVersionLabel,
+      environment: buildWebEnvSummary({
+        version: appVersionLabel,
+        isDesktop,
+        browserRuntimeLabel: schedulerStatus?.browserRuntime?.label ?? null,
+      }),
+    }
+  }
+
+  async function handleCopyFeedbackDraft() {
+    const text = buildFeedbackFallbackText(buildCurrentFeedbackPayload())
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedFeedbackDraft(true)
+      if (copyDraftTimerRef.current !== null) {
+        window.clearTimeout(copyDraftTimerRef.current)
+      }
+      copyDraftTimerRef.current = window.setTimeout(() => {
+        setCopiedFeedbackDraft(false)
+      }, 1800)
+    } catch {
+      setNotice('无法访问剪贴板，请手动复制已填写内容')
+    }
+  }
+
+  async function handleSubmitFeedback(e: FormEvent) {
+    e.preventDefault()
+    if (submittingFeedback) return
+    setSubmittingFeedback(true)
+    setFeedbackOutcome(null)
+    try {
+      const outcome = await submitInAppFeedback(feedbackEndpoint, buildCurrentFeedbackPayload())
+      setFeedbackOutcome(outcome)
+      if (outcome.ok) {
+        setFeedbackTitle('')
+        setFeedbackContent('')
+      }
+    } finally {
+      setSubmittingFeedback(false)
     }
   }
 
@@ -879,16 +952,192 @@ export function SettingsView({
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <h2 id="fc-about-support-heading" style={{ fontSize: 15.5, fontWeight: 600 }}>
-                        开源源码与问题反馈
+                        问题反馈与开源源码
                       </h2>
                       <StatusPill tone="neutral">{appVersionLabel}</StatusPill>
                       <StatusPill tone="neutral">MIT 开源</StatusPill>
                     </div>
                     <p className="fc-hint" style={{ marginTop: 4 }}>
-                      遇到异常、界面体验问题或有新想法，欢迎直接通过 GitHub 提交反馈；公开反馈前请先移除好友昵称、Cookie 与密钥等敏感信息。
+                      {feedbackEndpoint
+                        ? '可在此直接提交 Bug 或改进建议，无需跳转或代理；公开追踪前请勿填写好友昵称、Cookie 或密钥。'
+                        : '当前构建未绑定直连反馈中转地址（发版配置 FLAME_FEEDBACK_ENDPOINT 后即可一键免魔法直提）；你可直接填写并一键复制完整脱敏反馈。'}
                     </p>
                   </div>
                 </div>
+
+                <form className="fc-feedback-form" onSubmit={(e) => void handleSubmitFeedback(e)}>
+                  <div className="fc-feedback-kinds" role="group" aria-label="反馈类型">
+                    {FEEDBACK_KIND_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.kind}
+                        type="button"
+                        className={`fc-feedback-kind-pill${feedbackKind === opt.kind ? ' is-active' : ''}`}
+                        aria-pressed={feedbackKind === opt.kind}
+                        disabled={submittingFeedback}
+                        onClick={() => {
+                          setFeedbackKind(opt.kind)
+                          if (feedbackOutcome && !feedbackOutcome.ok) setFeedbackOutcome(null)
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="fc-field">
+                    <label className="fc-label" htmlFor="fc-fb-title">
+                      简短标题（可选）
+                    </label>
+                    <input
+                      id="fc-fb-title"
+                      className="fc-input"
+                      maxLength={FEEDBACK_LIMITS.maxTitle}
+                      placeholder="例如：定时发送后统计未即时刷新"
+                      value={feedbackTitle}
+                      disabled={submittingFeedback}
+                      onChange={(e) => setFeedbackTitle(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="fc-field">
+                    <label className="fc-label" htmlFor="fc-fb-content">
+                      详细描述（必填，{feedbackContent.trim().length}/{FEEDBACK_LIMITS.maxContent}）
+                    </label>
+                    <textarea
+                      id="fc-fb-content"
+                      rows={4}
+                      maxLength={FEEDBACK_LIMITS.maxContent}
+                      className="fc-textarea"
+                      placeholder={
+                        FEEDBACK_KIND_OPTIONS.find((opt) => opt.kind === feedbackKind)?.placeholder
+                      }
+                      value={feedbackContent}
+                      disabled={submittingFeedback}
+                      onChange={(e) => {
+                        setFeedbackContent(e.target.value)
+                        if (feedbackOutcome && !feedbackOutcome.ok) setFeedbackOutcome(null)
+                      }}
+                    />
+                  </div>
+
+                  <div className="fc-field">
+                    <label className="fc-label" htmlFor="fc-fb-contact">
+                      联系方式（可选，公开 Issue 可见，介意可留空）
+                    </label>
+                    <input
+                      id="fc-fb-contact"
+                      className="fc-input"
+                      maxLength={FEEDBACK_LIMITS.maxContact}
+                      placeholder="邮箱或 GitHub ID"
+                      value={feedbackContact}
+                      disabled={submittingFeedback}
+                      onChange={(e) => setFeedbackContact(e.target.value)}
+                    />
+                  </div>
+
+                  <label className="fc-feedback-env-check">
+                    <input
+                      type="checkbox"
+                      checked={feedbackIncludeEnv}
+                      disabled={submittingFeedback}
+                      onChange={(e) => setFeedbackIncludeEnv(e.target.checked)}
+                    />
+                    <span>附带脱敏运行环境信息（仅版本号与浏览器内核，不含账号与好友隐私）</span>
+                  </label>
+
+                  {feedbackOutcome && (
+                    <div
+                      className={`fc-feedback-status ${feedbackOutcome.ok ? 'is-ok' : 'is-err'}`}
+                      role={feedbackOutcome.ok ? 'status' : 'alert'}
+                    >
+                      <div>
+                        {feedbackOutcome.ok ? feedbackOutcome.message : feedbackOutcome.error}
+                      </div>
+                      <div className="fc-feedback-status-actions">
+                        {feedbackOutcome.ok && feedbackOutcome.issueUrl && (
+                          <a
+                            href={feedbackOutcome.issueUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="fc-feedback-inline-link"
+                            onClick={(e) =>
+                              handleExternalClick(e, feedbackOutcome.issueUrl as string)
+                            }
+                          >
+                            在 GitHub 查看进展 →
+                          </a>
+                        )}
+                        {!feedbackOutcome.ok && (
+                          <button
+                            type="button"
+                            className="fc-feedback-inline-link"
+                            onClick={() => void handleCopyFeedbackDraft()}
+                          >
+                            {copiedFeedbackDraft ? '✓ 已复制反馈文本' : '复制已填反馈内容'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="fc-support-actions">
+                    {feedbackEndpoint ? (
+                      <button
+                        type="submit"
+                        className="fc-btn fc-btn-primary fc-btn-sm"
+                        disabled={
+                          submittingFeedback ||
+                          feedbackContent.trim().length < FEEDBACK_LIMITS.minContent
+                        }
+                      >
+                        <FeedbackIcon width={14} height={14} />
+                        {submittingFeedback ? '提交中…' : '直接提交反馈'}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="fc-btn fc-btn-primary fc-btn-sm"
+                          disabled={!feedbackContent.trim()}
+                          onClick={() => void handleCopyFeedbackDraft()}
+                        >
+                          {copiedFeedbackDraft ? (
+                            <>
+                              <CheckIcon width={14} height={14} /> 已复制反馈
+                            </>
+                          ) : (
+                            <>
+                              <CopyIcon width={14} height={14} /> 复制完整反馈
+                            </>
+                          )}
+                        </button>
+                        <a
+                          href={bugReportUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="fc-btn fc-btn-secondary fc-btn-sm"
+                          onClick={(e) => handleExternalClick(e, bugReportUrl)}
+                        >
+                          GitHub 提交
+                        </a>
+                      </>
+                    )}
+                    {(feedbackTitle || feedbackContent || feedbackContact) && !submittingFeedback && (
+                      <button
+                        type="button"
+                        className="fc-btn fc-btn-ghost fc-btn-sm"
+                        onClick={() => {
+                          setFeedbackTitle('')
+                          setFeedbackContent('')
+                          setFeedbackContact('')
+                          setFeedbackOutcome(null)
+                        }}
+                      >
+                        清空
+                      </button>
+                    )}
+                  </div>
+                </form>
 
                 <div className="fc-support-repo-row">
                   <a
@@ -921,23 +1170,14 @@ export function SettingsView({
 
                 <div className="fc-support-actions">
                   <a
-                    href={bugReportUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="fc-btn fc-btn-primary fc-btn-sm"
-                    onClick={(e) => handleExternalClick(e, bugReportUrl)}
-                  >
-                    <FeedbackIcon width={14} height={14} />
-                    提交 Bug 报告
-                  </a>
-                  <a
-                    href={featureRequestUrl}
+                    href={PROJECT_LINKS.repoUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="fc-btn fc-btn-secondary fc-btn-sm"
-                    onClick={(e) => handleExternalClick(e, featureRequestUrl)}
+                    onClick={(e) => handleExternalClick(e, PROJECT_LINKS.repoUrl)}
                   >
-                    功能建议
+                    <GithubIcon width={14} height={14} />
+                    GitHub 源码
                   </a>
                   <a
                     href={PROJECT_LINKS.discussionsUrl}

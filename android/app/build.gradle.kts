@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -7,6 +9,22 @@ plugins {
 
 val requestedVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
 val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.5.0-dev"
+
+val localProps = Properties().apply {
+    val propsFile = rootProject.file("local.properties")
+    if (propsFile.isFile) {
+        propsFile.inputStream().use { load(it) }
+    }
+}
+val requestedFeedbackEndpoint = (
+    (project.findProperty("feedbackEndpoint") as String?)
+        ?: System.getenv("FLAME_FEEDBACK_ENDPOINT")
+        ?: localProps.getProperty("feedback.endpoint")
+        ?: ""
+).trim()
+val escapedFeedbackEndpoint = requestedFeedbackEndpoint
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
 val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
@@ -28,6 +46,7 @@ android {
         targetSdk = 35
         versionCode = requestedVersionCode
         versionName = requestedVersionName
+        buildConfigField("String", "FEEDBACK_ENDPOINT", "\"$escapedFeedbackEndpoint\"")
     }
 
     signingConfigs {
