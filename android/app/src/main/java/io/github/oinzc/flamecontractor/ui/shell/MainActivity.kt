@@ -31,18 +31,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
+import io.github.oinzc.flamecontractor.execution.login.LoginReturnHelper
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.history.HistoryRoute
+import io.github.oinzc.flamecontractor.ui.settings.RomSurvivalChecker
 import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
+import io.github.oinzc.flamecontractor.ui.setup.OnboardingWizardScreen
+import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
 import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
@@ -102,13 +111,41 @@ class MainActivity : AppCompatActivity() {
                 }
                 var isFullscreenEditorOpen by rememberSaveable { mutableStateOf(false) }
                 var showAccountManagerSheet by rememberSaveable { mutableStateOf(false) }
+                var showOnboardingWizard by rememberSaveable { mutableStateOf(false) }
+                var hasEvaluatedAutoOnboarding by rememberSaveable { mutableStateOf(false) }
+                var onboardingInitialStep by rememberSaveable { mutableStateOf(0) }
                 var lastHandledLaunchNonce by rememberSaveable { mutableStateOf(0L) }
                 val launchSignal = pendingLaunchSignal
 
+                val onboardingState by container.setupOnboardingStore.state.collectAsState()
                 val activeAccountId by container.activeAccountStore.activeAccountId.collectAsState()
                 val accounts by remember(container) {
                     container.database.accountDao().observeAll()
                 }.collectAsState(initial = emptyList())
+
+                val activeEnabledTargetCount by remember(container, activeAccountId) {
+                    container.database.targetDao().observeActiveTargets(activeAccountId)
+                        .map { list -> list.count { it.enabled } }
+                }.collectAsState(initial = -1)
+
+                var survivalSnapshot by remember {
+                    mutableStateOf(RomSurvivalChecker.inspect(applicationContext))
+                }
+                var survivalRefreshNonce by remember { mutableStateOf(0L) }
+                val refreshSurvivalSnapshot: () -> Unit = {
+                    survivalSnapshot = RomSurvivalChecker.inspect(applicationContext)
+                    survivalRefreshNonce += 1L
+                }
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            refreshSurvivalSnapshot()
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
 
                 val unknownCountsByAccount by remember(container) {
                     container.database.accountDao().observeAll().flatMapLatest { list ->
@@ -162,12 +199,64 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                BackHandler(enabled = navState.isSettingsOpen) {
+                BackHandler(enabled = navState.isSettingsOpen && !showOnboardingWizard) {
                     val (next, _) = navState.navigateBack()
                     navState = next
                 }
 
                 val currentAccount = accounts.firstOrNull { it.id == activeAccountId }
+                val setupReadiness = SetupReadinessBuilder.build(
+                    survivalSnapshot = survivalSnapshot,
+                    accountStatus = currentAccount?.status ?: AccountStatus.PENDING_LOGIN,
+                    enabledTargetCount = activeEnabledTargetCount.coerceAtLeast(0),
+                )
+
+                LaunchedEffect(
+                    accounts,
+                    activeEnabledTargetCount,
+                    onboardingState.onboardingCompleted,
+                    launchSignal,
+                ) {
+                    if (hasEvaluatedAutoOnboarding) return@LaunchedEffect
+                    if (accounts.isEmpty() || activeEnabledTargetCount < 0) return@LaunchedEffect
+                    if (launchSignal != null) {
+                        hasEvaluatedAutoOnboarding = true
+                        return@LaunchedEffect
+                    }
+                    hasEvaluatedAutoOnboarding = true
+                    val shouldAutoLaunch = SetupOnboardingStore.shouldAutoLaunchOnboarding(
+                        onboardingCompleted = onboardingState.onboardingCompleted,
+                        accountStatus = currentAccount?.status ?: AccountStatus.PENDING_LOGIN,
+                        enabledTargetCount = activeEnabledTargetCount,
+                        allCoreSystemReady = survivalSnapshot.coreAllPassed,
+                    )
+                    if (shouldAutoLaunch) {
+                        onboardingInitialStep = onboardingState.lastStepIndex
+                        showOnboardingWizard = true
+                    }
+                }
+
+                val openLoginForAccount: (String) -> Unit = { targetId ->
+                    val targetStatus = accounts.firstOrNull { it.id == targetId }?.status
+                    val mode = if (targetStatus == AccountStatus.VERIFICATION_REQUIRED) {
+                        LoginMode.INSPECT_OR_VERIFY
+                    } else {
+                        LoginMode.PRESERVE_SESSION
+                    }
+                    loginLauncher.launch(
+                        LoginWebViewActivity.createIntent(
+                            context = this@MainActivity,
+                            mode = mode,
+                            accountId = targetId,
+                        ),
+                    )
+                }
+
+                val startOnboardingWizard: () -> Unit = {
+                    refreshSurvivalSnapshot()
+                    onboardingInitialStep = 0
+                    showOnboardingWizard = true
+                }
                 val hasTodayAlert = currentAccount?.let {
                     hasAccountAttention(it, unknownCountsByAccount[it.id] ?: 0)
                 } ?: ((unknownCountsByAccount[activeAccountId] ?: 0) > 0)
@@ -199,7 +288,7 @@ class MainActivity : AppCompatActivity() {
                             navState = navState.selectTab(tab)
                         },
                         todayAlertBadge = hasTodayAlert,
-                        hideNavigationChrome = navState.isSettingsOpen || isFullscreenEditorOpen,
+                        hideNavigationChrome = navState.isSettingsOpen || isFullscreenEditorOpen || showOnboardingWizard,
                         currentAccount = currentAccount,
                         totalAccountCount = accounts.size.coerceAtLeast(1),
                         otherAccountAlertBadge = hasOtherAccountAlert,
@@ -215,6 +304,8 @@ class MainActivity : AppCompatActivity() {
                                 onOpenSettings = openSettings,
                                 onOpenAccountSwitcher = { showAccountManagerSheet = true },
                                 otherAccountAlertBadge = hasOtherAccountAlert,
+                                setupReadiness = if (activeEnabledTargetCount >= 0) setupReadiness else null,
+                                onStartOnboardingWizard = startOnboardingWizard,
                                 initialUrgentCategory = urgentCategoryForActive,
                                 urgentSignalNonce = urgentNonceForActive,
                                 accountId = activeAccountId,
@@ -311,6 +402,13 @@ class MainActivity : AppCompatActivity() {
                                 onSelectSection = { section ->
                                     navState = navState.openSettings(section)
                                 },
+                                onStartOnboardingWizard = startOnboardingWizard,
+                                onOpenLoginForActiveAccount = { openLoginForAccount(activeAccountId) },
+                                onOpenTargetsTab = {
+                                    isFullscreenEditorOpen = false
+                                    navState = navState.selectTab(MainTab.TARGETS)
+                                },
+                                survivalRefreshNonce = survivalRefreshNonce,
                                 onBack = {
                                     val (next, _) = navState.navigateBack()
                                     navState = next
@@ -319,6 +417,61 @@ class MainActivity : AppCompatActivity() {
                                 accountId = activeAccountId,
                             )
                         }
+                    }
+
+                    AnimatedVisibility(
+                        visible = showOnboardingWizard,
+                        enter = if (reducedMotion) {
+                            EnterTransition.None
+                        } else {
+                            fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            )
+                        },
+                        exit = if (reducedMotion) {
+                            ExitTransition.None
+                        } else {
+                            fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            )
+                        },
+                    ) {
+                        OnboardingWizardScreen(
+                            readiness = setupReadiness,
+                            activeAccountDisplayName = currentAccount?.displayName.orEmpty(),
+                            initialStepIndex = onboardingInitialStep,
+                            onStepChanged = { stepIdx ->
+                                container.setupOnboardingStore.setLastStepIndex(stepIdx)
+                            },
+                            onRefreshSurvival = refreshSurvivalSnapshot,
+                            onSetAutostartConfirmed = { confirmed ->
+                                RomSurvivalChecker.setAutostartGuidanceConfirmed(applicationContext, confirmed)
+                                refreshSurvivalSnapshot()
+                            },
+                            onOpenLogin = { openLoginForAccount(activeAccountId) },
+                            onFinishAndOpenTargets = {
+                                container.setupOnboardingStore.markCompleted()
+                                showOnboardingWizard = false
+                                isFullscreenEditorOpen = false
+                                navState = navState.selectTab(MainTab.TARGETS)
+                            },
+                            onFinishToToday = {
+                                container.setupOnboardingStore.markCompleted()
+                                showOnboardingWizard = false
+                                isFullscreenEditorOpen = false
+                                navState = navState.selectTab(MainTab.TODAY)
+                            },
+                            onSkip = {
+                                container.setupOnboardingStore.markCompleted()
+                                showOnboardingWizard = false
+                            },
+                        )
                     }
                 }
 
@@ -330,20 +483,17 @@ class MainActivity : AppCompatActivity() {
                         isMultiProfileSupported = WebViewProfileRegistry.isMultiProfileSupported(),
                         accountManager = container.accountManager,
                         onSelectAccount = { id -> container.activeAccountStore.selectAccount(id) },
-                        onOpenLoginForAccount = { id ->
-                            loginLauncher.launch(
-                                LoginWebViewActivity.createIntent(
-                                    context = this@MainActivity,
-                                    mode = LoginMode.PRESERVE_SESSION,
-                                    accountId = id,
-                                ),
-                            )
-                        },
+                        onOpenLoginForAccount = { id -> openLoginForAccount(id) },
                         onDismiss = { showAccountManagerSheet = false },
                     )
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        LoginReturnHelper.cancelReturnNotification(applicationContext)
     }
 
     override fun onStop() {

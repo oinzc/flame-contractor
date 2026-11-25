@@ -3,4 +3,7 @@
     <files-path
         name="template_images"
         path="template_images/" />
+    <cache-path
+        name="login_qr_share"
+        path="login_qr_share/" />
 </paths>

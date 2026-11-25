@@ -134,4 +134,68 @@ class AccountManager(
             }
         }
     }
+
+    companion object {
+        private val DEFAULT_NUMBERED_NAME_REGEX = Regex("""^抖音号\s*\d+$""")
+        private val DEFAULT_PLACEHOLDER_NAMES = setOf("默认抖音号", "默认账号")
+
+        /**
+         * 为新增抖音号生成不与现有任意账号冲突的最小编号默认名（`抖音号 2`、`抖音号 3`…）。
+         */
+        fun suggestNextDefaultAccountName(existingDisplayNames: Collection<String>): String {
+            val occupied = existingDisplayNames
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            var index = 2
+            while (true) {
+                val candidate = "抖音号 $index"
+                if (candidate.lowercase() !in occupied) {
+                    return candidate
+                }
+                index += 1
+            }
+        }
+
+        fun isDefaultPlaceholderName(displayName: String?): Boolean {
+            val clean = displayName?.trim().orEmpty()
+            if (clean.isEmpty()) return true
+            if (clean in DEFAULT_PLACEHOLDER_NAMES) return true
+            return DEFAULT_NUMBERED_NAME_REGEX.matches(clean)
+        }
+
+        /**
+         * 登录成功拿到绑定抖音昵称后的自动命名策略（策略 A）：
+         * - 若当前仍是默认占位名（`默认抖音号` / `默认账号` / `抖音号 N`）或更换绑定了另一抖音号，
+         *   则自动同步为绑定的抖音昵称，并与其余账号自动去重（重名追加 `(2)`、`(3)` 后缀）；
+         * - 若为同一抖音号重新登录且用户已手动设置自定义备注，保留用户自定义名称。
+         */
+        fun resolveSyncedDisplayNameAfterLogin(
+            currentDisplayName: String,
+            newDouyinNickname: String?,
+            isSwitchedDouyinAccount: Boolean,
+            otherAccountDisplayNames: Collection<String>,
+        ): String {
+            val cleanNick = newDouyinNickname?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return currentDisplayName
+            val shouldSync = isSwitchedDouyinAccount || isDefaultPlaceholderName(currentDisplayName)
+            if (!shouldSync) return currentDisplayName
+
+            val occupied = otherAccountDisplayNames
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            if (cleanNick.lowercase() !in occupied) {
+                return cleanNick
+            }
+            var suffix = 2
+            while (true) {
+                val candidate = "$cleanNick ($suffix)"
+                if (candidate.lowercase() !in occupied) {
+                    return candidate
+                }
+                suffix += 1
+            }
+        }
+    }
 }

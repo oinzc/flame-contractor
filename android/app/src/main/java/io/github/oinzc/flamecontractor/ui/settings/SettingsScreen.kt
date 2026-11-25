@@ -61,6 +61,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -122,6 +123,10 @@ fun SettingsRoute(
     themePreferencesStore: ThemePreferencesStore? = null,
     activeSection: SettingsSection? = null,
     onSelectSection: (SettingsSection?) -> Unit = {},
+    onStartOnboardingWizard: () -> Unit = {},
+    onOpenLoginForActiveAccount: () -> Unit = {},
+    onOpenTargetsTab: () -> Unit = {},
+    survivalRefreshNonce: Long = 0L,
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
     backupManager: BackupManager = BackupManager(
@@ -179,6 +184,12 @@ fun SettingsRoute(
         }
     }
 
+    LaunchedEffect(survivalRefreshNonce) {
+        if (survivalRefreshNonce > 0L) {
+            viewModel.refreshSurvivalChecks()
+        }
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -207,6 +218,16 @@ fun SettingsRoute(
     val handleSurvivalAction: (SurvivalCheckId) -> Unit = { checkId ->
         when (checkId) {
             SurvivalCheckId.NOTIFICATIONS -> requestOrOpenNotifications()
+            SurvivalCheckId.OVERLAY_AUTO_RETURN -> {
+                if (!RomSurvivalChecker.openOverlayPermissionSettings(context)) {
+                    Toast.makeText(
+                        context,
+                        "未能打开悬浮窗权限设置，请在系统设置中允许「显示在其他应用上层」",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+
             SurvivalCheckId.BATTERY_OPTIMIZATION -> {
                 if (!RomSurvivalChecker.openBatteryOptimizationSettings(context)) {
                     Toast.makeText(context, "未能打开系统省电设置，请在系统设置中放行本应用", Toast.LENGTH_SHORT).show()
@@ -219,9 +240,9 @@ fun SettingsRoute(
                 }
             }
 
-            SurvivalCheckId.MIUI_AUTOSTART_AND_BACKGROUND -> {
-                if (!RomSurvivalChecker.openMiuiAutostartSettings(context)) {
-                    Toast.makeText(context, "未能打开自启动设置页，请在系统设置中允许自启动", Toast.LENGTH_SHORT).show()
+            SurvivalCheckId.OEM_BACKGROUND_AUTOSTART -> {
+                if (!RomSurvivalChecker.openOemBackgroundSettings(context)) {
+                    Toast.makeText(context, "未能打开厂商后台设置页，请在系统设置中允许自启动与后台运行", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -361,9 +382,15 @@ fun SettingsRoute(
         }
     }
 
-    val openMiuiPowerHideSettings: () -> Unit = {
-        if (!RomSurvivalChecker.openMiuiPowerHideSettings(context)) {
-            Toast.makeText(context, "未能打开神隐/省电设置页", Toast.LENGTH_SHORT).show()
+    val openBackgroundPopupSettings: () -> Unit = {
+        if (!RomSurvivalChecker.openBackgroundPopupSettings(context)) {
+            Toast.makeText(context, "未能打开「后台弹出界面」权限设置页", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val openOemPowerSettings: () -> Unit = {
+        if (!RomSurvivalChecker.openOemPowerSettings(context)) {
+            Toast.makeText(context, "未能打开省电 / 后台策略设置页", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -448,6 +475,7 @@ fun SettingsRoute(
                 uiState = uiState,
                 themePreference = themePreference,
                 onSelectSection = { target -> onSelectSection(target) },
+                onStartOnboardingWizard = onStartOnboardingWizard,
                 onBack = onBack,
             )
 
@@ -490,9 +518,13 @@ fun SettingsRoute(
             SettingsSection.SURVIVAL -> SettingsSurvivalPage(
                 uiState = uiState,
                 onOpenSurvivalAction = handleSurvivalAction,
-                onOpenMiuiPowerHideSettings = openMiuiPowerHideSettings,
+                onOpenBackgroundPopupSettings = openBackgroundPopupSettings,
+                onOpenOemPowerSettings = openOemPowerSettings,
                 onAutostartConfirmedChanged = viewModel::setAutostartGuidanceConfirmed,
                 onRefreshSurvivalChecks = viewModel::refreshSurvivalChecks,
+                onOpenLogin = onOpenLoginForActiveAccount,
+                onOpenTargets = onOpenTargetsTab,
+                onStartOnboardingWizard = onStartOnboardingWizard,
                 onBack = onBack,
             )
 

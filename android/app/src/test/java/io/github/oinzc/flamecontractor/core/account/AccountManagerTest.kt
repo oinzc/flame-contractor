@@ -322,6 +322,95 @@ class AccountManagerTest {
         assertTrue(cleanupStore.listPending().isEmpty())
     }
 
+    @Test
+    fun suggestNextDefaultAccountNameAvoidsCollisionsAfterDeletesAndRenames() {
+        assertEquals("抖音号 2", AccountManager.suggestNextDefaultAccountName(listOf("默认抖音号")))
+        assertEquals("抖音号 3", AccountManager.suggestNextDefaultAccountName(listOf("默认抖音号", "抖音号 2")))
+        // 删掉默认号后仅剩「抖音号 2」时，绝对不得再次生成「抖音号 2」
+        assertEquals("抖音号 3", AccountManager.suggestNextDefaultAccountName(listOf("抖音号 2")))
+        assertEquals(
+            "抖音号 3",
+            AccountManager.suggestNextDefaultAccountName(listOf("默认抖音号", "抖音号 2", "抖音号 4")),
+        )
+        assertEquals(
+            "抖音号 4",
+            AccountManager.suggestNextDefaultAccountName(listOf("抖音号 2", "抖音号 3", "小号")),
+        )
+    }
+
+    @Test
+    fun resolveSyncedDisplayNameFollowsOptionAAndDeduplicatesAcrossAccounts() {
+        assertTrue(AccountManager.isDefaultPlaceholderName("默认抖音号"))
+        assertTrue(AccountManager.isDefaultPlaceholderName("默认账号"))
+        assertTrue(AccountManager.isDefaultPlaceholderName("抖音号 2"))
+        assertTrue(AccountManager.isDefaultPlaceholderName("抖音号12"))
+        assertFalse(AccountManager.isDefaultPlaceholderName("工作号"))
+
+        // 1. 默认占位名登录后自动改为绑定的抖音昵称
+        assertEquals(
+            "阿明日常",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "抖音号 2",
+                newDouyinNickname = " 阿明日常 ",
+                isSwitchedDouyinAccount = false,
+                otherAccountDisplayNames = listOf("默认抖音号"),
+            ),
+        )
+
+        // 2. 同号重登且用户手动改过备注时，保留自定义备注（策略 A）
+        assertEquals(
+            "工作副号",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "工作副号",
+                newDouyinNickname = "阿明日常",
+                isSwitchedDouyinAccount = false,
+                otherAccountDisplayNames = listOf("主号"),
+            ),
+        )
+
+        // 3. 更换绑定另一个抖音号时，即使原名是自定义备注也同步为新抖音昵称
+        assertEquals(
+            "新号小橘",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "工作副号",
+                newDouyinNickname = "新号小橘",
+                isSwitchedDouyinAccount = true,
+                otherAccountDisplayNames = listOf("主号"),
+            ),
+        )
+
+        // 4. 与其他账号重名时自动追加 (2)/(3) 后缀防撞名
+        assertEquals(
+            "阿明日常 (2)",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "抖音号 3",
+                newDouyinNickname = "阿明日常",
+                isSwitchedDouyinAccount = false,
+                otherAccountDisplayNames = listOf("阿明日常"),
+            ),
+        )
+        assertEquals(
+            "阿明日常 (3)",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "抖音号 4",
+                newDouyinNickname = "阿明日常",
+                isSwitchedDouyinAccount = false,
+                otherAccountDisplayNames = listOf("阿明日常", "阿明日常 (2)"),
+            ),
+        )
+
+        // 5. 未抓到昵称时保留原名
+        assertEquals(
+            "抖音号 2",
+            AccountManager.resolveSyncedDisplayNameAfterLogin(
+                currentDisplayName = "抖音号 2",
+                newDouyinNickname = "   ",
+                isSwitchedDouyinAccount = false,
+                otherAccountDisplayNames = emptyList(),
+            ),
+        )
+    }
+
     private suspend fun assertFailsWithMessage(expectedSubstring: String, block: suspend () -> Unit) {
         try {
             block()

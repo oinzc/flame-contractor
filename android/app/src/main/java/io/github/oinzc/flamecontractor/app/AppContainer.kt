@@ -11,6 +11,7 @@ import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
@@ -50,6 +51,7 @@ class AppContainer(context: Context) {
     val pendingProfileCleanupStore: PendingProfileCleanupStore = PendingProfileCleanupStore(appContext)
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
     val themePreferencesStore: ThemePreferencesStore = ThemePreferencesStore.fromContext(appContext)
+    val setupOnboardingStore: SetupOnboardingStore = SetupOnboardingStore.fromContext(appContext)
     val accountManager: AccountManager = AccountManager(
         database = database,
         activeAccountStore = activeAccountStore,

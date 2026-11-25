@@ -69,6 +69,7 @@ interface SettingsAccountRepository {
     suspend fun listRecentAttempts(accountId: String, limit: Int = 50): List<SendAttemptEntity>
     suspend fun getLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): ScanRunEntity? = null
     fun observeLatestAutoScanRun(accountId: String = DEFAULT_ACCOUNT_ID): Flow<ScanRunEntity?> = flowOf(null)
+    fun observeEnabledTargetCount(accountId: String = DEFAULT_ACCOUNT_ID): Flow<Int> = flowOf(0)
     suspend fun countAccounts(): Int = 1
 }
 
@@ -148,6 +149,7 @@ data class SettingsUiState(
     val accountDisplayName: String = "",
     val accountStatus: AccountStatus = AccountStatus.PENDING_LOGIN,
     val accountTimezone: String = java.time.ZoneId.systemDefault().id,
+    val enabledTargetCount: Int = 0,
     val enabledInput: Boolean = true,
     val sendWindowStartInput: String = "20:00",
     val sendWindowEndInput: String = "22:00",
@@ -251,6 +253,7 @@ class SettingsViewModel(
     init {
         loadInitialSnapshot()
         observeAccountChanges()
+        observeEnabledTargetCount()
         observeLatestAutoScanRun()
         observeProbeStream()
     }
@@ -330,6 +333,16 @@ class SettingsViewModel(
                     nextState
                 }
             }
+        }
+    }
+
+    private fun observeEnabledTargetCount() {
+        scope.launch {
+            accountRepo.observeEnabledTargetCount(accountId)
+                .distinctUntilChanged()
+                .collect { count ->
+                    _uiState.update { it.copy(enabledTargetCount = count) }
+                }
         }
     }
 
@@ -1583,6 +1596,11 @@ internal class RoomSettingsAccountRepository(
 
     override fun observeLatestAutoScanRun(accountId: String): Flow<ScanRunEntity?> =
         database.scanRunDao().observeLatestAutoScanRun(accountId)
+
+    override fun observeEnabledTargetCount(accountId: String): Flow<Int> =
+        database.targetDao().observeActiveTargets(accountId).map { list ->
+            list.count { it.enabled }
+        }
 
     override suspend fun countAccounts(): Int =
         database.accountDao().listAll().size

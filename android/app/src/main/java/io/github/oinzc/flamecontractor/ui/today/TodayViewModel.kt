@@ -470,7 +470,7 @@ class TodayViewModel(
 
     fun chooseReloginPreserveSession() {
         controlFlow.update { it.copy(showReloginChoiceDialog = false) }
-        _effects.tryEmit(TodayUiEffect.OpenLogin(LoginMode.PRESERVE_SESSION, accountId))
+        _effects.tryEmit(TodayUiEffect.OpenLogin(LoginMode.INSPECT_OR_VERIFY, accountId))
     }
 
     fun chooseReloginClearAndRelogin() {

@@ -135,6 +135,7 @@ import io.github.oinzc.flamecontractor.ui.components.flamePressScale
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
+import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessSnapshot
 import io.github.oinzc.flamecontractor.ui.shell.MainTab
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.shell.accountStatusStyle
@@ -155,6 +156,8 @@ fun TodayRoute(
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
+    setupReadiness: SetupReadinessSnapshot? = null,
+    onStartOnboardingWizard: () -> Unit = {},
     initialUrgentCategory: String? = null,
     modifier: Modifier = Modifier,
     urgentSignalNonce: Long = 0L,
@@ -234,6 +237,8 @@ fun TodayRoute(
         onOpenSettings = onOpenSettings,
         onOpenAccountSwitcher = onOpenAccountSwitcher,
         otherAccountAlertBadge = otherAccountAlertBadge,
+        setupReadiness = setupReadiness,
+        onStartOnboardingWizard = onStartOnboardingWizard,
         resolveJobScreenshotFile = { jobId ->
             container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
         },
@@ -269,6 +274,8 @@ fun TodayScreen(
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
+    setupReadiness: SetupReadinessSnapshot? = null,
+    onStartOnboardingWizard: () -> Unit = {},
     resolveJobScreenshotFile: (String) -> File? = { null },
     resolveAttemptScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
@@ -338,6 +345,8 @@ fun TodayScreen(
                     ) {
                         TodayOverviewColumn(
                             state = state,
+                            setupReadiness = setupReadiness,
+                            onStartOnboardingWizard = onStartOnboardingWizard,
                             onReloginClick = onReloginClick,
                             onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
@@ -381,6 +390,8 @@ fun TodayScreen(
                     item(key = "overview_section") {
                         TodayOverviewColumn(
                             state = state,
+                            setupReadiness = setupReadiness,
+                            onStartOnboardingWizard = onStartOnboardingWizard,
                             onReloginClick = onReloginClick,
                             onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
@@ -585,6 +596,8 @@ private fun TodayAccountSwitcherPill(
 @Composable
 private fun TodayOverviewColumn(
     state: TodayUiState,
+    setupReadiness: SetupReadinessSnapshot?,
+    onStartOnboardingWizard: () -> Unit,
     onReloginClick: () -> Unit,
     onOpenAccountSwitcher: () -> Unit,
     onOpenUnknownReview: (String?) -> Unit,
@@ -600,6 +613,14 @@ private fun TodayOverviewColumn(
             onReloginClick = onReloginClick,
         )
 
+        if (setupReadiness != null && !setupReadiness.allCompleted) {
+            TodaySetupReadinessCard(
+                readiness = setupReadiness,
+                onOpenChecklist = { onOpenSettings(SettingsSection.SURVIVAL) },
+                onStartWizard = onStartOnboardingWizard,
+            )
+        }
+
         TodayConditionalAlertStrips(
             state = state,
             onOpenAccountSwitcher = onOpenAccountSwitcher,
@@ -614,6 +635,119 @@ private fun TodayOverviewColumn(
             state = state,
             onOpenTargets = { onOpenTab(MainTab.TARGETS) },
         )
+    }
+}
+
+@Composable
+private fun TodaySetupReadinessCard(
+    readiness: SetupReadinessSnapshot,
+    onOpenChecklist: () -> Unit,
+    onStartWizard: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val reducedMotion = rememberReducedMotion()
+    val tone = if (readiness.allRequiredCompleted) FlameTone.NEUTRAL else FlameTone.WARNING
+    val toneColors = resolveFlameToneColors(tone)
+    val ratio = if (readiness.totalCount > 0) {
+        (readiness.completedCount.toFloat() / readiness.totalCount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val animatedRatio by animateFloatAsState(
+        targetValue = ratio,
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 200,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "today_setup_readiness_progress",
+    )
+
+    FlameCard(
+        cornerRadius = 18.dp,
+        contentPadding = PaddingValues(13.dp),
+        onClick = onOpenChecklist,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "初始化与权限清单",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            FlameStatusPill(
+                text = "${readiness.completedCount}/${readiness.totalCount}",
+                tone = tone,
+                showDot = false,
+            )
+            Surface(
+                onClick = onStartWizard,
+                shape = RoundedCornerShape(999.dp),
+                color = palette.surfaceSubtle,
+                contentColor = palette.ink,
+                border = BorderStroke(1.dp, palette.hairline),
+            ) {
+                Text(
+                    text = "分步引导",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LinearProgressIndicator(
+            progress = { animatedRatio },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(999.dp)),
+            color = toneColors.fg,
+            trackColor = palette.surfaceSubtle,
+            strokeCap = StrokeCap.Round,
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = readiness.nextPendingItem?.let { "待完成：${it.title}" }
+                    ?: "点击查看全部权限与配置完成度",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.inkSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "查看清单",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.inkSecondary,
+                maxLines = 1,
+                softWrap = false,
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = null,
+                tint = palette.inkTertiary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 
@@ -1080,7 +1214,7 @@ private fun TodayConditionalAlertStrips(
                 AccountStatus.AUTH_EXPIRED -> {
                     FlameAlertStrip(
                         title = "抖音登录态已失效",
-                        subtitle = "连续两次登录校验未通过，自动续火已暂停，请重新扫码登录。",
+                        subtitle = "连续两次登录校验未通过，自动续火已暂停，请重新授权登录。",
                         tone = FlameTone.DANGER,
                         actionLabel = "去重登",
                         icon = Icons.Outlined.ErrorOutline,
@@ -1090,10 +1224,10 @@ private fun TodayConditionalAlertStrips(
 
                 AccountStatus.PENDING_LOGIN -> {
                     FlameAlertStrip(
-                        title = "尚未扫码登录抖音网页端",
-                        subtitle = "扫码登录一次即可在本地安全自动续火，登录态仅存本机沙盒。",
+                        title = "尚未登录抖音账号",
+                        subtitle = "支持一键拉起本机抖音授权或扫码登录，登录态仅存本机沙盒。",
                         tone = FlameTone.WARNING,
-                        actionLabel = "立即扫码",
+                        actionLabel = "立即登录",
                         icon = Icons.Outlined.QrCodeScanner,
                         onClick = onReloginClick,
                     )

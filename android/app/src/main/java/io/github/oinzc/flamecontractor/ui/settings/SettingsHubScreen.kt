@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.ImportExport
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Tune
@@ -38,6 +40,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
+import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
@@ -46,6 +49,7 @@ internal fun SettingsHubScreen(
     uiState: SettingsUiState,
     themePreference: ThemePreference,
     onSelectSection: (SettingsSection) -> Unit,
+    onStartOnboardingWizard: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -85,6 +89,79 @@ internal fun SettingsHubScreen(
                     actionLabel = "去诊断",
                     icon = Icons.Outlined.WarningAmber,
                     onClick = { onSelectSection(SettingsSection.DIAGNOSTICS) },
+                )
+            }
+
+            // 0. 上手与配置状态（集中展示全部权限与业务就绪完成度）
+            val readiness = SetupReadinessBuilder.build(
+                survivalSnapshot = uiState.survivalSnapshot,
+                accountStatus = uiState.accountStatus,
+                enabledTargetCount = uiState.enabledTargetCount,
+            )
+            val readinessTone = when {
+                readiness.allCompleted -> FlameTone.HEALTHY
+                !readiness.allRequiredCompleted -> FlameTone.WARNING
+                else -> FlameTone.NEUTRAL
+            }
+            val readinessSummary = if (readiness.allCompleted) {
+                "${readiness.vendorFamily.displayName} · 全部 ${readiness.totalCount} 项系统权限与账号配置已就绪"
+            } else {
+                val pendingName = readiness.nextPendingItem?.title ?: "查看未完成项"
+                "${readiness.vendorFamily.displayName} · 下一项：$pendingName"
+            }
+
+            FlameGroupedSection(title = "上手与配置状态") {
+                FlameListRow(
+                    title = SettingsSection.SURVIVAL.title,
+                    subtitle = readinessSummary,
+                    leading = {
+                        FlameRowAvatar(tone = readinessTone) {
+                            Icon(
+                                imageVector = if (readiness.allCompleted) {
+                                    Icons.Outlined.CheckCircle
+                                } else {
+                                    Icons.Outlined.Security
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            FlameStatusPill(
+                                text = "${readiness.completedCount}/${readiness.totalCount} 完成",
+                                tone = readinessTone,
+                                showDot = false,
+                            )
+                            HubChevron()
+                        }
+                    },
+                    showDivider = true,
+                    onClick = { onSelectSection(SettingsSection.SURVIVAL) },
+                )
+
+                FlameListRow(
+                    title = "新手分步设置引导",
+                    subtitle = "逐项说明每项权限的作用并一步步完成设置（全品牌安卓适用）",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.EMBER) {
+                            Icon(
+                                imageVector = Icons.Outlined.PlayCircleOutline,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = { HubChevron() },
+                    showDivider = false,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onStartOnboardingWizard()
+                    },
                 )
             }
 
@@ -144,17 +221,6 @@ internal fun SettingsHubScreen(
                 else -> FlameTone.NEUTRAL
             }
 
-            val survivalTone = when {
-                survival.passedCount == survival.totalCount -> FlameTone.HEALTHY
-                !survival.coreAllPassed -> FlameTone.DANGER
-                else -> FlameTone.WARNING
-            }
-            val survivalSummary = buildString {
-                append(survival.manufacturer)
-                append(" · ")
-                append(if (survival.coreAllPassed) "核心保活策略已就绪" else "存在受限项，建议前往放行")
-            }
-
             FlameGroupedSection(title = "自动执行") {
                 FlameListRow(
                     title = SettingsSection.SCHEDULE.title,
@@ -193,37 +259,8 @@ internal fun SettingsHubScreen(
                         }
                     },
                     trailing = { HubChevron() },
-                    showDivider = true,
-                    onClick = { onSelectSection(SettingsSection.NOTIFICATIONS) },
-                )
-
-                FlameListRow(
-                    title = SettingsSection.SURVIVAL.title,
-                    subtitle = survivalSummary,
-                    leading = {
-                        FlameRowAvatar(tone = survivalTone) {
-                            Icon(
-                                imageVector = Icons.Outlined.Security,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    },
-                    trailing = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            FlameStatusPill(
-                                text = "${survival.passedCount}/${survival.totalCount} 通过",
-                                tone = survivalTone,
-                                showDot = false,
-                            )
-                            HubChevron()
-                        }
-                    },
                     showDivider = false,
-                    onClick = { onSelectSection(SettingsSection.SURVIVAL) },
+                    onClick = { onSelectSection(SettingsSection.NOTIFICATIONS) },
                 )
             }
 

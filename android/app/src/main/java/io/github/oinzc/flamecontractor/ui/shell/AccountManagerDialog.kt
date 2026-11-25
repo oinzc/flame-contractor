@@ -230,7 +230,9 @@ fun AccountManagerSheet(
                 primary = true,
                 enabled = !isBusy && isMultiProfileSupported,
                 onClick = {
-                    createNameInput = "抖音号 ${accounts.size + 1}"
+                    createNameInput = AccountManager.suggestNextDefaultAccountName(
+                        accounts.map { it.displayName },
+                    )
                     createError = null
                     showCreateDialog = true
                 },
@@ -390,7 +392,7 @@ fun AccountManagerSheet(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "系统将为新账号分配独立 WebView 环境，并自动初始化默认续火文本与 3 个表情模板。",
+                        text = "系统将为新账号分配独立 WebView 环境并初始化默认模板；保留默认名即可，登录成功后会自动同步为绑定的抖音昵称。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkSecondary,
                     )
@@ -725,7 +727,7 @@ private fun AccountSheetItemCard(
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "扫码登录",
+                        text = "账号登录",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
                     )

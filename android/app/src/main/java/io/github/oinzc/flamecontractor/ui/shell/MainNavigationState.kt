@@ -46,7 +46,7 @@ enum class SettingsSection(val title: String) {
     APPEARANCE("外观与主题"),
     SCHEDULE("自动调度与定时扫描"),
     NOTIFICATIONS("通知与 Bark 推送"),
-    SURVIVAL("后台保活自检"),
+    SURVIVAL("初始化与权限清单"),
     BACKUP("备份与跨机迁移"),
     DIAGNOSTICS("网页诊断与定位器维护"),
     ABOUT("关于与问题反馈"),

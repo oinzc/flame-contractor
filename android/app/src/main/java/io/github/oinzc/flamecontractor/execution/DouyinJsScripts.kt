@@ -262,8 +262,64 @@ object DouyinJsScripts {
         }
     """
 
-    fun buildIdentityCaptureDocumentStartJs(bridgeName: String = DEFAULT_BRIDGE_NAME): String {
+    fun buildIdentityCaptureDocumentStartJs(bridgeName: String = DEFAULT_BRIDGE_NAME): String =
+        buildDocumentStartJs(bridgeName = bridgeName, captureLoginQr = false)
+
+    fun buildLoginCaptureDocumentStartJs(bridgeName: String = DEFAULT_BRIDGE_NAME): String =
+        buildDocumentStartJs(bridgeName = bridgeName, captureLoginQr = true)
+
+    private fun buildDocumentStartJs(
+        bridgeName: String,
+        captureLoginQr: Boolean,
+    ): String {
         val bridgeExpr = jsStringLiteral(bridgeName)
+        val qrHookDecl = if (captureLoginQr) {
+            """
+                var QR_CODE_PATHS = ['/passport/web/get_qrcode'];
+                var QR_STATUS_PATHS = ['/passport/web/check_qrconnect'];
+                function emitQrCodePayload(rawText) {
+                  try {
+                    if (typeof rawText !== 'string' || !rawText) return;
+                    var bridge = getBridge();
+                    if (bridge && typeof bridge.onQrCodePayload === 'function') {
+                      bridge.onQrCodePayload(rawText);
+                    }
+                  } catch (_) {}
+                }
+                function emitQrStatusPayload(rawText) {
+                  try {
+                    if (typeof rawText !== 'string' || !rawText) return;
+                    var bridge = getBridge();
+                    if (bridge && typeof bridge.onQrStatusPayload === 'function') {
+                      bridge.onQrStatusPayload(rawText);
+                    }
+                  } catch (_) {}
+                }
+            """.trimIndent()
+        } else {
+            """
+                var QR_CODE_PATHS = [];
+                var QR_STATUS_PATHS = [];
+                function emitQrCodePayload() {}
+                function emitQrStatusPayload() {}
+            """.trimIndent()
+        }
+        val visibilityKeepAliveJs = if (captureLoginQr) {
+            """
+                try {
+                  Object.defineProperty(Document.prototype, 'hidden', {
+                    get: function () { return false; },
+                    configurable: true
+                  });
+                  Object.defineProperty(Document.prototype, 'visibilityState', {
+                    get: function () { return 'visible'; },
+                    configurable: true
+                  });
+                } catch (_) {}
+            """.trimIndent()
+        } else {
+            ""
+        }
         return """
             (function () {
               'use strict';
@@ -274,6 +330,8 @@ object DouyinJsScripts {
                     configurable: true
                   });
                 } catch (_) {}
+
+                $visibilityKeepAliveJs
 
                 try {
                   var ua = String(navigator.userAgent || '');
@@ -335,6 +393,7 @@ object DouyinJsScripts {
                 var PROTO_PATHS = [
                   '/v1/message/get_message_by_init'
                 ];
+                $qrHookDecl
 
                 function getBridge() {
                   try {
@@ -507,6 +566,8 @@ object DouyinJsScripts {
                     var path = extractPath(rawUrl);
                     var idMatch = matchPath(path, IDENTITY_PATHS);
                     var protoMatch = matchPath(path, PROTO_PATHS);
+                    var qrCodeMatch = matchPath(path, QR_CODE_PATHS);
+                    var qrStatusMatch = matchPath(path, QR_STATUS_PATHS);
                     var netEntry = recordNetStart('fetch', method, rawUrl);
                     var promise = origFetch.apply(this, arguments);
                     if (netEntry) {
@@ -518,7 +579,7 @@ object DouyinJsScripts {
                         });
                       } catch (_) {}
                     }
-                    if (idMatch || protoMatch) {
+                    if (idMatch || protoMatch || qrCodeMatch || qrStatusMatch) {
                       try {
                         promise.then(function (resp) {
                           try {
@@ -531,6 +592,14 @@ object DouyinJsScripts {
                             } else if (protoMatch) {
                               cloned.arrayBuffer().then(function (buf) {
                                 emitProtoBuffer(buf);
+                              }).catch(function () {});
+                            } else if (qrCodeMatch) {
+                              cloned.text().then(function (txt) {
+                                emitQrCodePayload(txt);
+                              }).catch(function () {});
+                            } else if (qrStatusMatch) {
+                              cloned.text().then(function (txt) {
+                                emitQrStatusPayload(txt);
                               }).catch(function () {});
                             }
                           } catch (_) {}
@@ -557,6 +626,8 @@ object DouyinJsScripts {
                       var path = extractPath(rawUrl);
                       var idMatch = matchPath(path, IDENTITY_PATHS);
                       var protoMatch = matchPath(path, PROTO_PATHS);
+                      var qrCodeMatch = matchPath(path, QR_CODE_PATHS);
+                      var qrStatusMatch = matchPath(path, QR_STATUS_PATHS);
                       var netEntry = recordNetStart('xhr', this.__flameMethod || 'GET', rawUrl);
                       if (netEntry) {
                         this.addEventListener('load', function () {
@@ -569,7 +640,7 @@ object DouyinJsScripts {
                           try { netEntry.status = -3; } catch (_) {}
                         });
                       }
-                      if ((idMatch || protoMatch) && !this.__flameBridgeHooked) {
+                      if ((idMatch || protoMatch || qrCodeMatch || qrStatusMatch) && !this.__flameBridgeHooked) {
                         this.__flameBridgeHooked = true;
                         this.addEventListener('load', function () {
                           try {
@@ -586,6 +657,17 @@ object DouyinJsScripts {
                                 this.response.arrayBuffer().then(function (buf) {
                                   emitProtoBuffer(buf);
                                 }).catch(function () {});
+                              }
+                            } else if (qrCodeMatch || qrStatusMatch) {
+                              var rawBody = null;
+                              if (this.responseType === 'json' && this.response) {
+                                rawBody = JSON.stringify(this.response);
+                              } else if ((!this.responseType || this.responseType === 'text') && typeof this.responseText === 'string') {
+                                rawBody = this.responseText;
+                              }
+                              if (rawBody) {
+                                if (qrCodeMatch) emitQrCodePayload(rawBody);
+                                else emitQrStatusPayload(rawBody);
                               }
                             }
                           } catch (_) {}
@@ -797,18 +879,24 @@ object DouyinJsScripts {
                 bodyText.indexOf('向右滑动') !== -1;
 
               var qrFound = false;
+              var qrImageDataUrl = null;
               try {
                 var imgs = document.querySelectorAll('img');
                 for (var i = 0; i < imgs.length; i++) {
                   var src = imgs[i].src || '';
-                  if (src.indexOf('data:image') !== 0) continue;
+                  if (src.indexOf('data:image/png;base64,') !== 0) continue;
                   var r = imgs[i].getBoundingClientRect();
                   if (r.width >= 120 && r.width <= 260 && r.height >= 120 && r.height <= 260) {
                     qrFound = true;
+                    qrImageDataUrl = src;
                     break;
                   }
                 }
               } catch (_) {}
+
+              var qrDomExpired = bodyText.indexOf('二维码已失效') !== -1 ||
+                bodyText.indexOf('二维码已过期') !== -1 ||
+                bodyText.indexOf('点击刷新') !== -1;
 
               var hasQrOrLoginSignal = qrFound ||
                 bodyText.indexOf('扫码登录') !== -1 ||
@@ -863,6 +951,8 @@ object DouyinJsScripts {
                 loggedIn: loggedIn,
                 verificationRequired: verificationRequired,
                 hasQrOrLoginSignal: hasQrOrLoginSignal,
+                qrImageDataUrl: qrImageDataUrl,
+                qrDomExpired: qrDomExpired,
                 hasLocalStorageUserInfo: hasLocalStorageUserInfo,
                 conversationCount: conversationCount,
                 selfUid: selfUid,
@@ -871,6 +961,66 @@ object DouyinJsScripts {
             })();
         """.trimIndent()
     }
+
+    fun buildRefreshLoginQrCodeJs(): String = """
+        (function () {
+          $DOM_HELPERS_JS
+          var root = document.querySelector('#douyin-login-new-id, [class*="login-panel"], [class*="web-login"], [role="dialog"]') || document.body;
+          if (!root) return { clicked: false };
+          var candidates = root.querySelectorAll('button, [role="button"], span, div, p, a');
+          var labels = ['点击刷新', '刷新二维码', '刷新', '重新获取'];
+          for (var l = 0; l < labels.length; l++) {
+            var targetLabel = labels[l];
+            for (var i = 0; i < candidates.length; i++) {
+              var el = candidates[i];
+              if (!__flameIsVisible(el)) continue;
+              var txt = String(el.innerText || el.textContent || '').replace(/\s+/g, '').trim();
+              if (txt === targetLabel) {
+                var clickTarget = __flameResolveClickTarget(el, false);
+                if (__flameDispatchClick(clickTarget)) {
+                  return { clicked: true, via: targetLabel };
+                }
+              }
+            }
+          }
+          var imgs = root.querySelectorAll('img');
+          for (var j = 0; j < imgs.length; j++) {
+            var src = imgs[j].src || '';
+            if (src.indexOf('data:image') !== 0) continue;
+            var r = imgs[j].getBoundingClientRect();
+            if (r.width >= 120 && r.width <= 260 && r.height >= 120 && r.height <= 260) {
+              var overlay = document.elementFromPoint
+                ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+                : imgs[j];
+              if (overlay && overlay !== imgs[j] && __flameDispatchClick(overlay)) {
+                return { clicked: true, via: 'qr_overlay' };
+              }
+            }
+          }
+          return { clicked: false };
+        })();
+    """.trimIndent()
+
+    fun buildSwitchToSmsLoginTabJs(): String = """
+        (function () {
+          $DOM_HELPERS_JS
+          var root = document.querySelector('#douyin-login-new-id, [class*="login-panel"], [class*="web-login"], [role="dialog"]') || document.body;
+          if (!root) return { clicked: false };
+          var nodes = root.querySelectorAll('[role="tab"], li, span, div');
+          for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            if (!__flameIsVisible(el)) continue;
+            var txt = String(el.innerText || el.textContent || '').replace(/\s+/g, '').trim();
+            if (txt === '验证码登录') {
+              var clickTarget = __flameResolveClickTarget(el, false);
+              if (__flameDispatchClick(clickTarget)) {
+                return { clicked: true };
+              }
+            }
+          }
+          return { clicked: false };
+        })();
+    """.trimIndent()
 
     fun buildScrollAndCollectChatsJs(bundle: SelectorBundle): String {
         val listLit = jsStringLiteral(bundle.conversationList)

@@ -658,6 +658,38 @@ class DouyinJsScriptsTest {
         assertTrue(netReadJs.contains("123456"))
     }
 
+    @Test
+    fun loginCaptureAndHelperScriptsExposeQrHooksDomFallbackAndModalActionsSafely() {
+        val bundle = SelectorBundle.defaults()
+        val loginDocStartJs = DouyinJsScripts.buildLoginCaptureDocumentStartJs("FlameBridge")
+        val authProbeJs = DouyinJsScripts.buildAuthAndSelfIdentityProbeJs(bundle)
+        val refreshQrJs = DouyinJsScripts.buildRefreshLoginQrCodeJs()
+        val switchSmsJs = DouyinJsScripts.buildSwitchToSmsLoginTabJs()
+
+        assertTrue(loginDocStartJs.contains("/passport/web/get_qrcode"))
+        assertTrue(loginDocStartJs.contains("/passport/web/check_qrconnect"))
+        assertTrue(loginDocStartJs.contains("onQrCodePayload"))
+        assertTrue(loginDocStartJs.contains("onQrStatusPayload"))
+        assertTrue(loginDocStartJs.contains("onIdentityRecords"))
+        assertTrue(loginDocStartJs.contains("Document.prototype, 'hidden'"))
+        assertTrue(loginDocStartJs.contains("Document.prototype, 'visibilityState'"))
+        assertFalse(loginDocStartJs.contains("u.search"))
+
+        val offscreenDocStartJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+        assertFalse(offscreenDocStartJs.contains("Document.prototype, 'hidden'"))
+        assertFalse(offscreenDocStartJs.contains("Document.prototype, 'visibilityState'"))
+
+        assertTrue(authProbeJs.contains("qrImageDataUrl"))
+        assertTrue(authProbeJs.contains("data:image/png;base64,"))
+        assertTrue(authProbeJs.contains("qrDomExpired"))
+        assertTrue(authProbeJs.contains("二维码已失效"))
+
+        assertTrue(refreshQrJs.contains("clicked"))
+        assertTrue(refreshQrJs.contains("刷新"))
+        assertTrue(switchSmsJs.contains("验证码登录"))
+        assertTrue(switchSmsJs.contains("clicked"))
+    }
+
     private class InMemoryAccountDao : AccountDao {
         private val accounts = LinkedHashMap<String, AccountEntity>()
 

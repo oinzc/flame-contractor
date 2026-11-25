@@ -228,13 +228,13 @@ class TodayViewModelTest {
         assertTrue(vm.uiState.value.showReloginChoiceDialog)
         assertTrue(effects.isEmpty())
 
-        // 选择「保留登录态排查」
+        // 选择「保留登录态排查」：直接进入网页模式驻留排查
         vm.chooseReloginPreserveSession()
         advanceUntilIdle()
 
         assertFalse(vm.uiState.value.showReloginChoiceDialog)
         assertEquals(
-            TodayUiEffect.OpenLogin(LoginMode.PRESERVE_SESSION, DEFAULT_ACCOUNT_ID),
+            TodayUiEffect.OpenLogin(LoginMode.INSPECT_OR_VERIFY, DEFAULT_ACCOUNT_ID),
             effects.last(),
         )
 
