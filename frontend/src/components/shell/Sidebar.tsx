@@ -5,6 +5,7 @@ import { PROJECT_LINKS } from '../../lib/links.ts'
 import type { ThemePreference } from '../../lib/theme.ts'
 import type { Account, WorkspaceView } from '../../types.ts'
 import {
+  ChevronRightIcon,
   FeedbackIcon,
   FlameIcon,
   GithubIcon,
@@ -32,6 +33,7 @@ export interface SidebarProps {
   onChangeTheme: (next: ThemePreference) => void
   onCreateAccount: () => void
   onInspectScan: (accountId: string) => void
+  onOpenFeedback: () => void
 }
 
 export function Sidebar({
@@ -50,6 +52,7 @@ export function Sidebar({
   onChangeTheme,
   onCreateAccount,
   onInspectScan,
+  onOpenFeedback,
 }: SidebarProps) {
   function navTo(next: WorkspaceView) {
     onSelectView(next)
@@ -63,11 +66,8 @@ export function Sidebar({
   }
 
   function handleOpenInAppFeedback() {
-    navTo('settings')
-    window.setTimeout(() => {
-      const el = document.getElementById('fc-about-support-heading')
-      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, 80)
+    onCloseMobile()
+    onOpenFeedback()
   }
 
   return (
@@ -160,11 +160,26 @@ export function Sidebar({
           }}
         />
 
-        <div style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="fc-sidebar-feedback-card"
+          onClick={handleOpenInAppFeedback}
+        >
+          <span className="fc-sidebar-feedback-icon" aria-hidden="true">
+            <FeedbackIcon width={15} height={15} />
+          </span>
+          <span className="fc-sidebar-feedback-copy">
+            <span className="fc-sidebar-feedback-title">反馈与建议</span>
+            <span className="fc-sidebar-feedback-sub">支持传截图 / Ctrl+V 粘贴</span>
+          </span>
+          <ChevronRightIcon width={14} height={14} className="fc-sidebar-feedback-arrow" />
+        </button>
+
+        <div style={{ marginTop: 8 }}>
           <ThemeSwitcher value={themePreference} onChange={onChangeTheme} compact />
         </div>
 
-        <div className="fc-sidebar-links" aria-label="项目源码与问题反馈">
+        <div className="fc-sidebar-links" aria-label="项目源码">
           <a
             href={PROJECT_LINKS.repoUrl}
             target="_blank"
@@ -175,14 +190,6 @@ export function Sidebar({
             <GithubIcon width={13} height={13} />
             <span>GitHub 源码</span>
           </a>
-          <button
-            type="button"
-            className="fc-sidebar-ext-link fc-sidebar-ext-btn"
-            onClick={handleOpenInAppFeedback}
-          >
-            <FeedbackIcon width={13} height={13} />
-            <span>反馈问题</span>
-          </button>
         </div>
       </aside>
     </>

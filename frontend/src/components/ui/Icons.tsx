@@ -220,3 +220,31 @@ export function CheckIcon(props: IconProps) {
     </BaseIcon>
   )
 }
+
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="m9 18 6-6-6-6" />
+    </BaseIcon>
+  )
+}
+
+export function ImageIcon(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </BaseIcon>
+  )
+}
+
+export function ShieldAlertIcon(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
+      <path d="M12 8v4" />
+      <path d="M12 16h.01" />
+    </BaseIcon>
+  )
+}

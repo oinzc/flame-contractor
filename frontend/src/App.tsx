@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import packageMeta from '../package.json'
 import { api, ApiError, getToken, setApiRuntime, setToken } from './api.ts'
 import { loadDesktopBootstrap, type DesktopBootstrap } from './lib/desktop.ts'
+import { formatProjectVersion } from './lib/links.ts'
 import { AccountManageDrawer } from './components/drawers/AccountManageDrawer.tsx'
 import { CreateEntityDrawer } from './components/drawers/CreateEntityDrawer.tsx'
 import { DryRunDrawer } from './components/drawers/DryRunDrawer.tsx'
@@ -9,8 +11,9 @@ import { ScanReconcileDrawer } from './components/drawers/ScanReconcileDrawer.ts
 import { SendAccountDrawer } from './components/drawers/SendAccountDrawer.tsx'
 import { TargetDetailDrawer } from './components/drawers/TargetDetailDrawer.tsx'
 import { TemplateEditorDrawer } from './components/drawers/TemplateEditorDrawer.tsx'
+import { FeedbackModal } from './components/shell/FeedbackModal.tsx'
 import { Sidebar } from './components/shell/Sidebar.tsx'
-import { MenuIcon } from './components/ui/Icons.tsx'
+import { FeedbackIcon, MenuIcon } from './components/ui/Icons.tsx'
 import { JobsStatsView } from './components/views/JobsStatsView.tsx'
 import { LoginView } from './components/views/LoginView.tsx'
 import { SettingsView } from './components/views/SettingsView.tsx'
@@ -45,6 +48,12 @@ export default function App() {
   const [refreshRevision, setRefreshRevision] = useState(0)
   const [globalError, setGlobalError] = useState<string | null>(null)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false)
+  const handleOpenFeedbackModal = useCallback(() => setFeedbackModalOpen(true), [])
+  const handleCloseFeedbackModal = useCallback(() => setFeedbackModalOpen(false), [])
+
+  const isDesktop = Boolean(desktopBootstrap?.desktopMode)
+  const appVersionLabel = formatProjectVersion(desktopBootstrap?.version ?? packageMeta.version)
 
   const {
     preference: themePreference,
@@ -328,7 +337,15 @@ export default function App() {
         <div style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {selectedAccount ? selectedAccount.displayName : 'Flame Contractor'}
         </div>
-        <div style={{ width: 30 }} />
+        <button
+          type="button"
+          className="fc-btn fc-btn-secondary fc-btn-icon"
+          aria-label="问题反馈与建议"
+          title="问题反馈与建议"
+          onClick={handleOpenFeedbackModal}
+        >
+          <FeedbackIcon width={16} height={16} />
+        </button>
       </div>
 
       <div className="fc-workspace">
@@ -356,6 +373,7 @@ export default function App() {
             setView('targets')
             setDrawer({ kind: 'scan-reconcile' })
           }}
+          onOpenFeedback={handleOpenFeedbackModal}
         />
 
         <main className="fc-main">
@@ -519,6 +537,14 @@ export default function App() {
           }}
         />
       </div>
+
+      <FeedbackModal
+        open={feedbackModalOpen}
+        isDesktop={isDesktop}
+        appVersionLabel={appVersionLabel}
+        browserRuntimeLabel={schedulerStatus?.browserRuntime?.label ?? null}
+        onClose={handleCloseFeedbackModal}
+      />
     </div>
   )
 }
