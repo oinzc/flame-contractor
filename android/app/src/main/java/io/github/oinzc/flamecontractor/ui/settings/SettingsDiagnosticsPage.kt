@@ -18,11 +18,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +76,8 @@ internal fun SettingsDiagnosticsPage(
     onDismissDiagnosticsDialog: () -> Unit,
     onCopyDiagnostics: (String) -> Unit,
     onShareDiagnostics: (String) -> Unit,
+    onOpenInspectWebView: () -> Unit = {},
+    onOpenFeedbackWithDiagnostics: (SanitizedDiagnosticsReport?) -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -169,6 +173,12 @@ internal fun SettingsDiagnosticsPage(
                         }
                     }
 
+                    val probeNeedsInspect = uiState.accountStatus in setOf(
+                        AccountStatus.DOM_BROKEN,
+                        AccountStatus.VERIFICATION_REQUIRED,
+                        AccountStatus.AUTH_EXPIRED,
+                    ) || (latestProbe != null && (!latestProbe.coreSkeletonOk || !latestProbe.loggedIn))
+
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -184,6 +194,13 @@ internal fun SettingsDiagnosticsPage(
                             SettingsSecondaryButton(
                                 text = "查看体检报告",
                                 onClick = onOpenProbeReportDialog,
+                            )
+                        }
+                        if (probeNeedsInspect) {
+                            SettingsSecondaryButton(
+                                text = "打开网页查看现场 / 过验证",
+                                leadingIcon = Icons.AutoMirrored.Outlined.OpenInNew,
+                                onClick = onOpenInspectWebView,
                             )
                         }
                     }
@@ -269,7 +286,7 @@ internal fun SettingsDiagnosticsPage(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        text = "仅导出应用与 WebView 版本、定位器摘要、账号状态枚举、保活状态及尝试计数；绝不包含昵称、UID、Cookie、消息正文与完整 Bark Key。",
+                        text = "仅导出应用与 WebView 版本、定位器摘要、账号状态枚举、保活状态、尝试计数及近期脱敏运行轨迹；绝不包含昵称、UID、Cookie、消息正文与完整 Bark Key。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkSecondary,
                     )
@@ -278,13 +295,23 @@ internal fun SettingsDiagnosticsPage(
                         SettingsFeedbackBanner(message = err, tone = FlameTone.DANGER)
                     }
 
-                    SettingsPrimaryButton(
-                        text = if (uiState.isBuildingDiagnostics) "正在生成…" else "导出脱敏诊断报告",
-                        leadingIcon = Icons.Outlined.BugReport,
-                        loading = uiState.isBuildingDiagnostics,
-                        enabled = !uiState.isBuildingDiagnostics,
-                        onClick = onGenerateDiagnosticsReport,
-                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        SettingsPrimaryButton(
+                            text = if (uiState.isBuildingDiagnostics) "正在生成…" else "导出脱敏诊断报告",
+                            leadingIcon = Icons.Outlined.BugReport,
+                            loading = uiState.isBuildingDiagnostics,
+                            enabled = !uiState.isBuildingDiagnostics,
+                            onClick = onGenerateDiagnosticsReport,
+                        )
+                        SettingsSecondaryButton(
+                            text = "一键带日志去反馈",
+                            leadingIcon = Icons.Outlined.Feedback,
+                            onClick = { onOpenFeedbackWithDiagnostics(uiState.diagnosticsReport) },
+                        )
+                    }
                 }
             }
         }
@@ -296,6 +323,7 @@ internal fun SettingsDiagnosticsPage(
             onDismiss = onDismissProbeDialog,
             onRetrigger = onTriggerStructureProbe,
             onConfirmRecoverDomBroken = onConfirmRecoverDomBroken,
+            onOpenInspectWebView = onOpenInspectWebView,
         )
     }
 
@@ -319,6 +347,10 @@ internal fun SettingsDiagnosticsPage(
             onDismiss = onDismissDiagnosticsDialog,
             onCopy = onCopyDiagnostics,
             onShare = onShareDiagnostics,
+            onOpenFeedbackWithDiagnostics = {
+                onDismissDiagnosticsDialog()
+                onOpenFeedbackWithDiagnostics(diagnostics)
+            },
         )
     }
 }
@@ -329,6 +361,7 @@ internal fun StructureProbeReportSheet(
     onDismiss: () -> Unit,
     onRetrigger: () -> Unit,
     onConfirmRecoverDomBroken: () -> Unit,
+    onOpenInspectWebView: () -> Unit = {},
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
@@ -336,6 +369,11 @@ internal fun StructureProbeReportSheet(
     val canManualRecoverDomBroken = report != null &&
         report.coreSkeletonOk &&
         uiState.accountStatus == AccountStatus.DOM_BROKEN
+    val showInspectAction = uiState.accountStatus in setOf(
+        AccountStatus.DOM_BROKEN,
+        AccountStatus.VERIFICATION_REQUIRED,
+        AccountStatus.AUTH_EXPIRED,
+    ) || (report != null && (!report.coreSkeletonOk || !report.loggedIn))
 
     FlameModalSheet(
         onDismissRequest = onDismiss,
@@ -461,10 +499,21 @@ internal fun StructureProbeReportSheet(
                     onClick = onConfirmRecoverDomBroken,
                 )
             }
+            if (showInspectAction) {
+                FlameSheetActionRow(
+                    text = "打开网页查看现场 / 过验证",
+                    trailingText = "保留登录态",
+                    primary = !canManualRecoverDomBroken,
+                    onClick = {
+                        onDismiss()
+                        onOpenInspectWebView()
+                    },
+                )
+            }
             if (!uiState.isProbeRunning) {
                 FlameSheetActionRow(
                     text = "重新体检",
-                    primary = !canManualRecoverDomBroken,
+                    primary = !canManualRecoverDomBroken && !showInspectAction,
                     onClick = onRetrigger,
                 )
             }
@@ -582,6 +631,7 @@ internal fun SanitizedDiagnosticsSheet(
     onDismiss: () -> Unit,
     onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
+    onOpenFeedbackWithDiagnostics: () -> Unit = {},
 ) {
     val palette = FlameThemeTokens.palette
     var selectedFormat by remember { mutableStateOf("text") }
@@ -632,18 +682,27 @@ internal fun SanitizedDiagnosticsSheet(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             SettingsSecondaryButton(
-                text = "复制",
+                text = "复制报告",
                 leadingIcon = Icons.Outlined.ContentCopy,
                 onClick = { onCopy(activePayload) },
                 modifier = Modifier.weight(1f),
             )
-            SettingsPrimaryButton(
-                text = "分享",
+            SettingsSecondaryButton(
+                text = "分享报告",
                 leadingIcon = Icons.Outlined.Share,
                 onClick = { onShare(activePayload) },
                 modifier = Modifier.weight(1f),
             )
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        FlameSheetActionRow(
+            text = "一键带日志去反馈",
+            trailingText = "自动附脱敏日志",
+            primary = true,
+            onClick = onOpenFeedbackWithDiagnostics,
+        )
 
         Spacer(modifier = Modifier.height(8.dp))
 

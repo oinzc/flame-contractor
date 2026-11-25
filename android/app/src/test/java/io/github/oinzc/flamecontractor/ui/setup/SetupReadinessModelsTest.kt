@@ -188,6 +188,77 @@ class SetupReadinessModelsTest {
         assertEquals(0, store3.state.value.lastStepIndex)
     }
 
+    @Test
+    fun onboardingGatePolicyLocksStepsUntilPriorCorePermissionsCompleted() {
+        val noneReady = SetupReadinessBuilder.build(
+            survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+                checkedAtEpochMs = 1_000L,
+                isXiaomiOrHyperOs = true,
+                manufacturer = "Xiaomi",
+                notificationsGranted = false,
+                batteryOptimizationIgnored = false,
+                exactAlarmAllowed = false,
+                autostartGuidanceConfirmed = false,
+                overlayAutoReturnAllowed = false,
+                vendorFamily = OemVendorFamily.XIAOMI,
+            ),
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        // 通知未开时只解锁第 0 步，不能跳到第 1..5 步
+        assertEquals(0, OnboardingGatePolicy.maxUnlockedStepIndex(noneReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(0, noneReady))
+        assertFalse(OnboardingGatePolicy.canSelectStep(1, noneReady))
+        assertEquals(0, OnboardingGatePolicy.clampInitialStepIndex(4, noneReady))
+        assertEquals(0, OnboardingGatePolicy.completedCoreStepCount(noneReady))
+        assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(noneReady).contains("系统通知权限"))
+
+        // 通知与悬浮窗完成后解锁到第 2 步（电池+闹钟），可回看第 0/1 步，不能跳到第 3 步
+        val firstTwoReady = SetupReadinessBuilder.build(
+            survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+                checkedAtEpochMs = 2_000L,
+                isXiaomiOrHyperOs = true,
+                manufacturer = "Xiaomi",
+                notificationsGranted = true,
+                batteryOptimizationIgnored = true,
+                exactAlarmAllowed = false,
+                autostartGuidanceConfirmed = false,
+                overlayAutoReturnAllowed = true,
+                vendorFamily = OemVendorFamily.XIAOMI,
+            ),
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        assertEquals(2, OnboardingGatePolicy.maxUnlockedStepIndex(firstTwoReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(0, firstTwoReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(1, firstTwoReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(2, firstTwoReady))
+        assertFalse(OnboardingGatePolicy.canSelectStep(3, firstTwoReady))
+        assertEquals(2, OnboardingGatePolicy.completedCoreStepCount(firstTwoReady))
+
+        // 前 4 步核心权限全部就绪后，解锁登录与选择好友步（索引 5）
+        val allCoreReady = SetupReadinessBuilder.build(
+            survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+                checkedAtEpochMs = 3_000L,
+                isXiaomiOrHyperOs = true,
+                manufacturer = "Xiaomi",
+                notificationsGranted = true,
+                batteryOptimizationIgnored = true,
+                exactAlarmAllowed = true,
+                autostartGuidanceConfirmed = true,
+                overlayAutoReturnAllowed = true,
+                vendorFamily = OemVendorFamily.XIAOMI,
+            ),
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        assertEquals(OnboardingStep.entries.lastIndex, OnboardingGatePolicy.maxUnlockedStepIndex(allCoreReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(4, allCoreReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(5, allCoreReady))
+        assertEquals(4, OnboardingGatePolicy.completedCoreStepCount(allCoreReady))
+        assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(allCoreReady).isEmpty())
+    }
+
     private class InMemorySharedPreferences : SharedPreferences {
         private val data = linkedMapOf<String, Any?>()
 

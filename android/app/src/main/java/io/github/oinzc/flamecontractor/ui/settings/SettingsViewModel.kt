@@ -14,6 +14,7 @@ import io.github.oinzc.flamecontractor.core.backup.BackupInspection
 import io.github.oinzc.flamecontractor.core.backup.BackupManager
 import io.github.oinzc.flamecontractor.core.backup.BackupZipExportResult
 import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
+import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.BarkProbeResult
 import io.github.oinzc.flamecontractor.core.notify.BarkUrlNormalizer
@@ -235,6 +236,12 @@ class SettingsViewModel(
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
     private val accountId: String = DEFAULT_ACCOUNT_ID,
     coroutineScope: CoroutineScope? = null,
+    private val runtimeLogLinesProvider: () -> List<String> = {
+        DiagnosticLogStore.globalOrNull()?.recentLines(DIAGNOSTICS_LOG_LINE_LIMIT).orEmpty()
+    },
+    private val recentSkipSummaryProvider: () -> String? = {
+        ExecutionRuntimeBus.state.value.lastSkipSummary
+    },
 ) : ViewModel() {
 
     private val scope: CoroutineScope = coroutineScope ?: viewModelScope
@@ -1353,6 +1360,57 @@ class SettingsViewModel(
         }
     }
 
+    suspend fun buildDiagnosticsReport(): SanitizedDiagnosticsReport = withContext(ioDispatcher) {
+        val account = accountRepo.getAccount(accountId)
+        val totalAccountCount = accountRepo.countAccounts().coerceAtLeast(if (account != null) 1 else 0)
+        val targets = accountRepo.listActiveTargets(accountId)
+        val nowMs = clockMillis()
+        val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
+        val todayStr = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zoneId)
+            .toLocalDate()
+            .toString()
+        val todayJobs = accountRepo.listJobsForDate(accountId, todayStr)
+        val recentAttempts = accountRepo.listRecentAttempts(accountId, limit = 50)
+        val latestAutoScan = accountRepo.getLatestAutoScanRun(accountId)
+        val survival = survivalGateway.inspect()
+        val digest = selectorGateway.digest()
+        val hasOverrides = selectorGateway.hasOverrides()
+        val rawBark = barkGateway.readRawBarkUrl()
+        val probeReport = _uiState.value.latestProbeReport
+        val runtimeLogLines = runtimeLogLinesProvider()
+        val recentSkipSummary = recentSkipSummaryProvider()
+        val unboundTemplateTargetCount = targets.count {
+            it.enabled && it.deletedAt == null && it.templateId.isNullOrBlank()
+        }
+
+        SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = nowMs,
+                appVersionName = envProvider.appVersionName(),
+                appVersionCode = envProvider.appVersionCode(),
+                androidSdkInt = envProvider.androidSdkInt(),
+                androidRelease = envProvider.androidRelease(),
+                webViewVersion = envProvider.webViewVersion(),
+                selectorDigest = digest,
+                hasSelectorOverrides = hasOverrides,
+                account = account,
+                targets = targets,
+                todayJobs = todayJobs,
+                recentAttempts = recentAttempts,
+                survivalSnapshot = survival,
+                rawBarkUrl = rawBark,
+                latestProbeReport = probeReport,
+                latestAutoScan = latestAutoScan,
+                totalAccountCount = totalAccountCount,
+                runtimeLogLines = runtimeLogLines,
+                recentSkipSummary = recentSkipSummary,
+                unboundTemplateTargetCount = unboundTemplateTargetCount,
+            ),
+        )
+    }
+
+    suspend fun buildDiagnosticsReportText(): String = buildDiagnosticsReport().textReport
+
     fun generateDiagnosticsReport() {
         _uiState.update {
             it.copy(
@@ -1362,46 +1420,7 @@ class SettingsViewModel(
         }
         scope.launch {
             try {
-                val report = withContext(ioDispatcher) {
-                    val account = accountRepo.getAccount(accountId)
-                    val totalAccountCount = accountRepo.countAccounts().coerceAtLeast(if (account != null) 1 else 0)
-                    val targets = accountRepo.listActiveTargets(accountId)
-                    val nowMs = clockMillis()
-                    val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
-                    val todayStr = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zoneId)
-                        .toLocalDate()
-                        .toString()
-                    val todayJobs = accountRepo.listJobsForDate(accountId, todayStr)
-                    val recentAttempts = accountRepo.listRecentAttempts(accountId, limit = 50)
-                    val latestAutoScan = accountRepo.getLatestAutoScanRun(accountId)
-                    val survival = survivalGateway.inspect()
-                    val digest = selectorGateway.digest()
-                    val hasOverrides = selectorGateway.hasOverrides()
-                    val rawBark = barkGateway.readRawBarkUrl()
-                    val probeReport = _uiState.value.latestProbeReport
-
-                    SanitizedDiagnosticsBuilder.build(
-                        RawDiagnosticsContext(
-                            generatedAtEpochMs = nowMs,
-                            appVersionName = envProvider.appVersionName(),
-                            appVersionCode = envProvider.appVersionCode(),
-                            androidSdkInt = envProvider.androidSdkInt(),
-                            androidRelease = envProvider.androidRelease(),
-                            webViewVersion = envProvider.webViewVersion(),
-                            selectorDigest = digest,
-                            hasSelectorOverrides = hasOverrides,
-                            account = account,
-                            targets = targets,
-                            todayJobs = todayJobs,
-                            recentAttempts = recentAttempts,
-                            survivalSnapshot = survival,
-                            rawBarkUrl = rawBark,
-                            latestProbeReport = probeReport,
-                            latestAutoScan = latestAutoScan,
-                            totalAccountCount = totalAccountCount,
-                        ),
-                    )
-                }
+                val report = buildDiagnosticsReport()
 
                 _uiState.update {
                     it.copy(
@@ -1493,6 +1512,7 @@ class SettingsViewModel(
         const val MAX_JITTER_MINUTES = 15
         const val MIN_AUTO_SCAN_INTERVAL_HOURS = 1
         const val MAX_AUTO_SCAN_INTERVAL_HOURS = 168
+        const val DIAGNOSTICS_LOG_LINE_LIMIT = 120
         val AUTO_SCAN_PRESET_HOURS = listOf(12, 24, 48)
         private val HHMM_REGEX = Regex("^\\d{2}:\\d{2}$")
         private val TIME_DISPLAY_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm")
@@ -1510,6 +1530,7 @@ class SettingsViewModel(
                 templateImageStore = AndroidTemplateImageStore(context.applicationContext ?: context),
             ),
             accountId: String = DEFAULT_ACCOUNT_ID,
+            diagnosticLogStore: DiagnosticLogStore? = null,
         ): ViewModelProvider.Factory {
             val appContext = context.applicationContext ?: context
             val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
@@ -1527,11 +1548,81 @@ class SettingsViewModel(
                             envProvider = AndroidDiagnosticsEnvProvider(appContext),
                             backupGateway = AndroidBackupGateway(backupManager, resolvedAccountId),
                             accountId = resolvedAccountId,
+                            runtimeLogLinesProvider = {
+                                (diagnosticLogStore ?: DiagnosticLogStore.globalOrNull())
+                                    ?.recentLines(DIAGNOSTICS_LOG_LINE_LIMIT)
+                                    .orEmpty()
+                            },
+                            recentSkipSummaryProvider = {
+                                ExecutionRuntimeBus.state.value.lastSkipSummary
+                            },
                         ) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
                 }
             }
+        }
+
+        suspend fun buildQuickSanitizedDiagnosticsText(
+            context: Context,
+            database: FlameDatabase,
+            selectorBundleStore: SelectorBundleStore,
+            secretStore: EncryptedSecretStore,
+            diagnosticLogStore: DiagnosticLogStore?,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+            ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        ): String = withContext(ioDispatcher) {
+            val appContext = context.applicationContext ?: context
+            val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
+            val repo = RoomSettingsAccountRepository(database)
+            val envProvider = AndroidDiagnosticsEnvProvider(appContext)
+            val account = repo.getAccount(resolvedAccountId)
+            val totalAccountCount = repo.countAccounts().coerceAtLeast(if (account != null) 1 else 0)
+            val targets = repo.listActiveTargets(resolvedAccountId)
+            val nowMs = System.currentTimeMillis()
+            val zoneId = DailySchedulePlanner.resolveZoneId(account?.timezone)
+            val todayStr = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zoneId)
+                .toLocalDate()
+                .toString()
+            val todayJobs = repo.listJobsForDate(resolvedAccountId, todayStr)
+            val recentAttempts = repo.listRecentAttempts(resolvedAccountId, limit = 50)
+            val latestAutoScan = repo.getLatestAutoScanRun(resolvedAccountId)
+            val survival = RomSurvivalChecker.inspect(appContext)
+            val liveState = ExecutionRuntimeBus.state.value
+            val latestProbe = liveState.latestProbeReport?.takeIf {
+                liveState.activeAccountId == null || liveState.activeAccountId == resolvedAccountId
+            }
+            val runtimeLines = (diagnosticLogStore ?: DiagnosticLogStore.globalOrNull())
+                ?.recentLines(DIAGNOSTICS_LOG_LINE_LIMIT)
+                .orEmpty()
+            val unboundTemplateTargetCount = targets.count {
+                it.enabled && it.deletedAt == null && it.templateId.isNullOrBlank()
+            }
+
+            SanitizedDiagnosticsBuilder.build(
+                RawDiagnosticsContext(
+                    generatedAtEpochMs = nowMs,
+                    appVersionName = envProvider.appVersionName(),
+                    appVersionCode = envProvider.appVersionCode(),
+                    androidSdkInt = envProvider.androidSdkInt(),
+                    androidRelease = envProvider.androidRelease(),
+                    webViewVersion = envProvider.webViewVersion(),
+                    selectorDigest = selectorBundleStore.digest(),
+                    hasSelectorOverrides = selectorBundleStore.hasOverrides(),
+                    account = account,
+                    targets = targets,
+                    todayJobs = todayJobs,
+                    recentAttempts = recentAttempts,
+                    survivalSnapshot = survival,
+                    rawBarkUrl = secretStore.readBarkUrl(),
+                    latestProbeReport = latestProbe,
+                    latestAutoScan = latestAutoScan,
+                    totalAccountCount = totalAccountCount,
+                    runtimeLogLines = runtimeLines,
+                    recentSkipSummary = liveState.lastSkipSummary,
+                    unboundTemplateTargetCount = unboundTemplateTargetCount,
+                ),
+            ).textReport
         }
     }
 }

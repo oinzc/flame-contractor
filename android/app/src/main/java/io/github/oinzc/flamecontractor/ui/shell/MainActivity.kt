@@ -41,6 +41,7 @@ import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
+import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.JobStatus
@@ -52,6 +53,7 @@ import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.history.HistoryRoute
 import io.github.oinzc.flamecontractor.ui.settings.RomSurvivalChecker
 import io.github.oinzc.flamecontractor.ui.settings.SettingsRoute
+import io.github.oinzc.flamecontractor.ui.settings.SettingsViewModel
 import io.github.oinzc.flamecontractor.ui.setup.OnboardingWizardScreen
 import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.targets.TargetsRoute
@@ -125,6 +127,7 @@ class MainActivity : AppCompatActivity() {
                 var hasEvaluatedAutoOnboarding by rememberSaveable { mutableStateOf(false) }
                 var onboardingInitialStep by rememberSaveable { mutableStateOf(0) }
                 var lastHandledLaunchNonce by rememberSaveable { mutableStateOf(0L) }
+                var pendingFeedbackDraft by remember { mutableStateOf<FeedbackPreFillDraft?>(null) }
                 val launchSignal = pendingLaunchSignal
 
                 val onboardingState by container.setupOnboardingStore.state.collectAsState()
@@ -262,6 +265,16 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
+                val openInspectWebViewForAccount: (String) -> Unit = { targetId ->
+                    loginLauncher.launch(
+                        LoginWebViewActivity.createIntent(
+                            context = this@MainActivity,
+                            mode = LoginMode.INSPECT_OR_VERIFY,
+                            accountId = targetId,
+                        ),
+                    )
+                }
+
                 val startOnboardingWizard: () -> Unit = {
                     refreshSurvivalSnapshot()
                     onboardingInitialStep = 0
@@ -296,6 +309,24 @@ class MainActivity : AppCompatActivity() {
                         returnToTabOnBack = true,
                     )
                 }
+                val openFeedbackWithDraft: (FeedbackPreFillDraft) -> Unit = { draft ->
+                    pendingFeedbackDraft = draft
+                    isFullscreenEditorOpen = false
+                    navState = navState.openSettings(
+                        section = SettingsSection.ABOUT,
+                        returnToTabOnBack = true,
+                    )
+                }
+                val buildQuickDiagnosticsReportText: suspend () -> String = {
+                    SettingsViewModel.buildQuickSanitizedDiagnosticsText(
+                        context = applicationContext,
+                        database = container.database,
+                        selectorBundleStore = container.selectorBundleStore,
+                        secretStore = container.secretStore,
+                        diagnosticLogStore = container.diagnosticLogStore,
+                        accountId = activeAccountId,
+                    )
+                }
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     AdaptiveNavShell(
@@ -321,6 +352,8 @@ class MainActivity : AppCompatActivity() {
                                 },
                                 onOpenSettings = openSettings,
                                 onOpenFeedback = openFeedbackDirect,
+                                onOpenFeedbackWithDraft = openFeedbackWithDraft,
+                                onBuildDiagnosticsReportText = buildQuickDiagnosticsReportText,
                                 onOpenAccountSwitcher = { showAccountManagerSheet = true },
                                 otherAccountAlertBadge = hasOtherAccountAlert,
                                 setupReadiness = if (activeEnabledTargetCount >= 0) setupReadiness else null,
@@ -363,6 +396,8 @@ class MainActivity : AppCompatActivity() {
                                 },
                                 onOpenSettings = openSettings,
                                 onOpenFeedback = openFeedbackDirect,
+                                onOpenFeedbackWithDraft = openFeedbackWithDraft,
+                                onBuildDiagnosticsReportText = buildQuickDiagnosticsReportText,
                                 accountId = activeAccountId,
                             )
                         },
@@ -426,6 +461,7 @@ class MainActivity : AppCompatActivity() {
                                 },
                                 onStartOnboardingWizard = startOnboardingWizard,
                                 onOpenLoginForActiveAccount = { openLoginForAccount(activeAccountId) },
+                                onOpenInspectWebViewForActiveAccount = { openInspectWebViewForAccount(activeAccountId) },
                                 onOpenTargetsTab = {
                                     isFullscreenEditorOpen = false
                                     navState = navState.selectTab(MainTab.TARGETS)
@@ -437,6 +473,14 @@ class MainActivity : AppCompatActivity() {
                                 },
                                 backupManager = container.backupManager,
                                 accountId = activeAccountId,
+                                diagnosticLogStore = container.diagnosticLogStore,
+                                pendingFeedbackDraft = pendingFeedbackDraft,
+                                onConsumeFeedbackDraft = { nonce ->
+                                    if (pendingFeedbackDraft?.nonce == nonce) {
+                                        pendingFeedbackDraft = null
+                                    }
+                                },
+                                onOpenFeedbackWithDraft = openFeedbackWithDraft,
                             )
                         }
                     }

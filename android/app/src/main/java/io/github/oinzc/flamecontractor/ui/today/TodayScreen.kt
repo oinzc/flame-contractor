@@ -1,5 +1,8 @@
 package io.github.oinzc.flamecontractor.ui.today
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -25,6 +28,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,12 +59,15 @@ import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
@@ -83,6 +91,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,6 +113,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.oinzc.flamecontractor.app.AppContainer
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.support.FeedbackKind
+import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
@@ -111,6 +122,7 @@ import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
+import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
@@ -149,6 +161,8 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 @Composable
 fun TodayRoute(
@@ -156,6 +170,8 @@ fun TodayRoute(
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
+    onOpenFeedbackWithDraft: (FeedbackPreFillDraft) -> Unit = { onOpenFeedback() },
+    onBuildDiagnosticsReportText: (suspend () -> String)? = null,
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
     setupReadiness: SetupReadinessSnapshot? = null,
@@ -167,6 +183,7 @@ fun TodayRoute(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
     val viewModel: TodayViewModel = viewModel(
         key = "today_$accountId",
         factory = TodayViewModel.factory(container = container, accountId = accountId),
@@ -215,6 +232,28 @@ fun TodayRoute(
         }
     }
 
+    val handleCopyDiagnosticsLog: (() -> Unit)? = onBuildDiagnosticsReportText?.let { builder ->
+        {
+            coroutineScope.launch {
+                try {
+                    val reportText = builder()
+                    val copied = copyTodayDiagnosticsToClipboard(context, reportText)
+                    snackbarHostState.showSnackbar(
+                        if (copied) {
+                            "已复制脱敏诊断日志，可直接发给维护者或在反馈中粘贴"
+                        } else {
+                            "复制剪贴板失败，请稍后重试"
+                        },
+                    )
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    snackbarHostState.showSnackbar("生成诊断日志失败，请稍后重试")
+                }
+            }
+        }
+    }
+
     TodayScreen(
         state = uiState,
         snackbarHostState = snackbarHostState,
@@ -232,12 +271,27 @@ fun TodayRoute(
         onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
         onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
         onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
+        onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
+        onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
+        onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
         onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
         onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
         onToggleJobExpanded = viewModel::toggleJobExpanded,
         onOpenTab = onOpenTab,
         onOpenSettings = onOpenSettings,
         onOpenFeedback = onOpenFeedback,
+        onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+        onFeedbackIssue = { title, content ->
+            onOpenFeedbackWithDraft(
+                FeedbackPreFillDraft(
+                    kind = FeedbackKind.BUG,
+                    title = title,
+                    content = content,
+                    attachDiagnosticLog = true,
+                    nonce = System.currentTimeMillis(),
+                ),
+            )
+        },
         onOpenAccountSwitcher = onOpenAccountSwitcher,
         otherAccountAlertBadge = otherAccountAlertBadge,
         setupReadiness = setupReadiness,
@@ -270,12 +324,17 @@ fun TodayScreen(
     onDismissDomBrokenDialog: () -> Unit,
     onDismissUrgentAuthPrompt: () -> Unit,
     onConfirmUrgentAuthPrompt: () -> Unit,
+    onTriggerForceAllBatch: () -> Unit = {},
+    onConfirmForceAllBatch: () -> Unit = {},
+    onDismissForceAllConfirm: () -> Unit = {},
     onTriggerManualBatch: () -> Unit,
     onDismissManualBatchFeedback: () -> Unit,
     onToggleJobExpanded: (String) -> Unit,
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
+    onCopyDiagnosticsLog: (() -> Unit)? = null,
+    onFeedbackIssue: ((title: String, content: String) -> Unit)? = null,
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
     setupReadiness: SetupReadinessSnapshot? = null,
@@ -360,7 +419,10 @@ fun TodayScreen(
                             onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
                             onOpenCooldownDetail = onOpenCooldownDetail,
+                            onTriggerForceAllBatch = onTriggerForceAllBatch,
                             onTriggerManualBatch = onTriggerManualBatch,
+                            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+                            onFeedbackIssue = onFeedbackIssue,
                             onOpenTab = onOpenTab,
                             onOpenSettings = onOpenSettings,
                         )
@@ -375,6 +437,8 @@ fun TodayScreen(
                     ) {
                         item(key = "recent_jobs_section") {
                             TodayRecentJobsSection(
+                                sectionTitle = state.recentJobsSectionTitle,
+                                businessDate = state.businessDate,
                                 recentJobs = state.recentJobs,
                                 onOpenJobTimeline = openJobTimeline,
                                 onOpenUnknownReview = onOpenUnknownReview,
@@ -405,7 +469,10 @@ fun TodayScreen(
                             onOpenAccountSwitcher = onOpenAccountSwitcher,
                             onOpenUnknownReview = onOpenUnknownReview,
                             onOpenCooldownDetail = onOpenCooldownDetail,
+                            onTriggerForceAllBatch = onTriggerForceAllBatch,
                             onTriggerManualBatch = onTriggerManualBatch,
+                            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+                            onFeedbackIssue = onFeedbackIssue,
                             onOpenTab = onOpenTab,
                             onOpenSettings = onOpenSettings,
                         )
@@ -413,6 +480,8 @@ fun TodayScreen(
 
                     item(key = "recent_jobs_section") {
                         TodayRecentJobsSection(
+                            sectionTitle = state.recentJobsSectionTitle,
+                            businessDate = state.businessDate,
                             recentJobs = state.recentJobs,
                             onOpenJobTimeline = openJobTimeline,
                             onOpenUnknownReview = onOpenUnknownReview,
@@ -445,6 +514,27 @@ fun TodayScreen(
                 timelineJobId = null
                 onOpenUnknownReview(activeTimelineItem.job.id)
             },
+            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+            onFeedbackIssue = onFeedbackIssue?.let { handler ->
+                {
+                    if (activeTimelineItem.expanded) {
+                        onToggleJobExpanded(activeTimelineItem.job.id)
+                    }
+                    timelineJobId = null
+                    val (title, content) = buildSanitizedTodayJobIssueDraft(activeTimelineItem)
+                    handler(title, content)
+                }
+            },
+        )
+    }
+
+    if (state.showForceAllConfirmDialog) {
+        ForceAllConfirmSheet(
+            succeededTodayCount = state.succeededTodayCount,
+            enabledTargetCount = state.enabledTargetCount,
+            unboundEnabledTargetCount = state.unboundEnabledTargetCount,
+            onConfirm = onConfirmForceAllBatch,
+            onDismiss = onDismissForceAllConfirm,
         )
     }
 
@@ -465,6 +555,15 @@ fun TodayScreen(
             isResolving = state.isResolvingAction,
             onConfirmSucceeded = { onResolveUnknownAsSucceeded(reviewItem.job.id) },
             onConfirmCancelled = { onResolveUnknownAsCancelled(reviewItem.job.id) },
+            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+            onFeedbackIssue = onFeedbackIssue?.let { handler ->
+                {
+                    onDismissUnknownReview()
+                    val title = "发送结果未明需人工核对"
+                    val content = "在 ${reviewItem.job.businessDate} 执行续火任务时出现「发送结果未明」（尝试 ${reviewItem.job.attemptCount} 次）。已自动附带脱敏诊断日志，请协助排查原因。"
+                    handler(title, content)
+                }
+            },
             onDismiss = onDismissUnknownReview,
         )
     }
@@ -611,14 +710,20 @@ private fun TodayOverviewColumn(
     onOpenAccountSwitcher: () -> Unit,
     onOpenUnknownReview: (String?) -> Unit,
     onOpenCooldownDetail: () -> Unit,
+    onTriggerForceAllBatch: () -> Unit,
     onTriggerManualBatch: () -> Unit,
+    onCopyDiagnosticsLog: (() -> Unit)?,
+    onFeedbackIssue: ((title: String, content: String) -> Unit)?,
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TodayHeroStatusCard(
             state = state,
+            onTriggerForceAllBatch = onTriggerForceAllBatch,
             onTriggerManualBatch = onTriggerManualBatch,
+            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+            onFeedbackIssue = onFeedbackIssue,
             onReloginClick = onReloginClick,
         )
 
@@ -763,11 +868,15 @@ private fun TodaySetupReadinessCard(
 @Composable
 private fun TodayHeroStatusCard(
     state: TodayUiState,
+    onTriggerForceAllBatch: () -> Unit,
     onTriggerManualBatch: () -> Unit,
+    onCopyDiagnosticsLog: (() -> Unit)?,
+    onFeedbackIssue: ((title: String, content: String) -> Unit)?,
     onReloginClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val isDark = FlameThemeTokens.isDark
+    val reducedMotion = rememberReducedMotion()
     val account = state.account
     val status = account?.status ?: AccountStatus.PENDING_LOGIN
     val statusStyle = accountStatusStyle(status)
@@ -802,15 +911,14 @@ private fun TodayHeroStatusCard(
                     }
                 },
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 18.dp, end = 16.dp, top = 18.dp, bottom = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Row(
@@ -873,19 +981,37 @@ private fun TodayHeroStatusCard(
                     }
                 }
 
-                HeroFlameCtaButton(
+                // 主/次双操作按钮：主按钮「续火」（全部按绑定模板发一次）+ 次按钮「补发」（只发今日未发）
+                HeroDualActionRow(
                     isRunning = isRunning,
-                    onClick = onTriggerManualBatch,
+                    pendingTargetCount = state.pendingTargetCount,
+                    onTriggerForceAllBatch = onTriggerForceAllBatch,
+                    onTriggerManualBatch = onTriggerManualBatch,
                 )
             }
 
             AnimatedVisibility(
-                visible = state.executionState.running || !state.executionState.lastMessage.isNullOrBlank(),
-                enter = fadeIn(tween(180)) + expandVertically(tween(200)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
+                visible = state.executionState.running ||
+                    !state.executionState.lastMessage.isNullOrBlank() ||
+                    !state.executionState.lastSkipSummary.isNullOrBlank() ||
+                    !state.executionState.lastErrorSummary.isNullOrBlank(),
+                enter = if (reducedMotion) {
+                    EnterTransition.None
+                } else {
+                    fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
+                        expandVertically(tween(200, easing = FlameMotionSpec.easeOut))
+                },
+                exit = if (reducedMotion) {
+                    ExitTransition.None
+                } else {
+                    fadeOut(tween(150, easing = FlameMotionSpec.easeOut)) +
+                        shrinkVertically(tween(180, easing = FlameMotionSpec.easeOut))
+                },
             ) {
                 HeroLiveProgressStrip(
                     executionState = state.executionState,
+                    onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+                    onFeedbackIssue = onFeedbackIssue,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
                 )
             }
@@ -942,14 +1068,16 @@ private fun TodayHeroStatusCard(
 }
 
 @Composable
-private fun HeroFlameCtaButton(
+private fun HeroDualActionRow(
     isRunning: Boolean,
-    onClick: () -> Unit,
+    pendingTargetCount: Int,
+    onTriggerForceAllBatch: () -> Unit,
+    onTriggerManualBatch: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val haptics = LocalHapticFeedback.current
     val reducedMotion = rememberReducedMotion()
-    val shape = RoundedCornerShape(18.dp)
+    val buttonShape = RoundedCornerShape(14.dp)
 
     AnimatedContent(
         targetState = isRunning,
@@ -959,108 +1087,203 @@ private fun HeroFlameCtaButton(
             } else {
                 (fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
                     scaleIn(
-                        initialScale = 0.94f,
+                        initialScale = 0.96f,
                         animationSpec = tween(180, easing = FlameMotionSpec.easeOut),
                     )) togetherWith fadeOut(tween(130, easing = FlameMotionSpec.easeOut))
             }
         },
-        label = "hero_flame_cta_state",
+        label = "hero_dual_cta_state",
     ) { running ->
         if (running) {
             Surface(
-                modifier = Modifier.size(60.dp),
-                shape = shape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = buttonShape,
                 color = palette.emberContainer,
                 contentColor = palette.ember,
-                border = BorderStroke(1.5.dp, palette.emberBorder),
+                border = BorderStroke(1.dp, palette.emberBorder),
             ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                         color = palette.ember,
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "执行中",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "正在执行续火任务…",
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = palette.ember,
                         maxLines = 1,
-                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
         } else {
-            val interactionSource = remember { MutableInteractionSource() }
-            val ctaContentColor = Color.White
-            val emberBrush = Brush.linearGradient(
-                colors = listOf(palette.emberBright, palette.ember),
-            )
-            Box(
-                modifier = Modifier
-                    .flamePressScale(
-                        interactionSource = interactionSource,
-                        pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
-                    )
-                    .size(60.dp)
-                    .clip(shape)
-                    .background(emberBrush)
-                    .clickable(
-                        interactionSource = interactionSource,
-                        indication = LocalIndication.current,
-                        onClick = {
-                            haptics.performFlameLightTick()
-                            onClick()
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+                // 主按钮「续火」（全部按绑定模板发一次）
+                val primaryInteraction = remember { MutableInteractionSource() }
+                val emberBrush = Brush.linearGradient(
+                    colors = listOf(palette.emberBright, palette.ember),
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1.25f)
+                        .flamePressScale(
+                            interactionSource = primaryInteraction,
+                            pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
+                        )
+                        .height(46.dp)
+                        .clip(buttonShape)
+                        .background(emberBrush)
+                        .clickable(
+                            interactionSource = primaryInteraction,
+                            indication = LocalIndication.current,
+                            onClick = {
+                                haptics.performFlameLightTick()
+                                onTriggerForceAllBatch()
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.LocalFireDepartment,
-                        contentDescription = "立即执行今日续火",
-                        tint = ctaContentColor,
-                        modifier = Modifier.size(22.dp),
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "续火",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = ctaContentColor,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.LocalFireDepartment,
+                            contentDescription = "全部启用好友续火",
+                            tint = Color.White,
+                            modifier = Modifier.size(19.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "续火",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+
+                // 次按钮「补发」（只发今日尚未成功的好友）
+                val secondaryInteraction = remember { MutableInteractionSource() }
+                val backfillLabel = if (pendingTargetCount > 0) {
+                    "补发未发 ($pendingTargetCount)"
+                } else {
+                    "补发未发"
+                }
+                Surface(
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onTriggerManualBatch()
+                    },
+                    interactionSource = secondaryInteraction,
+                    modifier = Modifier
+                        .weight(1f)
+                        .flamePressScale(interactionSource = secondaryInteraction)
+                        .height(46.dp),
+                    shape = buttonShape,
+                    color = palette.surface,
+                    contentColor = palette.ink,
+                    border = BorderStroke(1.dp, palette.hairlineStrong),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Replay,
+                            contentDescription = null,
+                            tint = palette.inkSecondary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = backfillLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.ink,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeroLiveProgressStrip(
     executionState: ExecutionLiveState,
+    onCopyDiagnosticsLog: (() -> Unit)?,
+    onFeedbackIssue: ((title: String, content: String) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val lastMsg = executionState.lastMessage?.trim().orEmpty()
+    val skipSummary = executionState.lastSkipSummary?.trim().orEmpty()
+    val errorSummary = executionState.lastErrorSummary?.trim().orEmpty()
+    val hasErrorHint = !executionState.running && (
+        errorSummary.isNotEmpty() ||
+            lastMsg.contains("失败") ||
+            lastMsg.contains("异常") ||
+            lastMsg.contains("未明")
+        )
+    val hasSkipHint = !executionState.running && (
+        skipSummary.isNotEmpty() ||
+            lastMsg.contains("跳过") ||
+            lastMsg.contains("未绑定")
+        )
+    val hasSkipOrErrorHint = hasErrorHint || hasSkipHint
+
+    val containerColor = when {
+        hasErrorHint -> semantics.dangerContainer
+        hasSkipHint -> semantics.warningContainer
+        else -> palette.surfaceSubtle
+    }
+    val borderColor = when {
+        hasErrorHint -> semantics.dangerBorder
+        hasSkipHint -> semantics.warningBorder
+        else -> null
+    }
+    val messageColor = when {
+        hasErrorHint -> semantics.onDangerContainer
+        hasSkipHint -> semantics.onWarningContainer
+        else -> palette.inkSecondary
+    }
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        color = palette.surfaceSubtle,
+        color = containerColor,
+        border = borderColor?.let { BorderStroke(1.dp, it) },
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (executionState.running) {
                 Row(
@@ -1114,15 +1337,106 @@ private fun HeroLiveProgressStrip(
                     )
                 }
             }
-            executionState.lastMessage?.takeIf { it.isNotBlank() }?.let { msg ->
+            if (lastMsg.isNotEmpty()) {
                 Text(
-                    text = msg,
+                    text = lastMsg,
                     style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkSecondary,
-                    maxLines = 2,
+                    color = messageColor,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (!executionState.running && skipSummary.isNotEmpty() && !lastMsg.contains(skipSummary)) {
+                Text(
+                    text = "跳过原因：$skipSummary",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = messageColor,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!executionState.running && errorSummary.isNotEmpty() && !lastMsg.contains(errorSummary)) {
+                Text(
+                    text = "异常摘要：$errorSummary",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = messageColor,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (hasSkipOrErrorHint && (onCopyDiagnosticsLog != null || onFeedbackIssue != null)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (onCopyDiagnosticsLog != null) {
+                        HeroQuickDiagChip(
+                            text = "复制诊断日志",
+                            icon = Icons.Outlined.ContentCopy,
+                            onClick = onCopyDiagnosticsLog,
+                        )
+                    }
+                    if (onFeedbackIssue != null) {
+                        HeroQuickDiagChip(
+                            text = "一键带日志反馈",
+                            icon = Icons.Outlined.Feedback,
+                            onClick = {
+                                val issueTitle = if (hasErrorHint) {
+                                    "续火执行出现失败或异常"
+                                } else {
+                                    "续火执行出现好友被跳过"
+                                }
+                                onFeedbackIssue(
+                                    issueTitle,
+                                    "在首页执行续火时出现跳过或失败提示，已自动附带脱敏诊断日志，请协助排查原因。",
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroQuickDiagChip(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptics.performFlameLightTick()
+            onClick()
+        },
+        shape = RoundedCornerShape(999.dp),
+        color = palette.surface,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairlineStrong),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = palette.inkSecondary,
+                modifier = Modifier.size(13.dp),
+            )
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
@@ -1320,16 +1634,19 @@ private fun TodayBentoMetricsRow(
                     }
                     val detailText = when {
                         state.issueTodayCount > 0 ->
-                            "待发 ${state.pendingTargetCount} · 异常 ${state.issueTodayCount}"
+                            "本机今日已确认 · 待发 ${state.pendingTargetCount} · 异常 ${state.issueTodayCount}"
 
                         state.enabledTargetCount == 0 ->
                             "尚未启用续火好友"
 
+                        state.pendingTargetCount == 0 && allCompleted ->
+                            "本机今日已全部确认"
+
                         state.pendingTargetCount == 0 ->
-                            "今日启用对象已全部处理"
+                            "本机今日已全部处理"
 
                         else ->
-                            "今日待发 ${state.pendingTargetCount} 位"
+                            "本机今日已确认 · 待发 ${state.pendingTargetCount} 位"
                     }
                     Text(
                         text = detailText,
@@ -1381,6 +1698,8 @@ private fun TodayBentoMetricsRow(
 
 @Composable
 private fun TodayRecentJobsSection(
+    sectionTitle: String,
+    businessDate: String,
     recentJobs: List<RecentJobItem>,
     onOpenJobTimeline: (RecentJobItem) -> Unit,
     onOpenUnknownReview: (String?) -> Unit,
@@ -1399,7 +1718,7 @@ private fun TodayRecentJobsSection(
     }
 
     FlameGroupedSection(
-        title = "今日执行动态",
+        title = sectionTitle,
         trailingHeader = {
             Text(
                 text = "共 ${recentJobs.size} 条 · 点击看时间线",
@@ -1411,7 +1730,18 @@ private fun TodayRecentJobsSection(
         recentJobs.forEachIndexed { index, item ->
             val job = item.job
             val meta = resolveJobVisualMeta(job.status)
+            val isTodayJob = businessDate.isNotBlank() && job.businessDate == businessDate
+            val nonTodayBadge = if (!isTodayJob) {
+                formatNonTodayDateBadge(job.businessDate, businessDate)
+            } else {
+                null
+            }
+            val slotBadge = resolveSlotShortBadge(job.messageSlotId, item.isDailySlot)
             val subtitleText = buildString {
+                if (!isTodayJob && job.businessDate.isNotBlank()) {
+                    append(job.businessDate)
+                    append(" · ")
+                }
                 append(item.templateLabel)
                 append(" · ")
                 append(formatEpochTimestamp(job.confirmedAt ?: job.updatedAt))
@@ -1430,8 +1760,11 @@ private fun TodayRecentJobsSection(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (nonTodayBadge != null) {
+                            FlameMiniTag(text = nonTodayBadge, tone = FlameTone.NEUTRAL)
+                        }
                         FlameMiniTag(
-                            text = if (item.isDailySlot) "每日" else "单发",
+                            text = slotBadge,
                             tone = FlameTone.NEUTRAL,
                         )
                         if (item.isImageMissing) {
@@ -1501,6 +1834,8 @@ private fun TaskTimelineSheet(
     resolveAttemptScreenshotFile: (String) -> File?,
     onDismiss: () -> Unit,
     onOpenUnknownReview: () -> Unit,
+    onCopyDiagnosticsLog: (() -> Unit)? = null,
+    onFeedbackIssue: (() -> Unit)? = null,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
@@ -1655,22 +1990,99 @@ private fun TaskTimelineSheet(
             }
         }
 
+        val isIssueJob = job.status == JobStatus.FAILED_RETRYABLE ||
+            job.status == JobStatus.FAILED_TERMINAL ||
+            job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW
+
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                FlameSheetActionRow(
+                    text = "立即人工核对发送结果",
+                    primary = true,
+                    danger = true,
+                    onClick = onOpenUnknownReview,
+                )
+            }
+            if (isIssueJob && onFeedbackIssue != null) {
+                FlameSheetActionRow(
+                    text = "一键反馈此异常（自动带日志）",
+                    trailingText = "脱敏直达",
+                    primary = job.status != JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    onClick = onFeedbackIssue,
+                )
+            }
+            if (isIssueJob && onCopyDiagnosticsLog != null) {
+                FlameSheetActionRow(
+                    text = "复制脱敏诊断日志",
+                    trailingText = "可发给维护者",
+                    onClick = onCopyDiagnosticsLog,
+                )
+            }
             FlameSheetActionRow(
-                text = "立即人工核对发送结果",
-                primary = true,
-                danger = true,
-                onClick = onOpenUnknownReview,
+                text = "关闭",
+                onClick = onDismiss,
             )
-            Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+}
 
-        FlameSheetActionRow(
-            text = "关闭",
-            onClick = onDismiss,
-        )
+@Composable
+private fun ForceAllConfirmSheet(
+    succeededTodayCount: Int,
+    enabledTargetCount: Int,
+    unboundEnabledTargetCount: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val semantics = FlameThemeTokens.semanticColors
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "确认对全部启用好友再发一次？",
+        subtitle = "按每位好友绑定的模板执行本次批量续火",
+        trailingHeader = {
+            FlameStatusPill(text = "二次确认", tone = FlameTone.WARNING)
+        },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.warningContainer,
+                border = BorderStroke(1.dp, semantics.warningBorder),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "今日已有 $succeededTodayCount 位发过，确认按各自绑定模板对全部 $enabledTargetCount 位启用好友再发一次吗？（同日本地天数不会重复叠加）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = semantics.onWarningContainer,
+                    )
+                    if (unboundEnabledTargetCount > 0) {
+                        Text(
+                            text = "提示：其中 $unboundEnabledTargetCount 位启用好友尚未绑定模板，执行时将自动跳过。",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = semantics.onWarningContainer,
+                        )
+                    }
+                }
+            }
+
+            FlameSheetActionRow(
+                text = "确认全部续火",
+                primary = true,
+                onClick = onConfirm,
+            )
+            FlameSheetActionRow(
+                text = "取消",
+                onClick = onDismiss,
+            )
+        }
     }
 }
 
@@ -1896,6 +2308,8 @@ private fun UnknownReviewSheet(
     isResolving: Boolean,
     onConfirmSucceeded: () -> Unit,
     onConfirmCancelled: () -> Unit,
+    onCopyDiagnosticsLog: (() -> Unit)? = null,
+    onFeedbackIssue: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
@@ -2009,6 +2423,24 @@ private fun UnknownReviewSheet(
                 enabled = !isResolving,
                 onClick = onConfirmCancelled,
             )
+
+            if (onFeedbackIssue != null) {
+                FlameSheetActionRow(
+                    text = "一键反馈此异常（自动带日志）",
+                    trailingText = "脱敏直达",
+                    enabled = !isResolving,
+                    onClick = onFeedbackIssue,
+                )
+            }
+
+            if (onCopyDiagnosticsLog != null) {
+                FlameSheetActionRow(
+                    text = "复制脱敏诊断日志",
+                    trailingText = "可发给维护者",
+                    enabled = !isResolving,
+                    onClick = onCopyDiagnosticsLog,
+                )
+            }
 
             FlameSheetActionRow(
                 text = "暂不处理",
@@ -2267,7 +2699,11 @@ private fun ManualBatchFeedbackSheet(
                 )
 
                 feedback.canJumpToTargets -> FlameSheetActionRow(
-                    text = "前往好友页",
+                    text = if (feedback.reason == ManualBatchBlockReason.NO_BOUND_TEMPLATES) {
+                        "前往好友页绑定"
+                    } else {
+                        "前往好友页"
+                    },
                     primary = true,
                     onClick = onOpenTargets,
                 )
@@ -2347,6 +2783,54 @@ private fun failureClassLabel(failureClass: FailureClass): String = when (failur
     FailureClass.DOM_CHANGED -> "页面结构变化"
     FailureClass.UNKNOWN_OUTCOME -> "发送结果未明"
     FailureClass.OTHER -> "其他错误"
+}
+
+private fun resolveSlotShortBadge(messageSlotId: String, isDailySlot: Boolean): String = when {
+    isDailySlot -> "每日"
+    messageSlotId.startsWith(SendGuard.MANUAL_BATCH_SLOT_PREFIX) -> "批量"
+    else -> "单发"
+}
+
+private fun formatNonTodayDateBadge(jobBusinessDate: String, todayBusinessDate: String): String {
+    if (jobBusinessDate.isBlank()) return "往日"
+    val parsedJob = runCatching { LocalDate.parse(jobBusinessDate) }.getOrNull()
+    val parsedToday = runCatching { LocalDate.parse(todayBusinessDate) }.getOrNull()
+    if (parsedJob != null && parsedToday != null) {
+        return when (parsedJob) {
+            parsedToday.minusDays(1) -> "昨日"
+            parsedToday.minusDays(2) -> "前日"
+            else -> String.format(Locale.US, "%02d-%02d", parsedJob.monthValue, parsedJob.dayOfMonth)
+        }
+    }
+    return jobBusinessDate.takeLast(5)
+}
+
+private fun buildSanitizedTodayJobIssueDraft(item: RecentJobItem): Pair<String, String> {
+    val job = item.job
+    val statusLabel = resolveJobVisualMeta(job.status).label
+    val fcLabel = job.failureClass?.let(::failureClassLabel) ?: "未知分类"
+    val errorCode = item.attempts.lastOrNull()?.errorCode?.trim()?.takeIf { it.isNotEmpty() }
+    val title = "续火任务$statusLabel：$fcLabel"
+    val content = buildString {
+        append("在 ${job.businessDate} 执行续火任务时出现异常（状态：$statusLabel，分类：$fcLabel，尝试 ${job.attemptCount} 次")
+        if (errorCode != null) {
+            append("，错误码：$errorCode")
+        }
+        append("）。已自动附带脱敏诊断日志，请协助排查原因。")
+    }
+    return title to content
+}
+
+private fun copyTodayDiagnosticsToClipboard(context: Context, text: String): Boolean = try {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    if (clipboard != null) {
+        clipboard.setPrimaryClip(ClipData.newPlainText("flame_sanitized_diagnostics", text))
+        true
+    } else {
+        false
+    }
+} catch (_: Throwable) {
+    false
 }
 
 private val TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm")

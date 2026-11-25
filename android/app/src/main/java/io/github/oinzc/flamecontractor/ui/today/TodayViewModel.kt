@@ -70,6 +70,7 @@ interface TodayScheduleGateway {
 
 interface TodayExecutionLauncher {
     fun enqueueManualBatch(accountId: String): Boolean
+    fun enqueueManualBatchForceAll(accountId: String): Boolean = enqueueManualBatch(accountId)
 }
 
 class RoomTodayRepository(
@@ -211,6 +212,7 @@ enum class ManualBatchBlockReason {
     ACCOUNT_PAUSED,
     UNKNOWN_OR_INFLIGHT,
     NO_ENABLED_TARGETS,
+    NO_BOUND_TEMPLATES,
     ALL_DONE_OR_SKIPPED_TODAY,
     SERVICE_START_FAILED,
 }
@@ -236,6 +238,8 @@ data class TodayUiState(
     val businessDate: String = "",
     val account: AccountEntity? = null,
     val enabledTargetCount: Int = 0,
+    val boundEnabledTargetCount: Int = 0,
+    val unboundEnabledTargetCount: Int = 0,
     val pendingTargetCount: Int = 0,
     val succeededTodayCount: Int = 0,
     val issueTodayCount: Int = 0,
@@ -243,6 +247,7 @@ data class TodayUiState(
     val authRecheckAtEpochMs: Long? = null,
     val unknownReviewJobs: List<UnknownJobReviewItem> = emptyList(),
     val recentJobs: List<RecentJobItem> = emptyList(),
+    val recentJobsSectionTitle: String = "近期执行记录",
     val cooldownFailureStats: List<SanitizedFailureStat> = emptyList(),
     val executionState: ExecutionLiveState = ExecutionLiveState(),
     val otherRunningAccountName: String? = null,
@@ -250,6 +255,7 @@ data class TodayUiState(
     val missingImageTemplateCount: Int = 0,
     val missingImageEnabledTargetCount: Int = 0,
     val showReloginChoiceDialog: Boolean = false,
+    val showForceAllConfirmDialog: Boolean = false,
     val activeUnknownReviewJob: UnknownJobReviewItem? = null,
     val showCooldownDetailDialog: Boolean = false,
     val showDomBrokenDialog: Boolean = false,
@@ -612,155 +618,65 @@ class TodayViewModel(
         _effects.tryEmit(TodayUiEffect.OpenLogin(mode, accountId))
     }
 
-    fun onTriggerManualBatchClick() {
+    /**
+     * 主按钮「续火」：按各自绑定模板对全部启用好友执行一次发送。
+     * 若今日已有 >= 1 位好友成功发过，先弹轻量二次确认弹窗；否则直接入队。
+     */
+    fun onTriggerForceAllBatchClick() {
         val snapshot = uiState.value
-        val account = snapshot.account
-        val unknownJobs = snapshot.unknownReviewJobs
+        val account = validateManualBatchPreconditions(snapshot) ?: return
 
-        if (unknownJobs.isNotEmpty() || snapshot.hasBlockingTodayJob) {
-            controlFlow.update {
-                it.copy(
-                    manualBatchFeedback = ManualBatchFeedback(
-                        reason = ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT,
-                        title = "已硬禁止执行今日续火",
-                        message = "当前存在发送结果未明待核对或正在确认中的任务。为防重复发送，必须先核对确认结果后才能继续。",
-                        canJumpToUnknownReview = unknownJobs.isNotEmpty(),
-                    ),
-                )
-            }
+        if (snapshot.succeededTodayCount > 0) {
+            controlFlow.update { it.copy(showForceAllConfirmDialog = true) }
             return
         }
 
-        if (account == null) {
+        dispatchForceAllBatch(account.id, snapshot.enabledTargetCount)
+    }
+
+    fun dismissForceAllConfirmDialog() {
+        controlFlow.update { it.copy(showForceAllConfirmDialog = false) }
+    }
+
+    fun confirmForceAllBatch() {
+        controlFlow.update { it.copy(showForceAllConfirmDialog = false) }
+        val snapshot = uiState.value
+        val account = validateManualBatchPreconditions(snapshot) ?: return
+        dispatchForceAllBatch(account.id, snapshot.enabledTargetCount)
+    }
+
+    private fun dispatchForceAllBatch(targetAccountId: String, enabledTargetCount: Int) {
+        val started = executionLauncher.enqueueManualBatchForceAll(targetAccountId)
+        if (!started) {
             controlFlow.update {
                 it.copy(
                     manualBatchFeedback = ManualBatchFeedback(
-                        reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
-                        title = "尚未完成登录配置",
-                        message = "请先扫码登录抖音网页端后再执行今日续火。",
-                        canJumpToLogin = true,
-                    ),
-                )
-            }
-            return
-        }
-
-        when (account.status) {
-            AccountStatus.PENDING_LOGIN,
-            AccountStatus.AUTH_EXPIRED,
-            -> {
-                controlFlow.update {
-                    it.copy(
-                        manualBatchFeedback = ManualBatchFeedback(
-                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
-                            title = "需要先登录抖音网页端",
-                            message = "当前账号处于${accountStatusLabel(account.status)}状态，请先完成扫码登录。",
-                            canJumpToLogin = true,
-                        ),
-                    )
-                }
-                return
-            }
-
-            AccountStatus.VERIFICATION_REQUIRED -> {
-                controlFlow.update {
-                    it.copy(
-                        manualBatchFeedback = ManualBatchFeedback(
-                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
-                            title = "需要先完成身份验证",
-                            message = "检测到安全验证风控提示，请先前往保留态网页完成验证。",
-                            canJumpToLogin = true,
-                        ),
-                    )
-                }
-                return
-            }
-
-            AccountStatus.COOLDOWN -> {
-                controlFlow.update {
-                    it.copy(
-                        manualBatchFeedback = ManualBatchFeedback(
-                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
-                            title = "账号处于连续失败熔断中",
-                            message = "已连续多轮发送失败并熔断暂停，请核查问题后点击「解除熔断并恢复运行」。",
-                            canRecoverCooldown = true,
-                        ),
-                    )
-                }
-                return
-            }
-
-            AccountStatus.DOM_BROKEN -> {
-                controlFlow.update {
-                    it.copy(
-                        manualBatchFeedback = ManualBatchFeedback(
-                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
-                            title = "页面核心结构异常",
-                            message = "抖音网页选择器未能匹配核心骨架，请先前往设置页运行网页结构体检或定位器覆写。",
-                            canJumpToSettings = true,
-                        ),
-                    )
-                }
-                return
-            }
-
-            AccountStatus.PAUSED -> {
-                controlFlow.update {
-                    it.copy(
-                        manualBatchFeedback = ManualBatchFeedback(
-                            reason = ManualBatchBlockReason.ACCOUNT_PAUSED,
-                            title = "账号当前已暂停",
-                            message = "请先在设置页开启自动调度总开关或恢复账号运行状态。",
-                            canJumpToSettings = true,
-                        ),
-                    )
-                }
-                return
-            }
-
-            AccountStatus.RUNNING -> {
-                _effects.tryEmit(TodayUiEffect.ShowSnackbar("续火任务正在执行中，请留意进度提示"))
-                return
-            }
-
-            AccountStatus.HEALTHY -> Unit
-        }
-
-        if (!account.enabled) {
-            controlFlow.update {
-                it.copy(
-                    manualBatchFeedback = ManualBatchFeedback(
-                        reason = ManualBatchBlockReason.ACCOUNT_PAUSED,
-                        title = "自动续火开关未开启",
-                        message = "当前账号总开关处于关闭状态，请先在「设置」页启用后再执行。",
+                        reason = ManualBatchBlockReason.SERVICE_START_FAILED,
+                        title = "未能启动执行服务",
+                        message = "系统当前限制启动前台服务，请确认应用在前台并检查后台稳定性权限。",
                         canJumpToSettings = true,
                     ),
                 )
             }
-            return
+        } else {
+            _effects.tryEmit(TodayUiEffect.ShowSnackbar("已开始对全部 $enabledTargetCount 位启用好友执行续火"))
         }
+    }
 
-        if (snapshot.enabledTargetCount == 0) {
-            controlFlow.update {
-                it.copy(
-                    manualBatchFeedback = ManualBatchFeedback(
-                        reason = ManualBatchBlockReason.NO_ENABLED_TARGETS,
-                        title = "暂无启用的续火好友",
-                        message = "请先前往「好友」页扫码导入火花对象或手动启用需要续火的好友。",
-                        canJumpToTargets = true,
-                    ),
-                )
-            }
-            return
-        }
+    /**
+     * 次按钮「补发」：仅向今日尚未发送成功的启用好友执行每日续火（DAILY_SLOT_ID）。
+     */
+    fun onTriggerManualBatchClick() {
+        val snapshot = uiState.value
+        val account = validateManualBatchPreconditions(snapshot) ?: return
 
         if (snapshot.pendingTargetCount == 0) {
             controlFlow.update {
                 it.copy(
                     manualBatchFeedback = ManualBatchFeedback(
                         reason = ManualBatchBlockReason.ALL_DONE_OR_SKIPPED_TODAY,
-                        title = "今日续火已全部处理",
-                        message = "今日所有启用好友已完成发送或已标为取消/终态跳过。若需针对单个好友补发测试，请前往「好友」页使用「单发测试」。",
+                        title = "今日启用好友已全部续过火，无需补发",
+                        message = "今日所有启用好友已完成发送或已处理完毕，无需补发。若仍需按绑定模板对全部启用好友再发一次，请点击主按钮「续火」。",
                         canJumpToTargets = true,
                     ),
                 )
@@ -781,8 +697,166 @@ class TodayViewModel(
                 )
             }
         } else {
-            _effects.tryEmit(TodayUiEffect.ShowSnackbar("已开始执行今日续火任务"))
+            _effects.tryEmit(TodayUiEffect.ShowSnackbar("已开始补发今日未发好友（${snapshot.pendingTargetCount} 位）"))
         }
+    }
+
+    private fun validateManualBatchPreconditions(snapshot: TodayUiState): AccountEntity? {
+        val account = snapshot.account
+        val unknownJobs = snapshot.unknownReviewJobs
+
+        if (unknownJobs.isNotEmpty() || snapshot.hasBlockingTodayJob) {
+            controlFlow.update {
+                it.copy(
+                    manualBatchFeedback = ManualBatchFeedback(
+                        reason = ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT,
+                        title = "已硬禁止执行续火",
+                        message = "当前存在发送结果未明待核对或正在确认中的任务。为防重复发送，必须先核对确认结果后才能继续。",
+                        canJumpToUnknownReview = unknownJobs.isNotEmpty(),
+                    ),
+                )
+            }
+            return null
+        }
+
+        if (account == null) {
+            controlFlow.update {
+                it.copy(
+                    manualBatchFeedback = ManualBatchFeedback(
+                        reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
+                        title = "尚未完成登录配置",
+                        message = "请先扫码登录抖音网页端后再执行续火。",
+                        canJumpToLogin = true,
+                    ),
+                )
+            }
+            return null
+        }
+
+        when (account.status) {
+            AccountStatus.PENDING_LOGIN,
+            AccountStatus.AUTH_EXPIRED,
+            -> {
+                controlFlow.update {
+                    it.copy(
+                        manualBatchFeedback = ManualBatchFeedback(
+                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
+                            title = "需要先登录抖音网页端",
+                            message = "当前账号处于${accountStatusLabel(account.status)}状态，请先完成扫码登录。",
+                            canJumpToLogin = true,
+                        ),
+                    )
+                }
+                return null
+            }
+
+            AccountStatus.VERIFICATION_REQUIRED -> {
+                controlFlow.update {
+                    it.copy(
+                        manualBatchFeedback = ManualBatchFeedback(
+                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
+                            title = "需要先完成身份验证",
+                            message = "检测到安全验证风控提示，请先前往保留态网页完成验证。",
+                            canJumpToLogin = true,
+                        ),
+                    )
+                }
+                return null
+            }
+
+            AccountStatus.COOLDOWN -> {
+                controlFlow.update {
+                    it.copy(
+                        manualBatchFeedback = ManualBatchFeedback(
+                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
+                            title = "账号处于连续失败熔断中",
+                            message = "已连续多轮发送失败并熔断暂停，请核查问题后点击「解除熔断并恢复运行」。",
+                            canRecoverCooldown = true,
+                        ),
+                    )
+                }
+                return null
+            }
+
+            AccountStatus.DOM_BROKEN -> {
+                controlFlow.update {
+                    it.copy(
+                        manualBatchFeedback = ManualBatchFeedback(
+                            reason = ManualBatchBlockReason.ACCOUNT_NOT_READY,
+                            title = "页面核心结构异常",
+                            message = "抖音网页选择器未能匹配核心骨架，请先前往设置页运行网页结构体检或定位器覆写。",
+                            canJumpToSettings = true,
+                        ),
+                    )
+                }
+                return null
+            }
+
+            AccountStatus.PAUSED -> {
+                controlFlow.update {
+                    it.copy(
+                        manualBatchFeedback = ManualBatchFeedback(
+                            reason = ManualBatchBlockReason.ACCOUNT_PAUSED,
+                            title = "账号当前已暂停",
+                            message = "请先在设置页开启自动调度总开关或恢复账号运行状态。",
+                            canJumpToSettings = true,
+                        ),
+                    )
+                }
+                return null
+            }
+
+            AccountStatus.RUNNING -> {
+                _effects.tryEmit(TodayUiEffect.ShowSnackbar("续火任务正在执行中，请留意进度提示"))
+                return null
+            }
+
+            AccountStatus.HEALTHY -> Unit
+        }
+
+        if (!account.enabled) {
+            controlFlow.update {
+                it.copy(
+                    manualBatchFeedback = ManualBatchFeedback(
+                        reason = ManualBatchBlockReason.ACCOUNT_PAUSED,
+                        title = "自动续火开关未开启",
+                        message = "当前账号总开关处于关闭状态，请先在「设置」页启用后再执行。",
+                        canJumpToSettings = true,
+                    ),
+                )
+            }
+            return null
+        }
+
+        if (snapshot.enabledTargetCount == 0) {
+            controlFlow.update {
+                it.copy(
+                    manualBatchFeedback = ManualBatchFeedback(
+                        reason = ManualBatchBlockReason.NO_ENABLED_TARGETS,
+                        title = "暂无启用的续火好友",
+                        message = "请先前往「好友」页扫码导入火花对象或手动启用需要续火的好友。",
+                        canJumpToTargets = true,
+                    ),
+                )
+            }
+            return null
+        }
+
+        if (snapshot.boundEnabledTargetCount == 0) {
+            controlFlow.update {
+                it.copy(
+                    manualBatchFeedback = ManualBatchFeedback(
+                        reason = ManualBatchBlockReason.NO_BOUND_TEMPLATES,
+                        title = "启用好友均未绑定发送模板",
+                        message = "当前已启用的 ${snapshot.enabledTargetCount} 位好友均未绑定有效发送模板，无法执行发送。请先前往「好友」页绑定模板（推荐使用「续火花」表情）。",
+                        canJumpToTargets = true,
+                    ),
+                )
+            }
+            return null
+        }
+
+        return account
     }
 
     fun dismissManualBatchFeedback() {
@@ -822,6 +896,12 @@ class TodayViewModel(
         val targetsById = db.targets.associateBy { it.id }
         val templatesById = meta.templates.associateBy { it.id }
         val enabledTargets = db.targets.filter { it.enabled }
+        val enabledTargetIds = enabledTargets.mapTo(HashSet()) { it.id }
+        val boundEnabledTargetCount = enabledTargets.count { target ->
+            val tplId = target.templateId?.trim()
+            !tplId.isNullOrEmpty() && templatesById.containsKey(tplId)
+        }
+        val unboundEnabledTargetCount = (enabledTargets.size - boundEnabledTargetCount).coerceAtLeast(0)
         val pausedTargetCount = db.targets.count { !it.enabled }
         val maxLocalStreakDays = db.targets.maxOfOrNull { it.streakDays } ?: 0
         val maxOfficialSparkDays = db.targets
@@ -832,8 +912,8 @@ class TodayViewModel(
         val pendingCount = enabledTargets.count { target ->
             SendGuard.canDispatchDaily(todayJobsByTarget[target.id].orEmpty())
         }
-        val dailySucceededTargets = db.todayJobs
-            .filter { it.messageSlotId == SendGuard.DAILY_SLOT_ID && it.status == JobStatus.SUCCEEDED }
+        val succeededTodayTargets = db.todayJobs
+            .filter { it.status == JobStatus.SUCCEEDED && it.targetId in enabledTargetIds }
             .mapTo(HashSet()) { it.targetId }
 
         val unknownIds = db.unknownJobs.mapTo(HashSet()) { it.id }
@@ -920,18 +1000,26 @@ class TodayViewModel(
             unknownItems.firstOrNull { it.job.id == activeId }
         }
 
+        val recentJobsSectionTitle = resolveRecentJobsSectionTitle(
+            recentJobs = recentItems,
+            businessDate = meta.businessDate,
+        )
+
         return TodayUiState(
             isLoading = false,
             businessDate = meta.businessDate,
             account = account,
             enabledTargetCount = enabledTargets.size,
+            boundEnabledTargetCount = boundEnabledTargetCount,
+            unboundEnabledTargetCount = unboundEnabledTargetCount,
             pendingTargetCount = pendingCount,
-            succeededTodayCount = dailySucceededTargets.size,
+            succeededTodayCount = succeededTodayTargets.size,
             issueTodayCount = issueCount,
             nextAutoTriggerAtEpochMs = scheduleEvaluation?.nextWakeAt?.toEpochMilli(),
             authRecheckAtEpochMs = scheduleEvaluation?.authRecheckAt?.toEpochMilli(),
             unknownReviewJobs = unknownItems,
             recentJobs = recentItems,
+            recentJobsSectionTitle = recentJobsSectionTitle,
             cooldownFailureStats = failureStats,
             executionState = scopedExecutionState,
             otherRunningAccountName = otherRunningAccountName,
@@ -939,6 +1027,7 @@ class TodayViewModel(
             missingImageTemplateCount = missingIds.size,
             missingImageEnabledTargetCount = missingEnabledTargetCount,
             showReloginChoiceDialog = meta.controls.showReloginChoiceDialog,
+            showForceAllConfirmDialog = meta.controls.showForceAllConfirmDialog,
             activeUnknownReviewJob = activeReview,
             showCooldownDetailDialog = meta.controls.showCooldownDetailDialog,
             showDomBrokenDialog = meta.controls.showDomBrokenDialog,
@@ -970,10 +1059,10 @@ class TodayViewModel(
                 }
             }
         }
-        return if (job.messageSlotId.startsWith(SendGuard.MANUAL_SLOT_PREFIX)) {
-            "手动单发文本"
-        } else {
-            "默认模板"
+        return when {
+            job.messageSlotId.startsWith(SendGuard.MANUAL_BATCH_SLOT_PREFIX) -> "批量续火模板"
+            job.messageSlotId.startsWith(SendGuard.MANUAL_SLOT_PREFIX) -> "手动单发文本"
+            else -> "默认模板"
         }
     }
 
@@ -998,6 +1087,7 @@ class TodayViewModel(
 
     private data class ControlState(
         val showReloginChoiceDialog: Boolean = false,
+        val showForceAllConfirmDialog: Boolean = false,
         val activeUnknownReviewJobId: String? = null,
         val showCooldownDetailDialog: Boolean = false,
         val showDomBrokenDialog: Boolean = false,
@@ -1030,6 +1120,10 @@ class TodayViewModel(
                             override fun enqueueManualBatch(accountId: String): Boolean =
                                 io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
                                     .enqueueManualBatch(container.appContext, accountId)
+
+                            override fun enqueueManualBatchForceAll(accountId: String): Boolean =
+                                io.github.oinzc.flamecontractor.execution.ExecutionForegroundService
+                                    .enqueueManualBatchForceAll(container.appContext, accountId)
                         },
                         accountId = accountId,
                         imageStore = container.templateImageStore,
@@ -1037,6 +1131,16 @@ class TodayViewModel(
                 }
             }
     }
+}
+
+internal fun resolveRecentJobsSectionTitle(
+    recentJobs: List<RecentJobItem>,
+    businessDate: String,
+): String {
+    val allToday = recentJobs.isNotEmpty() &&
+        businessDate.isNotBlank() &&
+        recentJobs.all { it.job.businessDate == businessDate }
+    return if (allToday) "今日执行动态" else "近期执行记录"
 }
 
 internal fun accountStatusLabel(status: AccountStatus): String = when (status) {

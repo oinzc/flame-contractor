@@ -671,6 +671,214 @@ class TodayViewModelTest {
         assertTrue(vm.uiState.value.unknownReviewJobs.isEmpty())
     }
 
+    @Test
+    fun forceAllBatchDispatchesDirectlyWhenNoneSucceededTodayAndConfirmsWhenAlreadySent() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "好友一"),
+                sampleTarget(id = "t-2", nickname = "好友二"),
+            ),
+            initialJobs = emptyList(),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), launcher, dispatcher)
+        advanceUntilIdle()
+
+        // 今日尚未发送成功过：点主按钮「续火」直接入队全发，不弹二次确认
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(1, launcher.forceAllBatchCalls)
+        assertEquals(0, launcher.manualBatchCalls)
+
+        // 今日已有 1 位发送成功后：再次点「续火」先弹轻量二次确认弹窗，不直接入队
+        repo.jobs.value = listOf(
+            sampleJob(
+                id = "job-done-1",
+                targetId = "t-1",
+                slotId = SendGuard.DAILY_SLOT_ID,
+                status = JobStatus.SUCCEEDED,
+            ),
+        )
+        advanceUntilIdle()
+        assertEquals(1, vm.uiState.value.succeededTodayCount)
+        assertEquals(1, vm.uiState.value.pendingTargetCount)
+
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(1, launcher.forceAllBatchCalls)
+
+        // 用户确认后再触发全发
+        vm.confirmForceAllBatch()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(2, launcher.forceAllBatchCalls)
+
+        // 次按钮「补发」在还有未发好友时只走 enqueueManualBatch
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(1, launcher.manualBatchCalls)
+    }
+
+    @Test
+    fun forceAllAndBackfillBlockWhenAllEnabledTargetsLackBoundTemplatesOrHaveUnknownReview() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "未绑定一", templateId = ""),
+                sampleTarget(id = "t-2", nickname = "未绑定二", templateId = "missing-tpl"),
+            ),
+            initialJobs = emptyList(),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), launcher, dispatcher)
+        advanceUntilIdle()
+
+        assertEquals(0, vm.uiState.value.boundEnabledTargetCount)
+        assertEquals(2, vm.uiState.value.unboundEnabledTargetCount)
+
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertEquals(0, launcher.forceAllBatchCalls)
+        assertEquals(ManualBatchBlockReason.NO_BOUND_TEMPLATES, vm.uiState.value.manualBatchFeedback?.reason)
+        assertTrue(vm.uiState.value.manualBatchFeedback?.canJumpToTargets == true)
+
+        vm.dismissManualBatchFeedback()
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(0, launcher.manualBatchCalls)
+        assertEquals(ManualBatchBlockReason.NO_BOUND_TEMPLATES, vm.uiState.value.manualBatchFeedback?.reason)
+
+        // 即使绑定了模板，存在 UNKNOWN_REQUIRES_REVIEW 时「续火」依然硬禁止
+        repo.targets.value = listOf(sampleTarget(id = "t-1", nickname = "已绑定", templateId = "tpl-1"))
+        repo.jobs.value = listOf(
+            sampleJob(
+                id = "job-u1",
+                targetId = "t-1",
+                slotId = SendGuard.DAILY_SLOT_ID,
+                status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                failureClass = FailureClass.UNKNOWN_OUTCOME,
+            ),
+        )
+        advanceUntilIdle()
+
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertEquals(0, launcher.forceAllBatchCalls)
+        assertEquals(ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT, vm.uiState.value.manualBatchFeedback?.reason)
+    }
+
+    @Test
+    fun backfillShowsClearNoticeWhenAllEnabledTargetsCompletedToday() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(sampleTarget(id = "t-1", nickname = "好友一")),
+            initialJobs = listOf(
+                sampleJob(
+                    id = "job-done",
+                    targetId = "t-1",
+                    slotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.SUCCEEDED,
+                ),
+            ),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), launcher, dispatcher)
+        advanceUntilIdle()
+
+        assertEquals(0, vm.uiState.value.pendingTargetCount)
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+
+        assertEquals(0, launcher.manualBatchCalls)
+        val feedback = vm.uiState.value.manualBatchFeedback
+        assertEquals(ManualBatchBlockReason.ALL_DONE_OR_SKIPPED_TODAY, feedback?.reason)
+        assertTrue(feedback?.title?.contains("无需补发") == true)
+    }
+
+    @Test
+    fun manualBatchForceAllSlotSuccessCountsAsTodayCompletedAndTriggersConfirmOnRetry() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(sampleTarget(id = "t-1", nickname = "好友一")),
+            initialJobs = listOf(
+                sampleJob(
+                    id = "job-mb-1",
+                    targetId = "t-1",
+                    slotId = SendGuard.manualBatchSlotId(1_763_740_000_000L),
+                    status = JobStatus.SUCCEEDED,
+                ),
+            ),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), launcher, dispatcher)
+        advanceUntilIdle()
+
+        assertEquals(1, vm.uiState.value.succeededTodayCount)
+        assertEquals(0, vm.uiState.value.pendingTargetCount)
+
+        // 补发不再空跑
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(0, launcher.manualBatchCalls)
+        assertEquals(ManualBatchBlockReason.ALL_DONE_OR_SKIPPED_TODAY, vm.uiState.value.manualBatchFeedback?.reason)
+
+        // 再点主按钮「续火」必须先弹二次确认
+        vm.dismissManualBatchFeedback()
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(0, launcher.forceAllBatchCalls)
+    }
+
+    @Test
+    fun recentJobsSectionTitleDistinguishesTodayOnlyFromHistoricalRecords() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(sampleTarget(id = "t-1", nickname = "好友一")),
+            initialJobs = listOf(
+                sampleJob(
+                    id = "job-yesterday",
+                    targetId = "t-1",
+                    slotId = SendGuard.DAILY_SLOT_ID,
+                    status = JobStatus.SUCCEEDED,
+                ).copy(businessDate = "2026-11-21"),
+            ),
+        )
+        val vm = createViewModel(repo, FakeTodayScheduleGateway(), FakeTodayExecutionLauncher(), dispatcher)
+        advanceUntilIdle()
+
+        // 仅含昨日记录时，绝不可标为「今日执行动态」
+        assertEquals("近期执行记录", vm.uiState.value.recentJobsSectionTitle)
+
+        // 混合今日与昨日记录时，仍显示「近期执行记录」
+        repo.jobs.value = listOf(
+            sampleJob(id = "job-today", targetId = "t-1", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED),
+            sampleJob(id = "job-yesterday", targetId = "t-1", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED)
+                .copy(businessDate = "2026-11-21"),
+        )
+        advanceUntilIdle()
+        assertEquals("近期执行记录", vm.uiState.value.recentJobsSectionTitle)
+
+        // 全部为今日记录时，显示「今日执行动态」
+        repo.jobs.value = listOf(
+            sampleJob(id = "job-today", targetId = "t-1", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED),
+        )
+        advanceUntilIdle()
+        assertEquals("今日执行动态", vm.uiState.value.recentJobsSectionTitle)
+    }
+
     private fun createViewModel(
         repo: FakeTodayRepository,
         scheduler: FakeTodayScheduleGateway,
@@ -764,9 +972,15 @@ class TodayViewModelTest {
 
     private class FakeTodayExecutionLauncher : TodayExecutionLauncher {
         var manualBatchCalls = 0
+        var forceAllBatchCalls = 0
         var returnValue = true
         override fun enqueueManualBatch(accountId: String): Boolean {
             manualBatchCalls += 1
+            return returnValue
+        }
+
+        override fun enqueueManualBatchForceAll(accountId: String): Boolean {
+            forceAllBatchCalls += 1
             return returnValue
         }
     }

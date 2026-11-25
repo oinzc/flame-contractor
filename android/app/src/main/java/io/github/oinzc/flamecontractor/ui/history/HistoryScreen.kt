@@ -1,6 +1,9 @@
 package io.github.oinzc.flamecontractor.ui.history
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -95,6 +98,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
+import io.github.oinzc.flamecontractor.core.support.FeedbackKind
+import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
@@ -149,6 +154,8 @@ fun HistoryRoute(
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
+    onOpenFeedbackWithDraft: (FeedbackPreFillDraft) -> Unit = { onOpenFeedback() },
+    onBuildDiagnosticsReportText: (suspend () -> String)? = null,
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     diagnosticScreenshotStore: DiagnosticScreenshotStore? = null,
@@ -212,6 +219,28 @@ fun HistoryRoute(
         }
     }
 
+    val handleCopyDiagnosticsLog: (() -> Unit)? = onBuildDiagnosticsReportText?.let { builder ->
+        {
+            coroutineScope.launch {
+                try {
+                    val reportText = builder()
+                    val copied = copyDiagnosticsLogToClipboard(context, reportText)
+                    snackbarHostState.showSnackbar(
+                        if (copied) {
+                            "已复制脱敏诊断日志，可直接发给维护者或在反馈中粘贴"
+                        } else {
+                            "复制剪贴板失败，请稍后重试"
+                        },
+                    )
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    snackbarHostState.showSnackbar("生成诊断日志失败，请稍后重试")
+                }
+            }
+        }
+    }
+
     HistoryScreen(
         state = uiState,
         snackbarHostState = snackbarHostState,
@@ -235,6 +264,19 @@ fun HistoryRoute(
         onNavigateToTodayReview = onNavigateToTodayReview,
         onOpenSettings = { onOpenSettings(null) },
         onOpenFeedback = onOpenFeedback,
+        onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+        onFeedbackIssueJob = { detail ->
+            val (title, content) = buildSanitizedHistoryIssueDraft(detail)
+            onOpenFeedbackWithDraft(
+                FeedbackPreFillDraft(
+                    kind = FeedbackKind.BUG,
+                    title = title,
+                    content = content,
+                    attachDiagnosticLog = true,
+                    nonce = System.currentTimeMillis(),
+                ),
+            )
+        },
         resolveAttemptScreenshotFile = { attemptId ->
             resolvedScreenshotStore.resolveAttemptFile(attemptId)
         },
@@ -261,6 +303,8 @@ fun HistoryScreen(
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onOpenFeedback: () -> Unit = {},
+    onCopyDiagnosticsLog: (() -> Unit)? = null,
+    onFeedbackIssueJob: ((HistoryJobDetailUiState) -> Unit)? = null,
     resolveAttemptScreenshotFile: (String) -> File? = { null },
     resolveJobScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
@@ -558,6 +602,13 @@ fun HistoryScreen(
                 onDismissJobDetail()
                 onNavigateToTodayReview()
             },
+            onFeedbackIssueJob = onFeedbackIssueJob?.let { handler ->
+                {
+                    onDismissJobDetail()
+                    handler(detail)
+                }
+            },
+            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
         )
     }
 }
@@ -1328,6 +1379,8 @@ private fun HistoryJobTimelineSheet(
     resolveJobScreenshotFile: (String) -> File?,
     onDismiss: () -> Unit,
     onNavigateToTodayReview: () -> Unit,
+    onFeedbackIssueJob: (() -> Unit)? = null,
+    onCopyDiagnosticsLog: (() -> Unit)? = null,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
@@ -1497,6 +1550,10 @@ private fun HistoryJobTimelineSheet(
 
         Spacer(modifier = Modifier.height(14.dp))
 
+        val isIssueJob = job.status == JobStatus.FAILED_RETRYABLE ||
+            job.status == JobStatus.FAILED_TERMINAL ||
+            job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW
+
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
                 FlameSheetActionRow(
@@ -1505,6 +1562,21 @@ private fun HistoryJobTimelineSheet(
                     onClick = onNavigateToTodayReview,
                     primary = true,
                     danger = true,
+                )
+            }
+            if (isIssueJob && onFeedbackIssueJob != null) {
+                FlameSheetActionRow(
+                    text = "一键反馈此异常（自动带日志）",
+                    trailingText = "脱敏直达",
+                    primary = job.status != JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                    onClick = onFeedbackIssueJob,
+                )
+            }
+            if (isIssueJob && onCopyDiagnosticsLog != null) {
+                FlameSheetActionRow(
+                    text = "复制脱敏诊断日志",
+                    trailingText = "可发给维护者",
+                    onClick = onCopyDiagnosticsLog,
                 )
             }
             FlameSheetActionRow(
@@ -1741,6 +1813,35 @@ private fun failureClassLabel(failureClass: FailureClass): String = when (failur
     FailureClass.DOM_CHANGED -> "页面结构变化"
     FailureClass.UNKNOWN_OUTCOME -> "发送结果未明"
     FailureClass.OTHER -> "其他错误"
+}
+
+private fun buildSanitizedHistoryIssueDraft(detail: HistoryJobDetailUiState): Pair<String, String> {
+    val job = detail.item.job
+    val statusLabel = jobStatusStyle(job.status).label
+    val fcLabel = job.failureClass?.let(::failureClassLabel) ?: "未知分类"
+    val lastAttempt = detail.attempts.lastOrNull()
+    val errorCode = lastAttempt?.errorCode?.trim()?.takeIf { it.isNotEmpty() }
+    val title = "续火任务$statusLabel：$fcLabel"
+    val content = buildString {
+        append("在 ${job.businessDate} 执行续火任务时出现异常（状态：$statusLabel，分类：$fcLabel，尝试 ${job.attemptCount} 次")
+        if (errorCode != null) {
+            append("，错误码：$errorCode")
+        }
+        append("）。已自动附带脱敏诊断日志，请协助排查原因。")
+    }
+    return title to content
+}
+
+private fun copyDiagnosticsLogToClipboard(context: Context, text: String): Boolean = try {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    if (clipboard != null) {
+        clipboard.setPrimaryClip(ClipData.newPlainText("flame_sanitized_diagnostics", text))
+        true
+    } else {
+        false
+    }
+} catch (_: Throwable) {
+    false
 }
 
 private const val DEFAULT_VISIBLE_JOBS_PER_DAY = 10

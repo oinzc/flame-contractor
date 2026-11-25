@@ -1022,6 +1022,86 @@ class SettingsViewModelTest {
         }
     }
 
+    @Test
+    fun trimDiagnosticLogForFeedbackEnforcesCapAndPreservesTail() {
+        val shortLog = "line-1\nline-2"
+        assertEquals(shortLog, trimDiagnosticLogForFeedback("  $shortLog  "))
+
+        val longLog = "HEAD_OLD_" + "x".repeat(20_000) + "_TAIL_LATEST_MARKER"
+        val trimmed = trimDiagnosticLogForFeedback(longLog)
+        assertTrue(trimmed.length <= MAX_FEEDBACK_DIAGNOSTIC_LOG_CHARS)
+        assertTrue(trimmed.endsWith("_TAIL_LATEST_MARKER"))
+        assertFalse(trimmed.contains("HEAD_OLD_"))
+    }
+
+    @Test
+    fun buildDiagnosticsReportPassesRuntimeLogsSkipSummaryAndUnboundCount() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repo = FakeSettingsAccountRepository(
+            initialAccount = AccountEntity(
+                id = DEFAULT_ACCOUNT_ID,
+                displayName = "敏感别名",
+                status = AccountStatus.HEALTHY,
+            ),
+            targetsByAccount = mapOf(
+                DEFAULT_ACCOUNT_ID to listOf(
+                    ContractTargetEntity(
+                        id = "t-unbound-enabled",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        nicknameSnapshot = "未绑定好友甲",
+                        templateId = null,
+                        enabled = true,
+                    ),
+                    ContractTargetEntity(
+                        id = "t-bound-enabled",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        nicknameSnapshot = "已绑定好友乙",
+                        templateId = "tpl-1",
+                        enabled = true,
+                    ),
+                    ContractTargetEntity(
+                        id = "t-unbound-paused",
+                        accountId = DEFAULT_ACCOUNT_ID,
+                        nicknameSnapshot = "暂停好友丙",
+                        templateId = "",
+                        enabled = false,
+                    ),
+                ),
+            ),
+        )
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = SettingsViewModel(
+                accountRepo = repo,
+                scheduleGateway = FakeScheduleGateway(),
+                selectorGateway = StoreSettingsSelectorGateway(createRealSelectorStore("diag-logs-${System.nanoTime()}")),
+                barkGateway = FakeBarkGateway(),
+                probeGateway = FakeProbeGateway(),
+                survivalGateway = FakeSurvivalGateway(),
+                envProvider = FakeDiagnosticsEnvProvider(),
+                backupGateway = FakeBackupGateway(),
+                ioDispatcher = dispatcher,
+                clockMillis = { 1_763_740_500_000L },
+                accountId = DEFAULT_ACCOUNT_ID,
+                coroutineScope = vmScope,
+                runtimeLogLinesProvider = {
+                    listOf("2026-11-25T08:15:02Z [WARN] [SEND] target_lookup_miss visibleRows=12 scrollSteps=4")
+                },
+                recentSkipSummaryProvider = { "1 位未绑定可用模板" },
+            )
+            advanceUntilIdle()
+
+            val report = vm.buildDiagnosticsReport()
+            assertTrue(report.textReport.contains("未绑定模板的启用好友数: 1"))
+            assertTrue(report.textReport.contains("1 位未绑定可用模板"))
+            assertTrue(report.textReport.contains("target_lookup_miss visibleRows=12 scrollSteps=4"))
+            assertFalse(report.textReport.contains("未绑定好友甲"))
+            assertFalse(report.textReport.contains("敏感别名"))
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
     private fun createRealSelectorStore(subDir: String): SelectorBundleStore {
         val assetCandidates = listOf(
             File("src/main/assets/selectors_bundle.json"),

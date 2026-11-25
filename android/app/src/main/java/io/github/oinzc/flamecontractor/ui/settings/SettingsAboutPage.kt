@@ -24,6 +24,7 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,19 +33,26 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
@@ -55,6 +63,7 @@ import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -69,6 +78,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -94,6 +104,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -102,6 +113,7 @@ import io.github.oinzc.flamecontractor.core.support.EncodedFeedbackImage
 import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoder
 import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoderUtils
 import io.github.oinzc.flamecontractor.core.support.FeedbackKind
+import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmissionRequest
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitResult
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitter
@@ -110,8 +122,10 @@ import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
+import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
+import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.flamePressScale
@@ -135,6 +149,9 @@ internal fun SettingsAboutPage(
     uiState: SettingsUiState,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    preFillDraft: FeedbackPreFillDraft? = null,
+    onConsumePreFillDraft: (Long) -> Unit = {},
+    onBuildDiagnosticsReportText: (suspend () -> String)? = null,
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -180,6 +197,11 @@ internal fun SettingsAboutPage(
     var contentInput by rememberSaveable { mutableStateOf("") }
     var contactInput by rememberSaveable { mutableStateOf("") }
     var includeEnv by rememberSaveable { mutableStateOf(true) }
+    var includeDiagnosticLog by rememberSaveable { mutableStateOf(true) }
+    var lastConsumedDraftNonce by rememberSaveable { mutableStateOf(0L) }
+    var diagnosticLogPreviewText by remember { mutableStateOf<String?>(null) }
+    var showDiagnosticLogPreview by remember { mutableStateOf(false) }
+    var loadingDiagnosticLog by remember { mutableStateOf(false) }
     var attachedImages by remember { mutableStateOf<List<FeedbackImageUiItem>>(emptyList()) }
     var encodingImages by remember { mutableStateOf(false) }
     var imageError by remember { mutableStateOf<String?>(null) }
@@ -188,6 +210,24 @@ internal fun SettingsAboutPage(
     var submitResult by remember { mutableStateOf<FeedbackSubmitResult?>(null) }
     val contentFocusRequester = remember { FocusRequester() }
 
+    LaunchedEffect(preFillDraft?.nonce) {
+        val draft = preFillDraft ?: return@LaunchedEffect
+        if (draft.nonce == lastConsumedDraftNonce) return@LaunchedEffect
+        lastConsumedDraftNonce = draft.nonce
+        selectedKindName = draft.kind.name
+        if (titleInput.isBlank() && draft.title.isNotBlank()) {
+            titleInput = draft.title.trim().take(FeedbackSubmitter.MAX_TITLE_LEN)
+        }
+        if (contentInput.isBlank() && draft.content.isNotBlank()) {
+            contentInput = draft.content.trim().take(FeedbackSubmitter.MAX_CONTENT_LEN)
+            contentValidationError = null
+        }
+        if (draft.attachDiagnosticLog) {
+            includeDiagnosticLog = true
+        }
+        onConsumePreFillDraft(draft.nonce)
+    }
+
     fun buildShortContentMessage(trimmedLen: Int): String = if (trimmedLen <= 0) {
         "请先填写至少 ${FeedbackSubmitter.MIN_CONTENT_LEN} 个字的详细描述再提交"
     } else {
@@ -195,7 +235,7 @@ internal fun SettingsAboutPage(
         "详细描述还差 $remaining 个字即可提交（至少 ${FeedbackSubmitter.MIN_CONTENT_LEN} 个字）"
     }
 
-    fun buildCurrentRequest(): FeedbackSubmissionRequest = FeedbackSubmissionRequest(
+    fun buildCurrentRequest(diagnosticLogText: String = ""): FeedbackSubmissionRequest = FeedbackSubmissionRequest(
         kind = selectedKind,
         title = titleInput,
         content = contentInput,
@@ -205,6 +245,7 @@ internal fun SettingsAboutPage(
         includeEnv = includeEnv,
         client = "android",
         images = attachedImages.map { it.encoded.attachment },
+        diagnosticLog = diagnosticLogText,
     )
 
     fun showNotice(message: String) {
@@ -214,6 +255,51 @@ internal fun SettingsAboutPage(
                 message = message,
                 duration = SnackbarDuration.Short,
             )
+        }
+    }
+
+    suspend fun loadLatestDiagnosticsReportText(): String {
+        val raw = onBuildDiagnosticsReportText?.invoke()
+            ?: uiState.diagnosticsReport?.textReport
+            ?: envSummary
+        diagnosticLogPreviewText = raw
+        return raw
+    }
+
+    fun copyDiagnosticsReportQuick() {
+        if (loadingDiagnosticLog) return
+        haptics.performFlameLightTick()
+        loadingDiagnosticLog = true
+        coroutineScope.launch {
+            try {
+                val reportText = loadLatestDiagnosticsReportText()
+                copyPlainText(context, label = "flame_sanitized_diagnostics", text = reportText)
+                showNotice("已复制脱敏诊断日志，可直接发给维护者或在反馈中粘贴")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                showNotice("生成诊断日志失败，请稍后重试")
+            } finally {
+                loadingDiagnosticLog = false
+            }
+        }
+    }
+
+    fun openDiagnosticsLogPreview() {
+        if (loadingDiagnosticLog) return
+        haptics.performFlameLightTick()
+        loadingDiagnosticLog = true
+        coroutineScope.launch {
+            try {
+                loadLatestDiagnosticsReportText()
+                showDiagnosticLogPreview = true
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                showNotice("读取诊断日志失败，请稍后重试")
+            } finally {
+                loadingDiagnosticLog = false
+            }
         }
     }
 
@@ -377,7 +463,33 @@ internal fun SettingsAboutPage(
         submitting = true
         submitResult = null
         coroutineScope.launch {
-            val result = submitter.submit(req)
+            val trimmedLog = if (includeDiagnosticLog) {
+                try {
+                    trimDiagnosticLogForFeedback(loadLatestDiagnosticsReportText())
+                } catch (ce: CancellationException) {
+                    submitting = false
+                    throw ce
+                } catch (_: Throwable) {
+                    ""
+                }
+            } else {
+                ""
+            }
+            val finalReq = buildCurrentRequest(diagnosticLogText = trimmedLog)
+            val finalValidationError = FeedbackSubmitter.validateInput(
+                title = finalReq.title,
+                content = finalReq.content,
+                contact = finalReq.contact,
+                images = finalReq.images,
+                diagnosticLog = finalReq.diagnosticLog,
+            )
+            if (finalValidationError != null) {
+                submitting = false
+                submitResult = FeedbackSubmitResult.Failure(finalValidationError, retryable = false)
+                showNotice(finalValidationError)
+                return@launch
+            }
+            val result = submitter.submit(finalReq)
             submitting = false
             submitResult = result
             if (result is FeedbackSubmitResult.Success) {
@@ -659,6 +771,97 @@ internal fun SettingsAboutPage(
                         )
                     }
 
+                    // 脱敏诊断日志开关 + 预览 / 一键复制
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !submitting) { includeDiagnosticLog = !includeDiagnosticLog },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = "附带近期脱敏诊断日志（强烈推荐）",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.ink,
+                                )
+                                Text(
+                                    text = "含设备与权限状态、跳过/失败统计与近期脱敏运行轨迹，绝不含好友昵称、UID、Cookie 或聊天内容",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.inkSecondary,
+                                )
+                            }
+                            Switch(
+                                checked = includeDiagnosticLog,
+                                enabled = !submitting,
+                                onCheckedChange = { includeDiagnosticLog = it },
+                                colors = settingsSwitchColors(),
+                            )
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = { openDiagnosticsLogPreview() },
+                                enabled = !loadingDiagnosticLog && !submitting,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, palette.hairlineStrong),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
+                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp),
+                            ) {
+                                if (loadingDiagnosticLog) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 2.dp,
+                                        color = palette.ink,
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Visibility,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
+                                Text(
+                                    text = "预览脱敏日志",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(start = 5.dp),
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { copyDiagnosticsReportQuick() },
+                                enabled = !loadingDiagnosticLog && !submitting,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, palette.hairlineStrong),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
+                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ContentCopy,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = "一键复制诊断日志",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(start = 5.dp),
+                                )
+                            }
+                        }
+                    }
+
                     // 提交结果反馈条
                     AnimatedVisibility(
                         visible = submitResult != null,
@@ -682,9 +885,20 @@ internal fun SettingsAboutPage(
                                 onOpenIssue = { url -> openUrlWithFeedback(url) },
                                 onCopyFallback = {
                                     haptics.performFlameLightTick()
-                                    val text = FeedbackSubmitter.buildClipboardFallbackText(buildCurrentRequest())
-                                    copyPlainText(context, label = "flame_feedback_draft", text = text)
-                                    showNotice("已复制完整脱敏反馈内容，不会丢失")
+                                    coroutineScope.launch {
+                                        val diagLog = if (includeDiagnosticLog) {
+                                            runCatching {
+                                                trimDiagnosticLogForFeedback(loadLatestDiagnosticsReportText())
+                                            }.getOrDefault("")
+                                        } else {
+                                            ""
+                                        }
+                                        val text = FeedbackSubmitter.buildClipboardFallbackText(
+                                            buildCurrentRequest(diagnosticLogText = diagLog),
+                                        )
+                                        copyPlainText(context, label = "flame_feedback_draft", text = text)
+                                        showNotice("已复制完整脱敏反馈内容，不会丢失")
+                                    }
                                 },
                             )
                         }
@@ -752,9 +966,20 @@ internal fun SettingsAboutPage(
                                         runCatching { contentFocusRequester.requestFocus() }
                                         return@Button
                                     }
-                                    val text = FeedbackSubmitter.buildClipboardFallbackText(buildCurrentRequest())
-                                    copyPlainText(context, label = "flame_feedback_draft", text = text)
-                                    showNotice("已复制完整脱敏反馈内容")
+                                    coroutineScope.launch {
+                                        val diagLog = if (includeDiagnosticLog) {
+                                            runCatching {
+                                                trimDiagnosticLogForFeedback(loadLatestDiagnosticsReportText())
+                                            }.getOrDefault("")
+                                        } else {
+                                            ""
+                                        }
+                                        val text = FeedbackSubmitter.buildClipboardFallbackText(
+                                            buildCurrentRequest(diagnosticLogText = diagLog),
+                                        )
+                                        copyPlainText(context, label = "flame_feedback_draft", text = text)
+                                        showNotice("已复制完整脱敏反馈内容")
+                                    }
                                 },
                                 enabled = canCopy,
                                 interactionSource = copyFeedbackInteraction,
@@ -991,6 +1216,30 @@ internal fun SettingsAboutPage(
                 )
 
                 FlameListRow(
+                    title = "一键复制脱敏诊断日志",
+                    subtitle = "含设备/权限状态、跳过与失败统计及近期脱敏运行轨迹，可直接微信/QQ 发给维护者",
+                    leading = {
+                        FlameRowAvatar(tone = FlameTone.EMBER) {
+                            Icon(
+                                imageVector = Icons.Outlined.BugReport,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Text(
+                            text = if (loadingDiagnosticLog) "生成中…" else "复制日志",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkSecondary,
+                        )
+                    },
+                    showDivider = true,
+                    onClick = { copyDiagnosticsReportQuick() },
+                )
+
+                FlameListRow(
                     title = "复制脱敏环境信息",
                     subtitle = "仅含版本号、Android 系统版本与定位器摘要，不含任何个人数据",
                     leading = {
@@ -1048,6 +1297,84 @@ internal fun SettingsAboutPage(
                     )
                 }
             }
+        }
+    }
+
+    if (showDiagnosticLogPreview) {
+        val previewText = trimDiagnosticLogForFeedback(diagnosticLogPreviewText.orEmpty())
+        FeedbackDiagnosticLogPreviewSheet(
+            logText = previewText,
+            onCopy = {
+                haptics.performFlameLightTick()
+                copyPlainText(
+                    context,
+                    label = "flame_sanitized_diagnostics",
+                    text = diagnosticLogPreviewText.orEmpty().ifBlank { previewText },
+                )
+                showNotice("已复制脱敏诊断日志，可直接发给维护者或在反馈中粘贴")
+            },
+            onDismiss = { showDiagnosticLogPreview = false },
+        )
+    }
+}
+
+internal const val MAX_FEEDBACK_DIAGNOSTIC_LOG_CHARS: Int = 15_500
+
+internal fun trimDiagnosticLogForFeedback(rawReport: String): String {
+    val trimmed = rawReport.trim()
+    if (trimmed.length <= MAX_FEEDBACK_DIAGNOSTIC_LOG_CHARS) return trimmed
+    val prefix = "[日志较长，已自动保留最新片段]\n"
+    val keepLen = (MAX_FEEDBACK_DIAGNOSTIC_LOG_CHARS - prefix.length).coerceAtLeast(1)
+    return prefix + trimmed.takeLast(keepLen)
+}
+
+@Composable
+private fun FeedbackDiagnosticLogPreviewSheet(
+    logText: String,
+    onCopy: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "脱敏诊断日志预览",
+        subtitle = "共 ${logText.length} 字 · 已通过白名单与敏感词脱敏，不含任何个人隐私",
+    ) {
+        Surface(
+            color = palette.surfaceSubtle,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, palette.hairline),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .heightIn(min = 180.dp, max = 380.dp),
+        ) {
+            SelectionContainer {
+                Text(
+                    text = logText.ifBlank { "暂无运行轨迹日志" },
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = palette.ink,
+                    modifier = Modifier
+                        .verticalScroll(rememberScrollState())
+                        .horizontalScroll(rememberScrollState())
+                        .padding(12.dp),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlameSheetActionRow(
+                text = "一键复制完整诊断日志",
+                trailingText = "可发给维护者",
+                primary = true,
+                onClick = onCopy,
+            )
+            FlameSheetActionRow(
+                text = "关闭预览",
+                onClick = onDismiss,
+            )
         }
     }
 }
@@ -1391,17 +1718,28 @@ private fun FeedbackResultBanner(
             }
             when (result) {
                 is FeedbackSubmitResult.Success -> {
-                    result.issueUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                        TextButton(
-                            onClick = { onOpenIssue(url) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                        ) {
-                            Text(
-                                text = "在 GitHub 查看进展 →",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = fg,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (result.hasDiagnosticLog) {
+                            FlameMiniTag(
+                                text = "已附脱敏诊断日志",
+                                tone = FlameTone.HEALTHY,
                             )
+                        }
+                        result.issueUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                            TextButton(
+                                onClick = { onOpenIssue(url) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                            ) {
+                                Text(
+                                    text = "在 GitHub 查看进展 →",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = fg,
+                                )
+                            }
                         }
                     }
                 }

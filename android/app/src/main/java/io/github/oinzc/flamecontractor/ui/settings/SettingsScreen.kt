@@ -85,9 +85,12 @@ import io.github.oinzc.flamecontractor.core.backup.BackupArchiveCodec
 import io.github.oinzc.flamecontractor.core.backup.BackupCodec
 import io.github.oinzc.flamecontractor.core.backup.BackupManager
 import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
+import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.support.FeedbackKind
+import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemeMode
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -125,6 +128,7 @@ fun SettingsRoute(
     onSelectSection: (SettingsSection?) -> Unit = {},
     onStartOnboardingWizard: () -> Unit = {},
     onOpenLoginForActiveAccount: () -> Unit = {},
+    onOpenInspectWebViewForActiveAccount: () -> Unit = onOpenLoginForActiveAccount,
     onOpenTargetsTab: () -> Unit = {},
     survivalRefreshNonce: Long = 0L,
     onBack: () -> Unit = {},
@@ -134,6 +138,10 @@ fun SettingsRoute(
         onScheduleChanged = { scheduleCoordinator.rescheduleAll() },
     ),
     accountId: String = DEFAULT_ACCOUNT_ID,
+    diagnosticLogStore: DiagnosticLogStore? = null,
+    pendingFeedbackDraft: FeedbackPreFillDraft? = null,
+    onConsumeFeedbackDraft: (Long) -> Unit = {},
+    onOpenFeedbackWithDraft: (FeedbackPreFillDraft) -> Unit = { onSelectSection(SettingsSection.ABOUT) },
 ) {
     val context = LocalContext.current
     val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
@@ -151,6 +159,7 @@ fun SettingsRoute(
         scheduleCoordinator,
         backupManager,
         resolvedAccountId,
+        diagnosticLogStore,
     ) {
         SettingsViewModel.factory(
             context = context,
@@ -161,6 +170,7 @@ fun SettingsRoute(
             scheduleCoordinator = scheduleCoordinator,
             backupManager = backupManager,
             accountId = resolvedAccountId,
+            diagnosticLogStore = diagnosticLogStore,
         )
     }
     val viewModel: SettingsViewModel = viewModel(
@@ -556,11 +566,39 @@ fun SettingsRoute(
                 onDismissDiagnosticsDialog = viewModel::dismissDiagnosticsDialog,
                 onCopyDiagnostics = { text -> copyDiagnosticsToClipboard(context, text) },
                 onShareDiagnostics = { text -> shareDiagnosticsText(context, text) },
+                onOpenInspectWebView = onOpenInspectWebViewForActiveAccount,
+                onOpenFeedbackWithDiagnostics = { report ->
+                    val statusHint = settingsAccountStatusLabel(uiState.accountStatus)
+                    val title = if (report?.latestProbe?.coreSkeletonOk == false) {
+                        "网页结构体检核心骨架异常"
+                    } else {
+                        "附带诊断日志的问题反馈"
+                    }
+                    val content = buildString {
+                        append("当前账号状态：$statusHint。")
+                        report?.latestProbe?.let { probe ->
+                            append("最近结构体检：登录=${probe.loggedIn}，核心骨架=${probe.coreSkeletonOk}，命中=${probe.passedItemCount}/${probe.totalItemCount}。")
+                        }
+                        append("已自动附带脱敏诊断日志，请协助排查原因。")
+                    }
+                    onOpenFeedbackWithDraft(
+                        FeedbackPreFillDraft(
+                            kind = FeedbackKind.BUG,
+                            title = title,
+                            content = content,
+                            attachDiagnosticLog = true,
+                            nonce = System.currentTimeMillis(),
+                        ),
+                    )
+                },
                 onBack = onBack,
             )
 
             SettingsSection.ABOUT -> SettingsAboutPage(
                 uiState = uiState,
+                preFillDraft = pendingFeedbackDraft,
+                onConsumePreFillDraft = onConsumeFeedbackDraft,
+                onBuildDiagnosticsReportText = viewModel::buildDiagnosticsReportText,
                 onBack = onBack,
             )
         }
