@@ -27,6 +27,7 @@ const MAX_CONTENT_LEN = 2000
 const MAX_TITLE_LEN = 100
 const MAX_CONTACT_LEN = 100
 const MAX_ENV_LEN = 400
+const MAX_DIAGNOSTIC_LOG_LEN = 16_000
 
 const IMAGE_PATH_REGEX = /^\/v1\/images\/([0-9a-f-]{36}\.(jpg|png|webp))$/i
 const DATA_URL_IMAGE_PREFIX_REGEX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
@@ -82,8 +83,40 @@ export function sanitizeSensitiveText(raw) {
   return String(raw)
     .replace(/(https?:\/\/api\.day\.app\/)([^/\s"'`<>]+)/gi, '$1[REDACTED_BARK_KEY]')
     .replace(/\b(sessionid|sessionid_ss|sid_tt|sid_guard|passport_csrf_token|ttwid)\s*=\s*[^;\s"'`]+/gi, '$1=[REDACTED]')
+    .replace(
+      /\b(device_key)\s*=\s*(?:\[REDACTED[^\]]*\]|(["'])[^;&,\s"'`<>)}\]]+\2?|[^;&,\s"'`<>)}\]]+)/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(/(["']device_key["']\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2')
     .replace(/\b(Authorization\s*:\s*Bearer\s+)[^\s"'`]+/gi, '$1[REDACTED_TOKEN]')
     .replace(/\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]')
+    .replace(/\bMS4wLjAB[A-Za-z0-9_-]{8,}/g, '[REDACTED_UID]')
+}
+
+function escapeMarkdownCodeFences(raw) {
+  if (!raw) return ''
+  return String(raw).replace(/`{3,}/g, '` ` `')
+}
+
+function formatDiagnosticLogForIssue(raw) {
+  if (typeof raw !== 'string') return ''
+  const sanitized = sanitizeSensitiveText(raw).trim()
+  if (!sanitized) return ''
+  return escapeMarkdownCodeFences(sanitized)
+}
+
+function parseAndValidateDiagnosticLog(rawDiagnosticLog) {
+  if (rawDiagnosticLog === undefined || rawDiagnosticLog === null) {
+    return { diagnosticLog: '' }
+  }
+  if (typeof rawDiagnosticLog !== 'string') {
+    return { error: '诊断日志参数必须为字符串' }
+  }
+  const trimmed = rawDiagnosticLog.trim()
+  if (trimmed.length > MAX_DIAGNOSTIC_LOG_LEN) {
+    return { error: `诊断日志请控制在 ${MAX_DIAGNOSTIC_LOG_LEN} 字以内` }
+  }
+  return { diagnosticLog: trimmed }
 }
 
 export function detectImageFormat(bytes) {
@@ -385,6 +418,7 @@ export function buildIssuePayload(input, imageUrls = []) {
   const contact = sanitizeSensitiveText(input.contact || '').trim().slice(0, MAX_CONTACT_LEN)
   const includeEnv = input.includeEnv !== false
   const envInfo = includeEnv ? sanitizeSensitiveText(input.environment || '').trim().slice(0, MAX_ENV_LEN) : ''
+  const diagnosticLog = formatDiagnosticLogForIssue(input.diagnosticLog)
 
   const sections = [
     `> 来源：应用内直连反馈（\`${clientLabel}\` · ${kindMeta.display}）`,
@@ -410,6 +444,20 @@ export function buildIssuePayload(input, imageUrls = []) {
 
   if (envInfo) {
     sections.push('', '```text', envInfo, '```')
+  }
+
+  if (diagnosticLog) {
+    sections.push(
+      '',
+      '<details>',
+      '<summary>展开脱敏诊断日志（供排查定位）</summary>',
+      '',
+      '```text',
+      diagnosticLog,
+      '```',
+      '',
+      '</details>',
+    )
   }
 
   if (contact) {
@@ -438,6 +486,7 @@ export default {
         configured: Boolean(env && env.GITHUB_TOKEN),
         imageUploadSupported: Boolean(env && (env.FEEDBACK_IMAGES_R2 || env.FEEDBACK_IMAGES_KV)),
         imageStorage: env && env.FEEDBACK_IMAGES_R2 ? 'r2' : env && env.FEEDBACK_IMAGES_KV ? 'kv' : 'none',
+        diagnosticLogSupported: true,
       })
     }
 
@@ -516,6 +565,12 @@ export default {
     if (rawContent.length > MAX_CONTENT_LEN) {
       return jsonResponse({ ok: false, error: `反馈内容请控制在 ${MAX_CONTENT_LEN} 字以内` }, 400)
     }
+
+    const diagnosticLogValidation = parseAndValidateDiagnosticLog(body.diagnosticLog)
+    if (diagnosticLogValidation.error) {
+      return jsonResponse({ ok: false, error: diagnosticLogValidation.error }, 400)
+    }
+    const sanitizedDiagnosticLog = formatDiagnosticLogForIssue(diagnosticLogValidation.diagnosticLog)
 
     const imageValidation = parseAndValidateImages(body.images)
     if (imageValidation.error) {
@@ -597,6 +652,7 @@ export default {
         issueNumber: created.number ?? null,
         issueUrl: created.html_url ?? null,
         imageCount,
+        hasDiagnosticLog: Boolean(sanitizedDiagnosticLog),
         message: created.number
           ? `反馈已提交（#${created.number}${imageSummary}），感谢你的帮助！`
           : imageCount > 0

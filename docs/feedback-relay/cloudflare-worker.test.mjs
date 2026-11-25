@@ -139,6 +139,7 @@ test('GET /health 与 GET / 返回存储能力与配置状态字段', async () =
         ok: true,
         service: 'flame-contractor-feedback-relay',
         ...item.expected,
+        diagnosticLogSupported: true,
       })
     }
   }
@@ -179,12 +180,14 @@ test('纯文本反馈完全向后兼容（未绑定图片存储仍可提交）',
         issueNumber: 77,
         issueUrl: 'https://github.com/oinzc/flame-contractor/issues/77',
         imageCount: 0,
+        hasDiagnosticLog: false,
         message: '反馈已提交（#77），感谢你的帮助！',
       })
       assert.ok(capturedIssue)
       assert.equal(capturedIssue.title, '[Bug] 扫码后未跳转')
       assert.ok(capturedIssue.body.includes('[REDACTED_BARK_KEY]'))
       assert.ok(!capturedIssue.body.includes('### 附图'))
+      assert.ok(!capturedIssue.body.includes('<details>'))
     },
   )
 
@@ -630,5 +633,210 @@ test('buildIssuePayload 与 sanitizeSensitiveText 辅助函数验证', () => {
     ['https://feedback.example.com/v1/images/550e8400-e29b-41d4-a716-446655440000.png'],
   )
   assert.ok(issue.body.includes('### 附图\n![反馈截图 1](https://feedback.example.com/v1/images/550e8400-e29b-41d4-a716-446655440000.png)'))
+  assert.ok(!issue.body.includes('<details>'))
   assert.deepEqual(issue.labels, ['bug', 'in-app-feedback'])
+})
+
+test('diagnosticLog 折叠渲染、顺序位置、防反引号注入与二次脱敏', async () => {
+  let capturedIssue = null
+  const env = { GITHUB_TOKEN: 'test-token' }
+
+  const rawDiagnosticLog = [
+    '[2026-11-25 16:00:00] target=https://www.douyin.com/user/MS4wLjABAAAA9876543210_xyz-AB',
+    'cookie: sessionid=secret_sid_001; ttwid=1%7Csecret_ttwid_999',
+    'bark: https://api.day.app/MyBarkUrlKey999/test',
+    'bark_form: https://bark.selfhost.local/push?device_key=MyDeviceKey888&title=ping',
+    'bark_json: {"device_key": "MyJsonDeviceKey777"}',
+    'auth: Authorization: Bearer jwt_secret_token_123',
+    'gh: ghp_123456789012345678901234',
+    '```markdown',
+    '</details>',
+    '````',
+    '# injected heading',
+    '```',
+  ].join('\n')
+
+  await withMockFetch(
+    async (_url, init) => {
+      capturedIssue = JSON.parse(init.body)
+      return new Response(
+        JSON.stringify({ number: 91, html_url: 'https://github.com/oinzc/flame-contractor/issues/91' }),
+        { status: 201 },
+      )
+    },
+    async () => {
+      const resp = await worker.fetch(
+        makeFeedbackRequest({
+          kind: 'bug',
+          title: '自动发送超时',
+          content: '开启定时发送后提示超时，已附上脱敏诊断日志协助排查。',
+          client: 'android',
+          version: 'v0.6.1',
+          environment: 'Android 15 (API 35)',
+          includeEnv: true,
+          contact: 'tester@example.com',
+          diagnosticLog: rawDiagnosticLog,
+        }),
+        env,
+      )
+
+      assert.equal(resp.status, 201)
+      const data = await resp.json()
+      assert.deepEqual(data, {
+        ok: true,
+        issueNumber: 91,
+        issueUrl: 'https://github.com/oinzc/flame-contractor/issues/91',
+        imageCount: 0,
+        hasDiagnosticLog: true,
+        message: '反馈已提交（#91），感谢你的帮助！',
+      })
+    },
+  )
+
+  assert.ok(capturedIssue)
+  const body = capturedIssue.body
+
+  // 区块顺序：运行环境 -> 折叠诊断日志 -> 联系方式
+  const envIdx = body.indexOf('### 运行环境（已脱敏）')
+  const detailsIdx = body.indexOf('<details>\n<summary>展开脱敏诊断日志（供排查定位）</summary>\n\n```text\n')
+  const detailsEndIdx = body.indexOf('\n```\n\n</details>')
+  const contactIdx = body.indexOf('### 联系方式（用户自愿留存）')
+  assert.ok(envIdx >= 0, '应包含运行环境区块')
+  assert.ok(detailsIdx > envIdx, '折叠日志应位于运行环境之后')
+  assert.ok(detailsEndIdx > detailsIdx, '折叠日志应正确闭合')
+  assert.ok(contactIdx > detailsEndIdx, '折叠日志应位于联系方式之前')
+
+  // 二次脱敏校验：不得残留原始敏感值
+  for (const secret of [
+    'MS4wLjABAAAA9876543210_xyz-AB',
+    'secret_sid_001',
+    'secret_ttwid_999',
+    'MyBarkUrlKey999',
+    'MyDeviceKey888',
+    'MyJsonDeviceKey777',
+    'jwt_secret_token_123',
+    'ghp_123456789012345678901234',
+  ]) {
+    assert.ok(!body.includes(secret), `敏感信息未脱敏: ${secret}`)
+  }
+
+  assert.ok(body.includes('https://www.douyin.com/user/[REDACTED_UID]'))
+  assert.ok(body.includes('sessionid=[REDACTED]'))
+  assert.ok(body.includes('ttwid=[REDACTED]'))
+  assert.ok(body.includes('https://api.day.app/[REDACTED_BARK_KEY]/test'))
+  assert.ok(body.includes('device_key=[REDACTED]&title=ping'))
+  assert.ok(body.includes('{"device_key": "[REDACTED]"}'))
+  assert.ok(body.includes('Authorization: Bearer [REDACTED_TOKEN]'))
+  assert.ok(body.includes('[REDACTED_GH_TOKEN]'))
+
+  // 防 Markdown 代码块逃逸：提取折叠块内日志文本，验证不存在连续三个及以上反引号
+  const logStart = detailsIdx + '<details>\n<summary>展开脱敏诊断日志（供排查定位）</summary>\n\n```text\n'.length
+  const embeddedLog = body.slice(logStart, detailsEndIdx)
+  assert.ok(!/`{3,}/.test(embeddedLog), '日志正文中不得残留连续 3 个及以上反引号')
+  assert.ok(embeddedLog.includes('` ` `markdown'))
+  assert.ok(embeddedLog.includes('\n` ` `\n# injected heading'))
+})
+
+test('sanitizeSensitiveText 覆盖 sec_uid、device_key 脱敏且多次调用幂等', () => {
+  const sample = [
+    'uid=MS4wLjABAAAA12345678_-abcd',
+    'short=MS4wLjAB12345',
+    'device_key=BarkKey001&title=hi',
+    'device_key = "BarkKey002"; other=1',
+    '[device_key=BarkKey003]',
+    'query="a=1&device_key=BarkKey004"',
+    '{"device_key": "BarkKey005"}',
+    'Cookie: sessionid=s1; sid_tt=s2; ttwid=t1',
+    'https://api.day.app/UrlBarkKey99/msg',
+  ].join('\n')
+
+  const once = sanitizeSensitiveText(sample)
+  assert.ok(once.includes('uid=[REDACTED_UID]'))
+  assert.ok(once.includes('short=MS4wLjAB12345'), '不足 8 位后缀的 MS4wLjAB 前缀不应误脱敏')
+  assert.ok(once.includes('device_key=[REDACTED]&title=hi'))
+  assert.ok(once.includes('device_key=[REDACTED]; other=1'))
+  assert.ok(once.includes('[device_key=[REDACTED]]'))
+  assert.ok(once.includes('query="a=1&device_key=[REDACTED]"'))
+  assert.ok(once.includes('{"device_key": "[REDACTED]"}'))
+  assert.ok(once.includes('sessionid=[REDACTED]'))
+  assert.ok(once.includes('sid_tt=[REDACTED]'))
+  assert.ok(once.includes('ttwid=[REDACTED]'))
+  assert.ok(once.includes('https://api.day.app/[REDACTED_BARK_KEY]/msg'))
+
+  // 幂等性：客户端先脱敏、服务端二次脱敏不得破坏占位符
+  const twice = sanitizeSensitiveText(once)
+  assert.equal(twice, once)
+})
+
+test('diagnosticLog 参数校验：非字符串与超 16000 字返回 400，边界 16000 字与空值放行', async () => {
+  let githubCalls = 0
+  const env = { GITHUB_TOKEN: 'test-token' }
+
+  await withMockFetch(
+    async () => {
+      githubCalls += 1
+      return new Response(
+        JSON.stringify({ number: 100 + githubCalls, html_url: `https://github.com/oinzc/flame-contractor/issues/${100 + githubCalls}` }),
+        { status: 201 },
+      )
+    },
+    async () => {
+      // 1. 非字符串类型 -> 400 且不触发 GitHub API
+      for (const badValue of [123, true, false, ['log'], { text: 'log' }]) {
+        const resp = await worker.fetch(
+          makeFeedbackRequest({
+            content: '测试非字符串 diagnosticLog 拦截',
+            diagnosticLog: badValue,
+          }),
+          env,
+        )
+        assert.equal(resp.status, 400, `Expected 400 for ${JSON.stringify(badValue)}`)
+        const data = await resp.json()
+        assert.equal(data.ok, false)
+        assert.ok(typeof data.error === 'string' && data.error.length > 0)
+      }
+
+      // 2. trim() 后超 16000 字 -> 400 且返回清晰中文提示
+      const overLimitResp = await worker.fetch(
+        makeFeedbackRequest({
+          content: '测试超长诊断日志被拦截',
+          diagnosticLog: 'x'.repeat(16_001),
+        }),
+        env,
+      )
+      assert.equal(overLimitResp.status, 400)
+      const overLimitData = await overLimitResp.json()
+      assert.equal(overLimitData.ok, false)
+      assert.match(overLimitData.error, /16000/)
+      assert.equal(githubCalls, 0)
+
+      // 3. trim() 后精确 16000 字 -> 放行 201 且 hasDiagnosticLog: true
+      const exactResp = await worker.fetch(
+        makeFeedbackRequest({
+          content: '测试精确 16000 字边界放行',
+          diagnosticLog: `  ${'a'.repeat(16_000)}  `,
+        }),
+        env,
+      )
+      assert.equal(exactResp.status, 201)
+      const exactData = await exactResp.json()
+      assert.equal(exactData.hasDiagnosticLog, true)
+
+      // 4. null / 空字符串 / 纯空白字符串 -> 放行 201 且 hasDiagnosticLog: false
+      for (const emptyValue of [null, '', '   \n\t  ']) {
+        const resp = await worker.fetch(
+          makeFeedbackRequest({
+            content: '测试空诊断日志向后兼容放行',
+            diagnosticLog: emptyValue,
+          }),
+          env,
+        )
+        assert.equal(resp.status, 201)
+        const data = await resp.json()
+        assert.equal(data.hasDiagnosticLog, false)
+      }
+    },
+  )
+
+  assert.equal(githubCalls, 4)
 })
