@@ -26,6 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,6 +64,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindFullLabel
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
@@ -141,8 +144,15 @@ fun ScanReconcileSheet(
                         color = palette.ink,
                     )
                     val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
+                    val litCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == true }
+                    val grayCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == false }
+                    val litBreakdown = if (litCount > 0 || grayCount > 0) {
+                        "（今日已亮 $litCount / 待续 $grayCount）"
+                    } else {
+                        ""
+                    }
                     Text(
-                        text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条 · $timeStr",
+                        text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条$litBreakdown · $timeStr",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkSecondary,
                     )
@@ -499,9 +509,44 @@ private fun ScanCandidateRow(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     if (item.hasOfficialSpark) {
+                        val isExpiring = c.sparkLabel?.contains("后消失") == true
+                        val isGrayUnlit = !isExpiring && c.sparkLitToday == false
+                        val chipBg = when {
+                            isExpiring -> semantics.warningContainer
+                            isGrayUnlit -> palette.surfaceSubtle
+                            else -> semantics.sparkGoldContainer
+                        }
+                        val chipBorder = when {
+                            isExpiring -> semantics.warningBorder
+                            isGrayUnlit -> palette.hairlineStrong
+                            else -> semantics.sparkGoldBorder
+                        }
+                        val chipIcon = when {
+                            isExpiring -> Icons.Outlined.Schedule
+                            isGrayUnlit -> Icons.Outlined.LocalFireDepartment
+                            else -> Icons.Filled.LocalFireDepartment
+                        }
+                        val chipIconTint = when {
+                            isExpiring -> semantics.warning
+                            isGrayUnlit -> palette.inkTertiary
+                            else -> semantics.sparkGold
+                        }
+                        val chipTextColor = when {
+                            isExpiring -> semantics.onWarningContainer
+                            isGrayUnlit -> palette.inkSecondary
+                            else -> semantics.sparkGold
+                        }
+                        val sparkBaseText = formatCandidateSparkText(c)
+                        val chipText = when {
+                            isExpiring -> sparkBaseText
+                            c.sparkLitToday == true -> "$sparkBaseText · 今日已亮"
+                            c.sparkLitToday == false -> "$sparkBaseText · 待续"
+                            else -> sparkBaseText
+                        }
+
                         Surface(
-                            color = semantics.sparkGoldContainer,
-                            border = BorderStroke(1.dp, semantics.sparkGoldBorder),
+                            color = chipBg,
+                            border = BorderStroke(1.dp, chipBorder),
                             shape = RoundedCornerShape(999.dp),
                         ) {
                             Row(
@@ -510,15 +555,15 @@ private fun ScanCandidateRow(
                                 horizontalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.LocalFireDepartment,
+                                    imageVector = chipIcon,
                                     contentDescription = null,
-                                    tint = semantics.sparkGold,
+                                    tint = chipIconTint,
                                     modifier = Modifier.size(13.dp),
                                 )
                                 Text(
-                                    text = formatCandidateSparkText(c),
+                                    text = chipText,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = semantics.sparkGold,
+                                    color = chipTextColor,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                             }
@@ -602,11 +647,7 @@ private fun ScanCandidateRow(
 }
 
 private fun formatCandidateSparkText(candidate: ScannedChatCandidate): String {
-    val kindPrefix = when (candidate.sparkKind) {
-        "couple" -> "合养火花"
-        "family" -> "家庭火花"
-        else -> "官方火花"
-    }
+    val kindPrefix = officialSparkKindFullLabel(candidate.sparkKind)
     val days = candidate.sparkDays
     val label = candidate.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
     return when {

@@ -2,6 +2,7 @@ package io.github.oinzc.flamecontractor.ui.today
 
 import android.net.Uri
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.storage.StoredTemplateImage
 import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
@@ -879,6 +880,167 @@ class TodayViewModelTest {
         assertEquals("今日执行动态", vm.uiState.value.recentJobsSectionTitle)
     }
 
+    @Test
+    fun officialSparkLitCombinesWithLocalSuccessUpdatesPendingAndBlocksRedundantBackfill() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val litStore = OfficialSparkLitStore()
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-local", nickname = "本机已发", streakDays = 3),
+                sampleTarget(id = "t-both", nickname = "双重确认", streakDays = 8),
+                sampleTarget(id = "t-lit-only", nickname = "抖音已亮", streakDays = 5),
+                sampleTarget(id = "t-gray", nickname = "灰火待续", streakDays = 2),
+                sampleTarget(id = "t-paused-lit", nickname = "暂停但已亮", streakDays = 9, enabled = false),
+            ),
+            initialJobs = listOf(
+                sampleJob(id = "job-local", targetId = "t-local", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED),
+                sampleJob(id = "job-both", targetId = "t-both", slotId = SendGuard.DAILY_SLOT_ID, status = JobStatus.SUCCEEDED),
+            ),
+        )
+        litStore.recordScanResults(
+            accountId = DEFAULT_ACCOUNT_ID,
+            businessDate = todayDate,
+            updates = mapOf(
+                "t-both" to true,
+                "t-lit-only" to true,
+                "t-gray" to false,
+                "t-paused-lit" to true,
+            ),
+            scannedAtEpochMs = fixedInstant.toEpochMilli(),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = launcher,
+            dispatcher = dispatcher,
+            officialSparkLitStore = litStore,
+        )
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertEquals(4, state.enabledTargetCount)
+        assertEquals(2, state.localSucceededTodayCount)
+        assertEquals(1, state.officialLitOnlyTodayCount)
+        assertEquals(3, state.succeededTodayCount)
+        assertEquals(1, state.pendingTargetCount)
+        // 硬安全底线：绝不修改本地 streakDays
+        assertEquals(5, repo.targets.value.first { it.id == "t-lit-only" }.streakDays)
+
+        // 还有 1 位灰火待续，补发正常入队
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(1, launcher.manualBatchCalls)
+
+        // 扫描更新：最后一位灰火在抖音侧也点亮 -> 响应式立即变为 4/4 完成、待发 0
+        litStore.recordScanResults(
+            accountId = DEFAULT_ACCOUNT_ID,
+            businessDate = todayDate,
+            updates = mapOf("t-gray" to true),
+            scannedAtEpochMs = fixedInstant.toEpochMilli() + 1_000L,
+        )
+        advanceUntilIdle()
+
+        val completedState = vm.uiState.value
+        assertEquals(2, completedState.localSucceededTodayCount)
+        assertEquals(2, completedState.officialLitOnlyTodayCount)
+        assertEquals(4, completedState.succeededTodayCount)
+        assertEquals(0, completedState.pendingTargetCount)
+
+        // 全完成后点「补发未发」不再入队，并给出含抖音已点亮的清晰提示
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(1, launcher.manualBatchCalls)
+        val feedback = vm.uiState.value.manualBatchFeedback
+        assertEquals(ManualBatchBlockReason.ALL_DONE_OR_SKIPPED_TODAY, feedback?.reason)
+        assertEquals("今日启用好友已全部续过火（含抖音已点亮），无需补发", feedback?.title)
+    }
+
+    @Test
+    fun officialLitOnlyTriggersForceAllConfirmIgnoresStaleDateAndPreservesUnknownHardBlock() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val litStore = OfficialSparkLitStore()
+        // 昨日亮火记录不得污染今日统计
+        litStore.recordScanResults(
+            accountId = DEFAULT_ACCOUNT_ID,
+            businessDate = "2026-11-21",
+            updates = mapOf("t-1" to true, "t-2" to true),
+            scannedAtEpochMs = fixedInstant.minusSeconds(86_400L).toEpochMilli(),
+        )
+        val repo = FakeTodayRepository(
+            initialAccount = sampleAccount(status = AccountStatus.HEALTHY),
+            initialTargets = listOf(
+                sampleTarget(id = "t-1", nickname = "好友一"),
+                sampleTarget(id = "t-2", nickname = "好友二"),
+            ),
+            initialJobs = emptyList(),
+        )
+        val launcher = FakeTodayExecutionLauncher()
+        val vm = createViewModel(
+            repo = repo,
+            scheduler = FakeTodayScheduleGateway(),
+            launcher = launcher,
+            dispatcher = dispatcher,
+            officialSparkLitStore = litStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(0, vm.uiState.value.officialLitOnlyTodayCount)
+        assertEquals(0, vm.uiState.value.succeededTodayCount)
+        assertEquals(2, vm.uiState.value.pendingTargetCount)
+
+        // 今日扫描确认 2 位均在抖音已点亮（本机 0 发）
+        litStore.recordScanResults(
+            accountId = DEFAULT_ACCOUNT_ID,
+            businessDate = todayDate,
+            updates = mapOf("t-1" to true, "t-2" to true),
+            scannedAtEpochMs = fixedInstant.toEpochMilli(),
+        )
+        advanceUntilIdle()
+
+        assertEquals(0, vm.uiState.value.localSucceededTodayCount)
+        assertEquals(2, vm.uiState.value.officialLitOnlyTodayCount)
+        assertEquals(2, vm.uiState.value.succeededTodayCount)
+        assertEquals(0, vm.uiState.value.pendingTargetCount)
+
+        // 点击主按钮「续火」必须先弹二次确认
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(0, launcher.forceAllBatchCalls)
+
+        vm.confirmForceAllBatch()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.showForceAllConfirmDialog)
+        assertEquals(1, launcher.forceAllBatchCalls)
+
+        // 若存在 UNKNOWN_REQUIRES_REVIEW，即便所有好友都已亮火，「续火」与「补发」仍硬禁止
+        repo.jobs.value = listOf(
+            sampleJob(
+                id = "job-unk",
+                targetId = "t-2",
+                slotId = SendGuard.DAILY_SLOT_ID,
+                status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                failureClass = FailureClass.UNKNOWN_OUTCOME,
+            ),
+        )
+        advanceUntilIdle()
+
+        vm.onTriggerForceAllBatchClick()
+        advanceUntilIdle()
+        assertEquals(1, launcher.forceAllBatchCalls)
+        assertEquals(ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT, vm.uiState.value.manualBatchFeedback?.reason)
+
+        vm.dismissManualBatchFeedback()
+        vm.onTriggerManualBatchClick()
+        advanceUntilIdle()
+        assertEquals(0, launcher.manualBatchCalls)
+        assertEquals(ManualBatchBlockReason.UNKNOWN_OR_INFLIGHT, vm.uiState.value.manualBatchFeedback?.reason)
+    }
+
     private fun createViewModel(
         repo: FakeTodayRepository,
         scheduler: FakeTodayScheduleGateway,
@@ -887,6 +1049,7 @@ class TodayViewModelTest {
         liveState: MutableStateFlow<ExecutionLiveState> = MutableStateFlow(ExecutionLiveState()),
         accountId: String = DEFAULT_ACCOUNT_ID,
         imageStore: TemplateImageStorage? = null,
+        officialSparkLitStore: OfficialSparkLitStore? = null,
     ): TodayViewModel {
         val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
         createdScopes += vmScope
@@ -897,6 +1060,7 @@ class TodayViewModelTest {
             executionStateFlow = liveState,
             accountId = accountId,
             imageStore = imageStore,
+            officialSparkLitStore = officialSparkLitStore,
             clock = fixedClock,
             ioDispatcher = dispatcher,
             customScope = vmScope,

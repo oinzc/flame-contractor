@@ -9,7 +9,6 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -531,6 +530,8 @@ fun TodayScreen(
     if (state.showForceAllConfirmDialog) {
         ForceAllConfirmSheet(
             succeededTodayCount = state.succeededTodayCount,
+            localSucceededTodayCount = state.localSucceededTodayCount,
+            officialLitOnlyTodayCount = state.officialLitOnlyTodayCount,
             enabledTargetCount = state.enabledTargetCount,
             unboundEnabledTargetCount = state.unboundEnabledTargetCount,
             onConfirm = onConfirmForceAllBatch,
@@ -911,15 +912,16 @@ private fun TodayHeroStatusCard(
                     }
                 },
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(start = 18.dp, end = 16.dp, top = 18.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -935,6 +937,7 @@ private fun TodayHeroStatusCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.inkTertiary,
                                 maxLines = 1,
+                                softWrap = false,
                             )
                         }
                     }
@@ -979,14 +982,40 @@ private fun TodayHeroStatusCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+
+                    val verificationText = when {
+                        account?.lastVerifiedAt != null ->
+                            "登录态校验于 ${formatEpochTimestamp(account.lastVerifiedAt)}"
+
+                        account?.lastSuccessAt != null ->
+                            "最近确认发火 ${formatEpochTimestamp(account.lastSuccessAt)}"
+
+                        else -> "本地会话待扫码或校验"
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.VerifiedUser,
+                            contentDescription = null,
+                            tint = palette.inkTertiary.copy(alpha = 0.85f),
+                            modifier = Modifier.size(12.dp),
+                        )
+                        Text(
+                            text = verificationText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
 
-                // 主/次双操作按钮：主按钮「续火」（全部按绑定模板发一次）+ 次按钮「补发」（只发今日未发）
-                HeroDualActionRow(
+                // 恢复标志性右上角暖橙圆角方形「🔥 续火」主行动块（按绑定模板对全部启用好友发一次）
+                HeroFlameCtaButton(
                     isRunning = isRunning,
-                    pendingTargetCount = state.pendingTargetCount,
-                    onTriggerForceAllBatch = onTriggerForceAllBatch,
-                    onTriggerManualBatch = onTriggerManualBatch,
+                    onClick = onTriggerForceAllBatch,
                 )
             }
 
@@ -1018,66 +1047,26 @@ private fun TodayHeroStatusCard(
 
             HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onReloginClick)
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val verificationText = when {
-                    account?.lastVerifiedAt != null ->
-                        "登录态校验于 ${formatEpochTimestamp(account.lastVerifiedAt)}"
-
-                    account?.lastSuccessAt != null ->
-                        "最近确认发火 ${formatEpochTimestamp(account.lastSuccessAt)}"
-
-                    else -> "本地会话待扫码或校验"
-                }
-                Text(
-                    text = verificationText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        text = "重登 / 换号",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.inkSecondary,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = palette.inkTertiary,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            }
+            HeroFooterActionBar(
+                isRunning = isRunning,
+                pendingTargetCount = state.pendingTargetCount,
+                onTriggerManualBatch = onTriggerManualBatch,
+                onReloginClick = onReloginClick,
+            )
         }
     }
 }
 
 @Composable
-private fun HeroDualActionRow(
+private fun HeroFlameCtaButton(
     isRunning: Boolean,
-    pendingTargetCount: Int,
-    onTriggerForceAllBatch: () -> Unit,
-    onTriggerManualBatch: () -> Unit,
+    onClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
     val haptics = LocalHapticFeedback.current
     val reducedMotion = rememberReducedMotion()
-    val buttonShape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(18.dp)
 
     AnimatedContent(
         targetState = isRunning,
@@ -1087,145 +1076,202 @@ private fun HeroDualActionRow(
             } else {
                 (fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
                     scaleIn(
-                        initialScale = 0.96f,
+                        initialScale = 0.94f,
                         animationSpec = tween(180, easing = FlameMotionSpec.easeOut),
                     )) togetherWith fadeOut(tween(130, easing = FlameMotionSpec.easeOut))
             }
         },
-        label = "hero_dual_cta_state",
+        label = "hero_flame_cta_state",
     ) { running ->
         if (running) {
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(46.dp),
-                shape = buttonShape,
+                modifier = Modifier.size(70.dp),
+                shape = shape,
                 color = palette.emberContainer,
                 contentColor = palette.ember,
-                border = BorderStroke(1.dp, palette.emberBorder),
+                border = BorderStroke(1.2.dp, palette.emberBorder),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.2.dp,
                         color = palette.ember,
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.height(5.dp))
                     Text(
-                        text = "正在执行续火任务…",
-                        style = MaterialTheme.typography.labelLarge,
+                        text = "执行中",
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = palette.ember,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        softWrap = false,
                     )
                 }
             }
         } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            val interactionSource = remember { MutableInteractionSource() }
+            val emberBrush = if (isDark) {
+                Brush.linearGradient(colors = listOf(palette.ember, palette.emberBright))
+            } else {
+                Brush.linearGradient(colors = listOf(palette.emberBright, palette.ember))
+            }
+            val rimHighlightBrush = Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = if (isDark) 0.28f else 0.34f),
+                    Color.White.copy(alpha = 0.04f),
+                ),
+            )
+            Box(
+                modifier = Modifier
+                    .flamePressScale(
+                        interactionSource = interactionSource,
+                        pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
+                    )
+                    .size(70.dp)
+                    .clip(shape)
+                    .background(emberBrush)
+                    .border(width = 1.dp, brush = rimHighlightBrush, shape = shape)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = LocalIndication.current,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onClick()
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                // 主按钮「续火」（全部按绑定模板发一次）
-                val primaryInteraction = remember { MutableInteractionSource() }
-                val emberBrush = Brush.linearGradient(
-                    colors = listOf(palette.emberBright, palette.ember),
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1.25f)
-                        .flamePressScale(
-                            interactionSource = primaryInteraction,
-                            pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
-                        )
-                        .height(46.dp)
-                        .clip(buttonShape)
-                        .background(emberBrush)
-                        .clickable(
-                            interactionSource = primaryInteraction,
-                            indication = LocalIndication.current,
-                            onClick = {
-                                haptics.performFlameLightTick()
-                                onTriggerForceAllBatch()
-                            },
-                        ),
-                    contentAlignment = Alignment.Center,
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.LocalFireDepartment,
-                            contentDescription = "全部启用好友续火",
-                            tint = Color.White,
-                            modifier = Modifier.size(19.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "续火",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = "全部启用好友续火",
+                        tint = Color.White,
+                        modifier = Modifier.size(25.dp),
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = "续火",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
                 }
+            }
+        }
+    }
+}
 
-                // 次按钮「补发」（只发今日尚未成功的好友）
-                val secondaryInteraction = remember { MutableInteractionSource() }
-                val backfillLabel = if (pendingTargetCount > 0) {
-                    "补发未发 ($pendingTargetCount)"
-                } else {
-                    "补发未发"
-                }
-                Surface(
-                    onClick = {
-                        haptics.performFlameLightTick()
-                        onTriggerManualBatch()
-                    },
-                    interactionSource = secondaryInteraction,
-                    modifier = Modifier
-                        .weight(1f)
-                        .flamePressScale(interactionSource = secondaryInteraction)
-                        .height(46.dp),
-                    shape = buttonShape,
-                    color = palette.surface,
-                    contentColor = palette.ink,
-                    border = BorderStroke(1.dp, palette.hairlineStrong),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Replay,
-                            contentDescription = null,
-                            tint = palette.inkSecondary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text(
-                            text = backfillLabel,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.ink,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+@Composable
+private fun HeroFooterActionBar(
+    isRunning: Boolean,
+    pendingTargetCount: Int,
+    onTriggerManualBatch: () -> Unit,
+    onReloginClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
+    val haptics = LocalHapticFeedback.current
+    val backfillInteraction = remember { MutableInteractionSource() }
+    val reloginInteraction = remember { MutableInteractionSource() }
+    val hasPending = pendingTargetCount > 0
+    val backfillLabel = if (hasPending) "补发未发 · $pendingTargetCount" else "补发"
+
+    val backfillBg = when {
+        isRunning -> palette.surfaceSubtle.copy(alpha = 0.6f)
+        hasPending -> palette.surfaceSubtle
+        else -> palette.surfaceSubtle.copy(alpha = if (isDark) 0.55f else 0.72f)
+    }
+    val backfillBorder = if (!isRunning && hasPending) palette.hairlineStrong else palette.hairline
+    val backfillIconTint = if (!isRunning && hasPending) palette.inkSecondary else palette.inkTertiary
+    val backfillTextColor = if (!isRunning && hasPending) palette.ink else palette.inkTertiary
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Surface(
+            onClick = {
+                haptics.performFlameLightTick()
+                onTriggerManualBatch()
+            },
+            enabled = !isRunning,
+            interactionSource = backfillInteraction,
+            modifier = Modifier
+                .flamePressScale(interactionSource = backfillInteraction, enabled = !isRunning)
+                .height(32.dp),
+            shape = RoundedCornerShape(10.dp),
+            color = backfillBg,
+            contentColor = backfillTextColor,
+            border = BorderStroke(1.dp, backfillBorder),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Replay,
+                    contentDescription = "补发今日未发好友",
+                    tint = backfillIconTint,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    text = backfillLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (!isRunning && hasPending) FontWeight.SemiBold else FontWeight.Medium,
+                    color = backfillTextColor,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Surface(
+            onClick = {
+                haptics.performFlameLightTick()
+                onReloginClick()
+            },
+            interactionSource = reloginInteraction,
+            modifier = Modifier
+                .flamePressScale(interactionSource = reloginInteraction)
+                .height(32.dp),
+            shape = RoundedCornerShape(10.dp),
+            color = Color.Transparent,
+            contentColor = palette.inkSecondary,
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 8.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "重登 / 换号",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(16.dp),
+                )
             }
         }
     }
@@ -1241,6 +1287,7 @@ private fun HeroLiveProgressStrip(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val reducedMotion = rememberReducedMotion()
     val lastMsg = executionState.lastMessage?.trim().orEmpty()
     val skipSummary = executionState.lastSkipSummary?.trim().orEmpty()
     val errorSummary = executionState.lastErrorSummary?.trim().orEmpty()
@@ -1314,7 +1361,10 @@ private fun HeroLiveProgressStrip(
                         executionState.progressTotal.toFloat()).coerceIn(0f, 1f)
                     val animatedProgress by animateFloatAsState(
                         targetValue = targetProgress,
-                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                        animationSpec = tween(
+                            durationMillis = if (reducedMotion) 0 else 200,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
                         label = "hero_live_progress",
                     )
                     LinearProgressIndicator(
@@ -1588,6 +1638,7 @@ private fun TodayBentoMetricsRow(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val reducedMotion = rememberReducedMotion()
     val completionRatio = if (state.enabledTargetCount > 0) {
         (state.succeededTodayCount.toFloat() / state.enabledTargetCount.toFloat()).coerceIn(0f, 1f)
     } else {
@@ -1595,7 +1646,10 @@ private fun TodayBentoMetricsRow(
     }
     val animatedCompletion by animateFloatAsState(
         targetValue = completionRatio,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 220,
+            easing = FlameMotionSpec.easeOut,
+        ),
         label = "today_bento_completion",
     )
     val allCompleted = state.enabledTargetCount > 0 && state.succeededTodayCount >= state.enabledTargetCount
@@ -1633,11 +1687,44 @@ private fun TodayBentoMetricsRow(
                         )
                     }
                     val detailText = when {
-                        state.issueTodayCount > 0 ->
-                            "本机今日已确认 · 待发 ${state.pendingTargetCount} · 异常 ${state.issueTodayCount}"
+                        state.issueTodayCount > 0 -> {
+                            val parts = mutableListOf<String>()
+                            if (state.localSucceededTodayCount > 0) {
+                                parts += "本机 ${state.localSucceededTodayCount}"
+                            }
+                            if (state.officialLitOnlyTodayCount > 0) {
+                                parts += "抖音已亮 ${state.officialLitOnlyTodayCount}"
+                            }
+                            if (parts.isEmpty()) {
+                                parts += "本机今日已确认"
+                            }
+                            parts += "待发 ${state.pendingTargetCount}"
+                            parts += "异常 ${state.issueTodayCount}"
+                            parts.joinToString(" · ")
+                        }
 
                         state.enabledTargetCount == 0 ->
                             "尚未启用续火好友"
+
+                        state.localSucceededTodayCount > 0 && state.officialLitOnlyTodayCount > 0 ->
+                            buildString {
+                                append("本机 ${state.localSucceededTodayCount} · 抖音已亮 ${state.officialLitOnlyTodayCount}")
+                                if (state.pendingTargetCount > 0) {
+                                    append(" · 待发 ${state.pendingTargetCount}")
+                                }
+                            }
+
+                        state.officialLitOnlyTodayCount > 0 ->
+                            if (allCompleted && state.pendingTargetCount == 0) {
+                                "抖音今日已全部点亮"
+                            } else {
+                                buildString {
+                                    append("抖音今日已点亮 ${state.officialLitOnlyTodayCount} 位")
+                                    if (state.pendingTargetCount > 0) {
+                                        append(" · 待发 ${state.pendingTargetCount}")
+                                    }
+                                }
+                            }
 
                         state.pendingTargetCount == 0 && allCompleted ->
                             "本机今日已全部确认"
@@ -1652,7 +1739,7 @@ private fun TodayBentoMetricsRow(
                         text = detailText,
                         style = MaterialTheme.typography.labelSmall,
                         color = if (state.issueTodayCount > 0) semantics.danger else palette.inkTertiary,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -2031,12 +2118,24 @@ private fun TaskTimelineSheet(
 @Composable
 private fun ForceAllConfirmSheet(
     succeededTodayCount: Int,
+    localSucceededTodayCount: Int,
+    officialLitOnlyTodayCount: Int,
     enabledTargetCount: Int,
     unboundEnabledTargetCount: Int,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val semantics = FlameThemeTokens.semanticColors
+    val doneBreakdownText = when {
+        localSucceededTodayCount > 0 && officialLitOnlyTodayCount > 0 ->
+            "当前已有 $localSucceededTodayCount 位本机已发、$officialLitOnlyTodayCount 位抖音今日已点亮"
+
+        officialLitOnlyTodayCount > 0 ->
+            "当前已有 $officialLitOnlyTodayCount 位抖音今日已点亮"
+
+        else ->
+            "当前已有 $succeededTodayCount 位本机已发"
+    }
 
     FlameModalSheet(
         onDismissRequest = onDismiss,
@@ -2058,7 +2157,7 @@ private fun ForceAllConfirmSheet(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
-                        text = "今日已有 $succeededTodayCount 位发过，确认按各自绑定模板对全部 $enabledTargetCount 位启用好友再发一次吗？（同日本地天数不会重复叠加）",
+                        text = "$doneBreakdownText，确认按各自绑定模板对全部 $enabledTargetCount 位启用好友再发一次吗？（同日本地天数不会重复叠加）",
                         style = MaterialTheme.typography.bodySmall,
                         color = semantics.onWarningContainer,
                     )

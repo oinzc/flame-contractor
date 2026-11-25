@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import io.github.oinzc.flamecontractor.app.AppContainer
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitRecord
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -28,6 +30,7 @@ import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZonedDateTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -241,6 +244,8 @@ data class TodayUiState(
     val boundEnabledTargetCount: Int = 0,
     val unboundEnabledTargetCount: Int = 0,
     val pendingTargetCount: Int = 0,
+    val localSucceededTodayCount: Int = 0,
+    val officialLitOnlyTodayCount: Int = 0,
     val succeededTodayCount: Int = 0,
     val issueTodayCount: Int = 0,
     val nextAutoTriggerAtEpochMs: Long? = null,
@@ -276,6 +281,7 @@ class TodayViewModel(
     executionStateFlow: StateFlow<ExecutionLiveState> = ExecutionRuntimeBus.state,
     private val accountId: String = DEFAULT_ACCOUNT_ID,
     private val imageStore: TemplateImageStorage? = null,
+    private val officialSparkLitStore: OfficialSparkLitStore? = OfficialSparkLitStore.globalOrNull(),
     private val clock: Clock = Clock.systemDefaultZone(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     customScope: CoroutineScope? = null,
@@ -341,8 +347,15 @@ class TodayViewModel(
         )
     }
 
-    val uiState: StateFlow<TodayUiState> = combine(dataFlow, metaFlow) { db, meta ->
-        buildUiState(db, meta)
+    private val officialSparkLitRecordsFlow: Flow<Map<String, OfficialSparkLitRecord>> =
+        officialSparkLitStore?.records ?: flowOf(emptyMap())
+
+    val uiState: StateFlow<TodayUiState> = combine(
+        dataFlow,
+        metaFlow,
+        officialSparkLitRecordsFlow,
+    ) { db, meta, officialLitRecords ->
+        buildUiState(db, meta, officialLitRecords)
     }.stateIn(
         scope = vmScope,
         started = SharingStarted.Eagerly,
@@ -671,12 +684,22 @@ class TodayViewModel(
         val account = validateManualBatchPreconditions(snapshot) ?: return
 
         if (snapshot.pendingTargetCount == 0) {
+            val detailMessage = when {
+                snapshot.officialLitOnlyTodayCount > 0 && snapshot.localSucceededTodayCount > 0 ->
+                    "今日已有 ${snapshot.localSucceededTodayCount} 位本机确认发火、${snapshot.officialLitOnlyTodayCount} 位抖音今日已点亮，无需补发。若仍需按绑定模板对全部启用好友再发一次，请点击右上角「续火」。"
+
+                snapshot.officialLitOnlyTodayCount > 0 ->
+                    "扫描确认抖音今日已点亮 ${snapshot.officialLitOnlyTodayCount} 位启用好友，无需补发。若仍需按绑定模板对全部启用好友再发一次，请点击右上角「续火」。"
+
+                else ->
+                    "今日所有启用好友已完成发送或已处理完毕，无需补发。若仍需按绑定模板对全部启用好友再发一次，请点击右上角「续火」。"
+            }
             controlFlow.update {
                 it.copy(
                     manualBatchFeedback = ManualBatchFeedback(
                         reason = ManualBatchBlockReason.ALL_DONE_OR_SKIPPED_TODAY,
-                        title = "今日启用好友已全部续过火，无需补发",
-                        message = "今日所有启用好友已完成发送或已处理完毕，无需补发。若仍需按绑定模板对全部启用好友再发一次，请点击主按钮「续火」。",
+                        title = "今日启用好友已全部续过火（含抖音已点亮），无需补发",
+                        message = detailMessage,
                         canJumpToTargets = true,
                     ),
                 )
@@ -891,7 +914,11 @@ class TodayViewModel(
         }
     }
 
-    private fun buildUiState(db: DbSnapshot, meta: MetaSnapshot): TodayUiState {
+    private fun buildUiState(
+        db: DbSnapshot,
+        meta: MetaSnapshot,
+        officialLitRecords: Map<String, OfficialSparkLitRecord>,
+    ): TodayUiState {
         val account = db.account
         val targetsById = db.targets.associateBy { it.id }
         val templatesById = meta.templates.associateBy { it.id }
@@ -909,12 +936,33 @@ class TodayViewModel(
             .maxOrNull()
         val todayJobsByTarget = db.todayJobs.groupBy { it.targetId }
 
-        val pendingCount = enabledTargets.count { target ->
-            SendGuard.canDispatchDaily(todayJobsByTarget[target.id].orEmpty())
-        }
-        val succeededTodayTargets = db.todayJobs
+        val sparkBusinessDate = account?.timezone?.takeIf { it.isNotBlank() }?.let { tz ->
+            ZonedDateTime.ofInstant(clock.instant(), DailySchedulePlanner.resolveZoneId(tz))
+                .toLocalDate()
+                .toString()
+        } ?: meta.businessDate
+
+        val localSucceededTargets = db.todayJobs
             .filter { it.status == JobStatus.SUCCEEDED && it.targetId in enabledTargetIds }
             .mapTo(HashSet()) { it.targetId }
+        val officialLitOnlyTargets = enabledTargets
+            .asSequence()
+            .map { it.id }
+            .filter { targetId ->
+                targetId !in localSucceededTargets &&
+                    officialLitRecords[targetId]?.let { rec ->
+                        rec.businessDate == sparkBusinessDate && rec.litToday
+                    } == true
+            }
+            .toHashSet()
+        val localSucceededCount = localSucceededTargets.size
+        val officialLitOnlyCount = officialLitOnlyTargets.size
+        val succeededTodayCount = localSucceededCount + officialLitOnlyCount
+        val pendingCount = enabledTargets.count { target ->
+            target.id !in localSucceededTargets &&
+                target.id !in officialLitOnlyTargets &&
+                SendGuard.canDispatchDaily(todayJobsByTarget[target.id].orEmpty())
+        }.coerceAtLeast(0)
 
         val unknownIds = db.unknownJobs.mapTo(HashSet()) { it.id }
         val todayTerminalErrors = db.todayJobs.count {
@@ -1013,7 +1061,9 @@ class TodayViewModel(
             boundEnabledTargetCount = boundEnabledTargetCount,
             unboundEnabledTargetCount = unboundEnabledTargetCount,
             pendingTargetCount = pendingCount,
-            succeededTodayCount = succeededTodayTargets.size,
+            localSucceededTodayCount = localSucceededCount,
+            officialLitOnlyTodayCount = officialLitOnlyCount,
+            succeededTodayCount = succeededTodayCount,
             issueTodayCount = issueCount,
             nextAutoTriggerAtEpochMs = scheduleEvaluation?.nextWakeAt?.toEpochMilli(),
             authRecheckAtEpochMs = scheduleEvaluation?.authRecheckAt?.toEpochMilli(),
@@ -1127,6 +1177,7 @@ class TodayViewModel(
                         },
                         accountId = accountId,
                         imageStore = container.templateImageStore,
+                        officialSparkLitStore = container.officialSparkLitStore,
                     ) as T
                 }
             }

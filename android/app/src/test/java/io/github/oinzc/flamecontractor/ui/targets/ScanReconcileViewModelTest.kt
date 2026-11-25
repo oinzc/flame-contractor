@@ -2,6 +2,7 @@ package io.github.oinzc.flamecontractor.ui.targets
 
 import android.net.Uri
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.storage.StoredTemplateImage
 import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
@@ -22,6 +23,8 @@ import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.ScanReconciliationCodec
 import io.github.oinzc.flamecontractor.execution.ScanReconciliationSnapshot
 import io.github.oinzc.flamecontractor.execution.ScannedChatCandidate
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindFullLabel
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindShortLabel
 import java.io.File
 import java.io.InputStream
 import java.time.Instant
@@ -267,6 +270,7 @@ class ScanReconcileViewModelTest {
         convId: String? = null,
         alreadyImported: Boolean = false,
         matchDetail: String? = null,
+        sparkLitToday: Boolean? = null,
     ): ScannedChatCandidate = ScannedChatCandidate(
         displayName = name,
         conversationType = type,
@@ -281,6 +285,7 @@ class ScanReconcileViewModelTest {
         alreadyImported = alreadyImported,
         existingTargetId = null,
         preselected = false,
+        sparkLitToday = sparkLitToday,
     )
 
     @Test
@@ -1173,6 +1178,176 @@ class ScanReconcileViewModelTest {
         } finally {
             vmScope.cancel()
         }
+    }
+
+    @Test
+    fun importingAndSyncingCandidatesWritesOfficialSparkLitTodayAndExposesOnTargetItems() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository()
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val litStore = OfficialSparkLitStore()
+            val fixedNow = Instant.parse("2026-11-21T12:00:00Z")
+            val todayStr = "2026-11-21"
+
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                officialSparkLitStore = litStore,
+                nowInstant = { fixedNow },
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-lit-import",
+                    scannedAtEpochMs = fixedNow.toEpochMilli(),
+                    discoveredCount = 3,
+                    sparkCount = 3,
+                    candidates = listOf(
+                        candidate(
+                            name = "亮火知己",
+                            sparkDays = 42,
+                            sparkKind = "soulmate",
+                            sparkLabel = "42天",
+                            sparkLitToday = true,
+                        ),
+                        candidate(
+                            name = "灰火搭子",
+                            sparkDays = 18,
+                            sparkKind = "mate",
+                            sparkLabel = "18天",
+                            sparkLitToday = false,
+                        ),
+                        candidate(
+                            name = "未知挚友",
+                            sparkDays = 9,
+                            sparkKind = "bosom",
+                            sparkLabel = "9天",
+                            sparkLitToday = null,
+                        ),
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+
+            val itemsByName = vm.uiState.value.items.associateBy { it.target.nicknameSnapshot }
+            val litItem = itemsByName["亮火知己"]
+            val grayItem = itemsByName["灰火搭子"]
+            val unknownItem = itemsByName["未知挚友"]
+            assertNotNull(litItem)
+            assertNotNull(grayItem)
+            assertNotNull(unknownItem)
+
+            // 导入立即可见今日亮/灰态，且绝不改写本机 streakDays
+            assertEquals(true, litItem?.officialSparkLitToday)
+            assertEquals("抖音今日已亮", litItem?.todayStatusLabel)
+            assertEquals(0, litItem?.target?.streakDays)
+            assertTrue(litStore.isOfficiallyLitToday(litItem!!.target.id, todayStr))
+
+            assertEquals(false, grayItem?.officialSparkLitToday)
+            assertEquals(false, litStore.getTodayLitState(grayItem!!.target.id, todayStr))
+
+            assertNull(unknownItem?.officialSparkLitToday)
+            assertNull(litStore.getTodayLitState(unknownItem!!.target.id, todayStr))
+
+            // 同步已有好友火花快照时同步更新亮/灰态（灰火转亮火，无火花清除旧态）
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-lit-sync",
+                    scannedAtEpochMs = fixedNow.toEpochMilli() + 60_000L,
+                    discoveredCount = 2,
+                    sparkCount = 1,
+                    candidates = listOf(
+                        candidate(
+                            name = "灰火搭子",
+                            sparkDays = 19,
+                            sparkKind = "mate",
+                            sparkLabel = "19天",
+                            alreadyImported = true,
+                            sparkLitToday = true,
+                        ),
+                        candidate(
+                            name = "亮火知己",
+                            sparkDays = null,
+                            sparkKind = null,
+                            sparkLabel = null,
+                            alreadyImported = true,
+                            sparkLitToday = null,
+                        ),
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            vm.syncExistingOfficialSparks()
+            advanceUntilIdle()
+
+            assertTrue(litStore.isOfficiallyLitToday(grayItem.target.id, todayStr))
+            assertNull(litStore.getTodayLitState(litItem.target.id, todayStr))
+            val refreshedGray = vm.uiState.value.items.first { it.target.id == grayItem.target.id }
+            assertEquals(true, refreshedGray.officialSparkLitToday)
+            assertEquals("抖音今日已亮", refreshedGray.todayStatusLabel)
+
+            // 昨日旧快照导入不得覆盖或清空今日 OfficialSparkLitStore 记录
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-yesterday",
+                    scannedAtEpochMs = fixedNow.minusSeconds(86_400L).toEpochMilli(),
+                    discoveredCount = 1,
+                    sparkCount = 1,
+                    candidates = listOf(
+                        candidate(
+                            name = "昨日新友",
+                            sparkDays = 5,
+                            sparkKind = "couple",
+                            sparkLabel = "5天",
+                            alreadyImported = false,
+                            sparkLitToday = true,
+                        ),
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+
+            val yesterdayTarget = repo.targetsState.value.first { it.nicknameSnapshot == "昨日新友" }
+            assertFalse(litStore.isOfficiallyLitToday(yesterdayTarget.id, todayStr))
+            assertTrue(litStore.isOfficiallyLitToday(grayItem.target.id, todayStr))
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun officialSparkKindLabelsCoverAllSixDouyinTypes() {
+        assertEquals("情侣", officialSparkKindShortLabel("couple"))
+        assertEquals("家人", officialSparkKindShortLabel("family"))
+        assertEquals("普通", officialSparkKindShortLabel("normal"))
+        assertEquals("知己", officialSparkKindShortLabel("soulmate"))
+        assertEquals("搭子", officialSparkKindShortLabel("mate"))
+        assertEquals("挚友", officialSparkKindShortLabel("bosom"))
+        assertNull(officialSparkKindShortLabel("unknown"))
+
+        assertEquals("情侣火花", officialSparkKindFullLabel("couple"))
+        assertEquals("家人火花", officialSparkKindFullLabel("family"))
+        assertEquals("普通火花", officialSparkKindFullLabel("normal"))
+        assertEquals("知己火花", officialSparkKindFullLabel("soulmate"))
+        assertEquals("搭子火花", officialSparkKindFullLabel("mate"))
+        assertEquals("挚友火花", officialSparkKindFullLabel("bosom"))
+        assertEquals("官方火花", officialSparkKindFullLabel(null))
     }
 
     private class FakeTargetsImageStorage(

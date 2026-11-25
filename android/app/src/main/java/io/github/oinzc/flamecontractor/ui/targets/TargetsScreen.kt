@@ -1,6 +1,8 @@
 package io.github.oinzc.flamecontractor.ui.targets
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -100,6 +102,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
+import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameOfficialSparkBadge
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
@@ -109,6 +112,9 @@ import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
 import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindFullLabel
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindShortLabel
+import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
@@ -283,6 +289,7 @@ fun TargetsScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val reducedMotion = rememberReducedMotion()
     val dockBottomClearance = flameDockBottomPadding()
     var selectedTargetId by remember { mutableStateOf<String?>(null) }
     var showScanActionSheet by remember { mutableStateOf(false) }
@@ -378,8 +385,18 @@ fun TargetsScreen(
 
                 AnimatedVisibility(
                     visible = uiState.scanRunning,
-                    enter = fadeIn(tween(180)) + expandVertically(tween(200)),
-                    exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
+                    enter = if (reducedMotion) {
+                        EnterTransition.None
+                    } else {
+                        fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
+                            expandVertically(tween(200, easing = FlameMotionSpec.easeOut))
+                    },
+                    exit = if (reducedMotion) {
+                        ExitTransition.None
+                    } else {
+                        fadeOut(tween(150, easing = FlameMotionSpec.easeOut)) +
+                            shrinkVertically(tween(180, easing = FlameMotionSpec.easeOut))
+                    },
                 ) {
                     ActiveScanProgressBanner(
                         taskLabel = uiState.scanTaskLabel,
@@ -389,8 +406,18 @@ fun TargetsScreen(
 
                 AnimatedVisibility(
                     visible = uiState.hasAvailableSnapshot && !uiState.scanRunning,
-                    enter = fadeIn(tween(180)) + expandVertically(tween(200)),
-                    exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
+                    enter = if (reducedMotion) {
+                        EnterTransition.None
+                    } else {
+                        fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
+                            expandVertically(tween(200, easing = FlameMotionSpec.easeOut))
+                    },
+                    exit = if (reducedMotion) {
+                        ExitTransition.None
+                    } else {
+                        fadeOut(tween(150, easing = FlameMotionSpec.easeOut)) +
+                            shrinkVertically(tween(180, easing = FlameMotionSpec.easeOut))
+                    },
                 ) {
                     RecentScanReconcileShortcut(
                         reconcileState = uiState.reconcileState,
@@ -757,11 +784,13 @@ private fun TargetGritListRow(
                     sparkKind = target.sparkKind,
                     sparkLabel = target.sparkLabel,
                     hasOfficialSpark = item.hasOfficialSpark,
+                    litToday = item.officialSparkLitToday,
+                    compact = true,
                 )
                 item.todayStatusLabel?.let { statusText ->
                     val statusColor = when {
                         item.hasBlockingTodayJob -> semantics.danger
-                        item.hasSucceededTodayJob -> semantics.healthy
+                        item.hasSucceededTodayJob || item.officialSparkLitToday == true -> semantics.healthy
                         !target.enabled -> palette.inkTertiary
                         else -> palette.inkSecondary
                     }
@@ -934,6 +963,7 @@ private fun TargetActionDetailSheet(
                 sparkKind = target.sparkKind,
                 sparkLabel = target.sparkLabel,
                 hasOfficialSpark = item.hasOfficialSpark,
+                litToday = item.officialSparkLitToday,
             )
         },
     ) {
@@ -953,8 +983,16 @@ private fun TargetActionDetailSheet(
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     TargetDetailKeyValueRow(
                         label = "官方火花快照",
-                        value = formatOfficialSparkRowSummary(target, item.hasOfficialSpark),
-                        valueColor = if (item.hasOfficialSpark) semantics.sparkGold else palette.ink,
+                        value = formatOfficialSparkRowSummary(
+                            target = target,
+                            hasOfficialSpark = item.hasOfficialSpark,
+                            officialSparkLitToday = item.officialSparkLitToday,
+                        ),
+                        valueColor = when {
+                            !item.hasOfficialSpark -> palette.ink
+                            item.officialSparkLitToday == false -> palette.inkSecondary
+                            else -> semantics.sparkGold
+                        },
                     )
                     TargetDetailKeyValueRow(
                         label = "本机续火记录",
@@ -986,10 +1024,14 @@ private fun TargetActionDetailSheet(
                     )
                     TargetDetailKeyValueRow(
                         label = "今日状态",
-                        value = item.todayStatusLabel ?: if (target.enabled) "待自动或手动发送" else "已暂停",
+                        value = item.todayStatusLabel ?: when {
+                            !target.enabled -> "已暂停"
+                            item.officialSparkLitToday == false -> "灰火待续 · 待自动或手动发送"
+                            else -> "待自动或手动发送"
+                        },
                         valueColor = when {
                             item.hasBlockingTodayJob -> semantics.danger
-                            item.hasSucceededTodayJob -> semantics.healthy
+                            item.hasSucceededTodayJob || item.officialSparkLitToday == true -> semantics.healthy
                             else -> palette.ink
                         },
                     )
@@ -1649,11 +1691,10 @@ private fun formatTargetSecondaryLocalSummary(
     target: ContractTargetEntity,
     hasOfficialSpark: Boolean,
 ): String {
-    val kindPrefix = when {
-        !hasOfficialSpark -> ""
-        target.sparkKind == "couple" -> "合养火花 · "
-        target.sparkKind == "family" -> "家庭火花 · "
-        else -> ""
+    val kindPrefix = if (hasOfficialSpark) {
+        officialSparkKindShortLabel(target.sparkKind)?.let { "${it}火花 · " }.orEmpty()
+    } else {
+        ""
     }
     val localPart = if (target.streakDays > 0) {
         "本机已续 ${target.streakDays} 天"
@@ -1667,23 +1708,26 @@ private fun formatTargetSecondaryLocalSummary(
 private fun formatOfficialSparkRowSummary(
     target: ContractTargetEntity,
     hasOfficialSpark: Boolean,
+    officialSparkLitToday: Boolean? = null,
 ): String {
     val sparkPart = if (!hasOfficialSpark) {
         val raw = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
         if (raw != null) "官方快照：$raw" else "官方火花：暂无"
     } else {
-        val kindPrefix = when (target.sparkKind) {
-            "couple" -> "合养火花"
-            "family" -> "家庭火花"
-            else -> "官方火花"
-        }
+        val kindPrefix = officialSparkKindFullLabel(target.sparkKind)
         val days = target.sparkDays
         val label = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
-        when {
+        val base = when {
             days != null && days > 0 -> "$kindPrefix ${days}天"
             label != null -> "$kindPrefix · $label"
             else -> kindPrefix
         }
+        val litSuffix = when (officialSparkLitToday) {
+            true -> "（今日已点亮）"
+            false -> "（灰火 · 今日待续）"
+            null -> ""
+        }
+        "$base$litSuffix"
     }
     val scannedAt = target.sparkScannedAt
     return if (scannedAt != null) {

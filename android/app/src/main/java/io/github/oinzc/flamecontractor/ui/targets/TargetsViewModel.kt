@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitRecord
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.storage.TemplateImageStorage
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -29,6 +31,7 @@ import io.github.oinzc.flamecontractor.execution.ScanReconciliationSnapshot
 import io.github.oinzc.flamecontractor.execution.ScannedChatCandidate
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.officialSparkKindShortLabel
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.util.UUID
@@ -42,6 +45,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -290,6 +294,7 @@ data class TargetItemUi(
     val hasBoundIdentity: Boolean,
     val isAmbiguousInLatestScan: Boolean,
     val hasOfficialSpark: Boolean,
+    val officialSparkLitToday: Boolean? = null,
     val todayStatusLabel: String?,
     val hasBlockingTodayJob: Boolean,
     val hasSucceededTodayJob: Boolean,
@@ -413,6 +418,7 @@ class TargetsViewModel(
     private val scheduleGateway: TargetScheduleGateway,
     private val accountId: String = DEFAULT_ACCOUNT_ID,
     private val imageStore: TemplateImageStorage? = null,
+    private val officialSparkLitStore: OfficialSparkLitStore? = OfficialSparkLitStore.globalOrNull(),
     private val nowInstant: () -> Instant = { Instant.now() },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val externalScope: CoroutineScope? = null,
@@ -530,13 +536,17 @@ class TargetsViewModel(
                 )
             }
 
+            val officialSparkLitFlow: Flow<Map<String, OfficialSparkLitRecord>> =
+                officialSparkLitStore?.records ?: flowOf(emptyMap())
+
             combine(
                 dataBundleFlow,
                 executionGateway.liveState,
                 selectionTracker,
                 localControls,
-            ) { data, live, selection, controls ->
-                buildUiState(data, live, selection, controls)
+                officialSparkLitFlow,
+            ) { data, live, selection, controls, officialLitRecords ->
+                buildUiState(data, live, selection, controls, officialLitRecords)
             }.collect { state ->
                 _uiState.value = state
             }
@@ -606,9 +616,11 @@ class TargetsViewModel(
         live: ExecutionLiveState,
         selection: SnapshotSelectionState,
         controls: LocalUiControls,
+        officialLitRecords: Map<String, OfficialSparkLitRecord>,
     ): TargetsUiState {
         val templateById = data.templates.associateBy { it.id }
         val jobsByTarget = data.todayJobs.groupBy { it.targetId }
+        val todayStr = computeBusinessDate(data.account?.timezone)
         val snapshot = data.snapshot
         val snapshotKey = snapshot?.let(::snapshotIdentityKey)
 
@@ -633,6 +645,13 @@ class TargetsViewModel(
                 sparkKind = target.sparkKind,
                 sparkLabel = target.sparkLabel,
             )
+            val officialSparkLitToday = if (hasSpark) {
+                officialLitRecords[target.id]
+                    ?.takeIf { it.businessDate == todayStr }
+                    ?.litToday
+            } else {
+                null
+            }
             val tpl = target.templateId?.let { templateById[it] }
             TargetItemUi(
                 target = target,
@@ -642,7 +661,8 @@ class TargetsViewModel(
                 hasBoundIdentity = hasBound,
                 isAmbiguousInLatestScan = !hasBound && target.nicknameSnapshot in ambiguousNamesInLatestScan,
                 hasOfficialSpark = hasSpark,
-                todayStatusLabel = resolveTodayStatusLabel(targetJobs, target.enabled),
+                officialSparkLitToday = officialSparkLitToday,
+                todayStatusLabel = resolveTodayStatusLabel(targetJobs, target.enabled, officialSparkLitToday),
                 hasBlockingTodayJob = hasBlocking,
                 hasSucceededTodayJob = hasSucceeded,
             )
@@ -666,9 +686,13 @@ class TargetsViewModel(
             if (!matchesFilter) return@filter false
             if (q.isEmpty()) return@filter true
             val t = item.target
+            val kindName = officialSparkKindShortLabel(t.sparkKind)
             t.nicknameSnapshot.contains(q, ignoreCase = true) ||
                 (t.platformHandle?.contains(q, ignoreCase = true) == true) ||
                 (t.sparkLabel?.contains(q, ignoreCase = true) == true) ||
+                (kindName != null && kindName.contains(q, ignoreCase = true)) ||
+                (item.officialSparkLitToday == true && (q == "已亮" || q == "今日已亮" || q == "亮火")) ||
+                (item.officialSparkLitToday == false && (q == "待续" || q == "灰火")) ||
                 (item.templateName?.contains(q, ignoreCase = true) == true) ||
                 (t.conversationType == "group" && (q == "群" || q == "群聊")) ||
                 (t.conversationType != "group" && q == "好友")
@@ -716,9 +740,13 @@ class TargetsViewModel(
         } else {
             candidateUis.filter { ui ->
                 val c = ui.candidate
+                val kindName = officialSparkKindShortLabel(c.sparkKind)
                 c.displayName.contains(rq, ignoreCase = true) ||
                     (c.platformHandle?.contains(rq, ignoreCase = true) == true) ||
                     (c.sparkLabel?.contains(rq, ignoreCase = true) == true) ||
+                    (kindName != null && kindName.contains(rq, ignoreCase = true)) ||
+                    (c.sparkLitToday == true && (rq == "已亮" || rq == "今日已亮" || rq == "亮火")) ||
+                    (c.sparkLitToday == false && (rq == "待续" || rq == "灰火")) ||
                     (c.sparkDays != null && "${c.sparkDays}天".contains(rq, ignoreCase = true)) ||
                     (c.conversationType == "group" && (rq == "群" || rq == "群聊")) ||
                     (ui.isAmbiguous && (rq == "冲突" || rq == "同名"))
@@ -892,10 +920,12 @@ class TargetsViewModel(
             var refreshedCount = 0
             var failedCount = 0
             val newlyImportedKeys = mutableSetOf<String>()
+            val litUpdates = LinkedHashMap<String, Boolean?>()
             var lastError: String? = null
 
             try {
                 withContext(ioDispatcher) {
+                    val account = repository.getAccount(accountId)
                     for (item in selectedItems) {
                         val candidate = item.candidate
                         val cleanName = candidate.displayName.trim()
@@ -985,6 +1015,7 @@ class TargetsViewModel(
                                             scannedAt = nowMs,
                                         )
                                     }
+                                    litUpdates[existing.id] = candidate.sparkLitToday
                                     revivedCount++
                                 } else {
                                     if (safeNickname != existing.nicknameSnapshot ||
@@ -1014,6 +1045,7 @@ class TargetsViewModel(
                                             scannedAt = nowMs,
                                         )
                                     }
+                                    litUpdates[existing.id] = candidate.sparkLitToday
                                     refreshedCount++
                                 }
                             } else {
@@ -1043,6 +1075,7 @@ class TargetsViewModel(
                                         scannedAt = nowMs,
                                     )
                                 }
+                                litUpdates[newId] = candidate.sparkLitToday
                                 createdCount++
                             }
                             newlyImportedKeys.add(item.key)
@@ -1050,6 +1083,13 @@ class TargetsViewModel(
                             failedCount++
                             lastError = "导入出现冲突（${ex.javaClass.simpleName}）"
                         }
+                    }
+                    if (litUpdates.isNotEmpty()) {
+                        recordSnapshotOfficialSparkLitIfToday(
+                            accountTimezone = account?.timezone,
+                            scannedAtEpochMs = reconcile.scannedAtEpochMs,
+                            updates = litUpdates,
+                        )
                     }
                     scheduleGateway.rescheduleAll(nowInstant())
                 }
@@ -1102,8 +1142,10 @@ class TargetsViewModel(
         localControls.update { it.copy(importing = true, reconcileErrorMessage = null) }
         scope.launch {
             var syncedCount = 0
+            val litUpdates = LinkedHashMap<String, Boolean?>()
             try {
                 withContext(ioDispatcher) {
+                    val account = repository.getAccount(accountId)
                     val nowMs = nowInstant().toEpochMilli()
                     for (item in existingCandidates) {
                         val candidate = item.candidate
@@ -1144,6 +1186,7 @@ class TargetsViewModel(
                                 sparkLabel = candidate.sparkLabel,
                                 scannedAt = nowMs,
                             )
+                            litUpdates[target.id] = candidate.sparkLitToday
                         } else {
                             repository.updateOfficialSparkSnapshot(
                                 id = target.id,
@@ -1152,8 +1195,16 @@ class TargetsViewModel(
                                 sparkLabel = "无火花",
                                 scannedAt = nowMs,
                             )
+                            litUpdates[target.id] = null
                         }
                         syncedCount++
+                    }
+                    if (litUpdates.isNotEmpty()) {
+                        recordSnapshotOfficialSparkLitIfToday(
+                            accountTimezone = account?.timezone,
+                            scannedAtEpochMs = reconcile.scannedAtEpochMs,
+                            updates = litUpdates,
+                        )
                     }
                     scheduleGateway.rescheduleAll(nowInstant())
                 }
@@ -1419,6 +1470,7 @@ class TargetsViewModel(
             try {
                 withContext(ioDispatcher) {
                     repository.softDeleteTarget(target.id, nowInstant().toEpochMilli())
+                    officialSparkLitStore?.clearForTarget(target.id)
                     scheduleGateway.rescheduleAll(nowInstant())
                 }
                 localControls.update {
@@ -1566,9 +1618,32 @@ class TargetsViewModel(
         localControls.update { it.copy(feedbackMessage = null) }
     }
 
-    private fun computeBusinessDate(timezone: String?): String {
+    private fun recordSnapshotOfficialSparkLitIfToday(
+        accountTimezone: String?,
+        scannedAtEpochMs: Long?,
+        updates: Map<String, Boolean?>,
+    ) {
+        val store = officialSparkLitStore ?: return
+        if (updates.isEmpty()) return
+        val now = nowInstant()
+        val todayStr = computeBusinessDate(accountTimezone, now)
+        val effectiveScannedAt = scannedAtEpochMs ?: now.toEpochMilli()
+        val snapshotDate = computeBusinessDate(accountTimezone, Instant.ofEpochMilli(effectiveScannedAt))
+        if (snapshotDate != todayStr) return
+        store.recordScanResults(
+            accountId = accountId,
+            businessDate = todayStr,
+            updates = updates,
+            scannedAtEpochMs = effectiveScannedAt,
+        )
+    }
+
+    private fun computeBusinessDate(
+        timezone: String?,
+        instant: Instant = nowInstant(),
+    ): String {
         val zoneId = DailySchedulePlanner.resolveZoneId(timezone)
-        return ZonedDateTime.ofInstant(nowInstant(), zoneId).toLocalDate().toString()
+        return ZonedDateTime.ofInstant(instant, zoneId).toLocalDate().toString()
     }
 
     private fun checkIdentityConflict(
@@ -1594,6 +1669,7 @@ class TargetsViewModel(
     private fun resolveTodayStatusLabel(
         targetJobs: List<SendJobEntity>,
         enabled: Boolean,
+        officialSparkLitToday: Boolean?,
     ): String? {
         val latest = targetJobs.maxByOrNull { it.updatedAt }
         return when {
@@ -1609,6 +1685,7 @@ class TargetsViewModel(
             latest?.status == JobStatus.FAILED_TERMINAL -> "今日终态失败"
             latest?.status == JobStatus.FAILED_RETRYABLE -> "今日待重试"
             !enabled -> "已暂停"
+            officialSparkLitToday == true -> "抖音今日已亮"
             else -> null
         }
     }
@@ -1685,6 +1762,7 @@ class TargetsViewModel(
             scheduleCoordinator: ScheduleCoordinator,
             accountId: String = DEFAULT_ACCOUNT_ID,
             imageStore: TemplateImageStorage = AndroidTemplateImageStore(context),
+            officialSparkLitStore: OfficialSparkLitStore? = OfficialSparkLitStore.globalOrNull(),
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -1694,6 +1772,7 @@ class TargetsViewModel(
                     scheduleGateway = AndroidTargetScheduleGateway(scheduleCoordinator),
                     accountId = accountId,
                     imageStore = imageStore,
+                    officialSparkLitStore = officialSparkLitStore,
                 ) as T
             }
         }

@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -176,11 +177,32 @@ fun FlameStreakBadge(
 }
 
 /**
+ * 抖音 6 种官方火花类型中文简称：
+ * `couple` 情侣 / `family` 家人 / `normal` 普通 / `soulmate` 知己 / `mate` 搭子 / `bosom` 挚友。
+ */
+fun officialSparkKindShortLabel(sparkKind: String?): String? = when (sparkKind?.trim()?.lowercase()) {
+    "couple" -> "情侣"
+    "family" -> "家人"
+    "normal" -> "普通"
+    "soulmate" -> "知己"
+    "mate" -> "搭子"
+    "bosom" -> "挚友"
+    else -> null
+}
+
+/**
+ * 抖音官方火花带「火花」后缀的完整前缀（未命中已知类型时回退「官方火花」）。
+ */
+fun officialSparkKindFullLabel(sparkKind: String?): String =
+    officialSparkKindShortLabel(sparkKind)?.let { "${it}火花" } ?: "官方火花"
+
+/**
  * 抖音官方火花快照展示徽章（与桌面端 `SparkChip` 口径一致，仅作展示，绝不改写本机 `streak_days`）：
- * - 有官方火花且天数 > 0：`🔥 {sparkDays}天`（锁定 `sparkGold`）
- * - 有官方火花文本（如 `重燃中 2/3` / `X天后消失`）：包含「后消失」时使用警告态与时钟图标，否则使用 `sparkGold` 与火焰图标
- * - 明确无火花：柔和中性胶囊「无火花」
- * - 尚未扫描：柔和中性胶囊「待扫描」
+ * - 今日已亮（`litToday == true`）：暖橙亮火徽章（实心亮橙火 + 天数 + 已亮/今日已亮）
+ * - 今日未亮灰火（`litToday == false`）：克制中性灰柔和描边徽章（描边灰火 + 天数 + 待续）
+ * - 今日亮灰未知（`litToday == null`）：保留经典暖橙火花天数徽章
+ * - 有官方火花文本（如 `重燃中 2/3` / `X天后消失`）：包含「后消失」时使用警告态与时钟图标
+ * - 明确无火花 / 尚未扫描：柔和中性胶囊「无火花」/「待扫描」
  */
 @Composable
 fun FlameOfficialSparkBadge(
@@ -189,49 +211,147 @@ fun FlameOfficialSparkBadge(
     sparkLabel: String?,
     hasOfficialSpark: Boolean,
     modifier: Modifier = Modifier,
+    litToday: Boolean? = null,
+    compact: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val cleanLabel = sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+    val kindFullName = officialSparkKindFullLabel(sparkKind)
+    val litContentDesc = when (litToday) {
+        true -> "$kindFullName，今日已点亮"
+        false -> "$kindFullName，今日未点亮（待续）"
+        null -> kindFullName
+    }
 
     when {
         hasOfficialSpark && sparkDays != null && sparkDays > 0 -> {
-            Surface(
-                modifier = modifier,
-                shape = RoundedCornerShape(999.dp),
-                color = semantics.sparkGoldContainer,
-                contentColor = semantics.sparkGold,
-                border = BorderStroke(1.dp, semantics.sparkGoldBorder),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+            if (litToday == false) {
+                Surface(
+                    modifier = modifier,
+                    shape = RoundedCornerShape(999.dp),
+                    color = palette.surfaceSubtle,
+                    contentColor = palette.inkSecondary,
+                    border = BorderStroke(1.dp, palette.hairlineStrong),
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.LocalFireDepartment,
-                        contentDescription = sparkKind,
-                        tint = semantics.sparkGold,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        text = "${sparkDays}天",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.LocalFireDepartment,
+                            contentDescription = litContentDesc,
+                            tint = palette.inkTertiary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "${sparkDays}天",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkSecondary,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        Text(
+                            text = "·",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        Text(
+                            text = "待续",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.inkTertiary,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            } else {
+                Surface(
+                    modifier = modifier,
+                    shape = RoundedCornerShape(999.dp),
+                    color = semantics.sparkGoldContainer,
+                    contentColor = semantics.sparkGold,
+                    border = BorderStroke(1.dp, semantics.sparkGoldBorder),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.LocalFireDepartment,
+                            contentDescription = litContentDesc,
+                            tint = semantics.sparkGold,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "${sparkDays}天",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        if (litToday == true) {
+                            Text(
+                                text = "·",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = semantics.sparkGold.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                            Text(
+                                text = if (compact) "已亮" else "今日已亮",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
                 }
             }
         }
 
         hasOfficialSpark && cleanLabel != null -> {
             val isExpiring = cleanLabel.contains("后消失")
-            val containerColor = if (isExpiring) semantics.warningContainer else semantics.sparkGoldContainer
-            val borderColor = if (isExpiring) semantics.warningBorder else semantics.sparkGoldBorder
-            val fgColor = if (isExpiring) semantics.onWarningContainer else semantics.sparkGold
-            val iconColor = if (isExpiring) semantics.warning else semantics.sparkGold
-            val icon = if (isExpiring) Icons.Outlined.Schedule else Icons.Filled.LocalFireDepartment
+            val isGrayUnlit = !isExpiring && litToday == false
+            val containerColor = when {
+                isExpiring -> semantics.warningContainer
+                isGrayUnlit -> palette.surfaceSubtle
+                else -> semantics.sparkGoldContainer
+            }
+            val borderColor = when {
+                isExpiring -> semantics.warningBorder
+                isGrayUnlit -> palette.hairlineStrong
+                else -> semantics.sparkGoldBorder
+            }
+            val fgColor = when {
+                isExpiring -> semantics.onWarningContainer
+                isGrayUnlit -> palette.inkSecondary
+                else -> semantics.sparkGold
+            }
+            val iconColor = when {
+                isExpiring -> semantics.warning
+                isGrayUnlit -> palette.inkTertiary
+                else -> semantics.sparkGold
+            }
+            val icon = when {
+                isExpiring -> Icons.Outlined.Schedule
+                isGrayUnlit -> Icons.Outlined.LocalFireDepartment
+                else -> Icons.Filled.LocalFireDepartment
+            }
+            val displayLabel = when {
+                isGrayUnlit && !cleanLabel.contains("待续") && !cleanLabel.contains("重燃") ->
+                    "$cleanLabel · 待续"
+                !isExpiring && litToday == true ->
+                    "$cleanLabel · ${if (compact) "已亮" else "今日已亮"}"
+                else -> cleanLabel
+            }
 
             Surface(
                 modifier = modifier,
@@ -247,12 +367,12 @@ fun FlameOfficialSparkBadge(
                 ) {
                     Icon(
                         imageVector = icon,
-                        contentDescription = sparkKind,
+                        contentDescription = litContentDesc,
                         tint = iconColor,
                         modifier = Modifier.size(13.dp),
                     )
                     Text(
-                        text = cleanLabel,
+                        text = displayLabel,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -263,12 +383,13 @@ fun FlameOfficialSparkBadge(
         }
 
         hasOfficialSpark -> {
+            val isGrayUnlit = litToday == false
             Surface(
                 modifier = modifier,
                 shape = RoundedCornerShape(999.dp),
-                color = semantics.sparkGoldContainer,
-                contentColor = semantics.sparkGold,
-                border = BorderStroke(1.dp, semantics.sparkGoldBorder),
+                color = if (isGrayUnlit) palette.surfaceSubtle else semantics.sparkGoldContainer,
+                contentColor = if (isGrayUnlit) palette.inkSecondary else semantics.sparkGold,
+                border = BorderStroke(1.dp, if (isGrayUnlit) palette.hairlineStrong else semantics.sparkGoldBorder),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -276,13 +397,21 @@ fun FlameOfficialSparkBadge(
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.LocalFireDepartment,
-                        contentDescription = sparkKind,
-                        tint = semantics.sparkGold,
+                        imageVector = if (isGrayUnlit) {
+                            Icons.Outlined.LocalFireDepartment
+                        } else {
+                            Icons.Filled.LocalFireDepartment
+                        },
+                        contentDescription = litContentDesc,
+                        tint = if (isGrayUnlit) palette.inkTertiary else semantics.sparkGold,
                         modifier = Modifier.size(13.dp),
                     )
                     Text(
-                        text = "有火花",
+                        text = when (litToday) {
+                            true -> if (compact) "已亮" else "今日已亮"
+                            false -> "待续"
+                            null -> "有火花"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
