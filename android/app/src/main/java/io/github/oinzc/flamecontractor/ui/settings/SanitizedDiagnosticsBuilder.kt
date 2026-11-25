@@ -39,6 +39,9 @@ data class RawDiagnosticsContext(
     val extraRawStrings: List<String> = emptyList(),
     val latestAutoScan: ScanRunEntity? = null,
     val totalAccountCount: Int = 1,
+    val runtimeLogLines: List<String> = emptyList(),
+    val recentSkipSummary: String? = null,
+    val unboundTemplateTargetCount: Int = 0,
 )
 
 data class SanitizedSurvivalSummary(
@@ -93,6 +96,9 @@ data class SanitizedDiagnosticsReport(
     val latestProbe: SanitizedProbeSummary?,
     val textReport: String,
     val jsonReport: String,
+    val unboundTemplateTargetCount: Int = 0,
+    val recentSkipSummary: String? = null,
+    val runtimeLogLines: List<String> = emptyList(),
 )
 
 /**
@@ -140,6 +146,7 @@ object SanitizedDiagnosticsBuilder {
         "recentAttemptStatusCounts",
         "recentAttemptFailureClassCounts",
         "recentAttemptErrorCodeCounts",
+        "unboundTemplateTargetCount",
         "UNKNOWN_REQUIRES_REVIEW",
         "VERIFICATION_REQUIRED",
         "unknown_requires_review",
@@ -175,6 +182,9 @@ object SanitizedDiagnosticsBuilder {
         val activeTargets = input.targets.filter { it.deletedAt == null }
         val activeTargetCount = activeTargets.size
         val enabledTargetCount = activeTargets.count { it.enabled }
+        val unboundTemplateTargetCount = input.unboundTemplateTargetCount.coerceAtLeast(0)
+        val sanitizedSkipSummary = sanitizeRecentSkipSummary(input.recentSkipSummary, sensitiveTokens)
+        val sanitizedRuntimeLogLines = sanitizeRuntimeLogLines(input.runtimeLogLines, sensitiveTokens)
 
         val todayJobStatusCounts = linkedMapOf<String, Int>()
         for (status in JobStatus.entries) {
@@ -256,6 +266,8 @@ object SanitizedDiagnosticsBuilder {
             bark = barkSummary,
             activeTargetCount = activeTargetCount,
             enabledTargetCount = enabledTargetCount,
+            unboundTemplateTargetCount = unboundTemplateTargetCount,
+            recentSkipSummary = sanitizedSkipSummary,
             todayJobCount = input.todayJobs.size,
             todayJobStatusCounts = todayJobStatusCounts,
             recentAttemptCount = input.recentAttempts.size,
@@ -263,6 +275,7 @@ object SanitizedDiagnosticsBuilder {
             failureClassCounts = failureClassCounts,
             errorCodeCounts = errorCodeCounts,
             probeSummary = probeSummary,
+            runtimeLogLines = sanitizedRuntimeLogLines,
         )
 
         val rawJson = renderJsonReport(
@@ -287,6 +300,8 @@ object SanitizedDiagnosticsBuilder {
             bark = barkSummary,
             activeTargetCount = activeTargetCount,
             enabledTargetCount = enabledTargetCount,
+            unboundTemplateTargetCount = unboundTemplateTargetCount,
+            recentSkipSummary = sanitizedSkipSummary,
             todayJobCount = input.todayJobs.size,
             todayJobStatusCounts = todayJobStatusCounts,
             recentAttemptCount = input.recentAttempts.size,
@@ -294,6 +309,7 @@ object SanitizedDiagnosticsBuilder {
             failureClassCounts = failureClassCounts,
             errorCodeCounts = errorCodeCounts,
             probeSummary = probeSummary,
+            runtimeLogLines = sanitizedRuntimeLogLines,
         )
 
         val finalSafeText = redactSensitiveText(rawText, sensitiveTokens)
@@ -330,6 +346,9 @@ object SanitizedDiagnosticsBuilder {
             latestProbe = probeSummary,
             textReport = finalSafeText,
             jsonReport = finalSafeJson,
+            unboundTemplateTargetCount = unboundTemplateTargetCount,
+            recentSkipSummary = sanitizedSkipSummary,
+            runtimeLogLines = sanitizedRuntimeLogLines,
         )
     }
 
@@ -535,6 +554,60 @@ object SanitizedDiagnosticsBuilder {
         }
     }
 
+    private fun sanitizeRecentSkipSummary(
+        raw: String?,
+        sensitiveTokens: Set<String>,
+    ): String? {
+        val cleaned = raw
+            ?.replace(Regex("""[\r\n\t]+"""), " ")
+            ?.replace(Regex("""\s{2,}"""), " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val redacted = redactSensitiveText(cleaned, sensitiveTokens).trim()
+        return redacted.take(240).ifEmpty { null }
+    }
+
+    private fun sanitizeRuntimeLogLines(
+        rawLines: List<String>,
+        sensitiveTokens: Set<String>,
+        maxLines: Int = 120,
+        maxTotalChars: Int = 10_000,
+    ): List<String> {
+        if (rawLines.isEmpty()) return emptyList()
+        val sanitized = rawLines
+            .asSequence()
+            .map { line ->
+                line.replace(Regex("""[\r\n\t]+"""), " ")
+                    .replace(Regex("""\s{2,}"""), " ")
+                    .trim()
+            }
+            .filter { it.isNotEmpty() }
+            .toList()
+            .takeLast(maxLines)
+            .map { line ->
+                val redacted = redactSensitiveText(line, sensitiveTokens).trim()
+                if (redacted.length <= 320) redacted else redacted.take(319).trimEnd() + "…"
+            }
+            .filter { it.isNotEmpty() }
+
+        if (sanitized.isEmpty()) return emptyList()
+        val keptReversed = ArrayList<String>(sanitized.size)
+        var totalChars = 0
+        for (i in sanitized.lastIndex downTo 0) {
+            val line = sanitized[i]
+            val extra = if (keptReversed.isEmpty()) line.length else line.length + 1
+            if (totalChars + extra > maxTotalChars) break
+            keptReversed.add(line)
+            totalChars += extra
+        }
+        if (keptReversed.isEmpty()) {
+            return listOf(sanitized.last().takeLast(maxTotalChars))
+        }
+        keptReversed.reverse()
+        return keptReversed
+    }
+
     private fun formatIso(epochMs: Long): String =
         ISO_FORMATTER.format(Instant.ofEpochMilli(epochMs).atOffset(ZoneOffset.UTC))
 
@@ -560,6 +633,8 @@ object SanitizedDiagnosticsBuilder {
         bark: SanitizedBarkSummary,
         activeTargetCount: Int,
         enabledTargetCount: Int,
+        unboundTemplateTargetCount: Int,
+        recentSkipSummary: String?,
         todayJobCount: Int,
         todayJobStatusCounts: Map<String, Int>,
         recentAttemptCount: Int,
@@ -567,6 +642,7 @@ object SanitizedDiagnosticsBuilder {
         failureClassCounts: Map<String, Int>,
         errorCodeCounts: Map<String, Int>,
         probeSummary: SanitizedProbeSummary?,
+        runtimeLogLines: List<String>,
     ): String = buildString {
         appendLine("=== 抖音续火工脱敏诊断报告 ===")
         appendLine("生成时间 (UTC): $generatedAtIso")
@@ -595,6 +671,10 @@ object SanitizedDiagnosticsBuilder {
         appendLine()
         appendLine("[目标与任务统计]")
         appendLine("活跃对象总数: $activeTargetCount | 已启用对象数: $enabledTargetCount")
+        appendLine("未绑定模板的启用好友数: $unboundTemplateTargetCount")
+        if (!recentSkipSummary.isNullOrBlank()) {
+            appendLine("最近跳过摘要: $recentSkipSummary")
+        }
         appendLine("今日任务总数: $todayJobCount")
         appendLine("今日任务状态分布: ${formatCounts(todayJobStatusCounts)}")
         appendLine("近期发送尝试总计: $recentAttemptCount")
@@ -612,6 +692,15 @@ object SanitizedDiagnosticsBuilder {
             appendLine(
                 "未命中键: ${if (probeSummary.failedKeys.isEmpty()) "无" else probeSummary.failedKeys.joinToString(", ")}",
             )
+        }
+        appendLine()
+        appendLine("[近期脱敏运行轨迹]")
+        if (runtimeLogLines.isEmpty()) {
+            appendLine("无")
+        } else {
+            for (line in runtimeLogLines) {
+                appendLine(line)
+            }
         }
     }.trimEnd()
 
@@ -644,6 +733,8 @@ object SanitizedDiagnosticsBuilder {
         bark: SanitizedBarkSummary,
         activeTargetCount: Int,
         enabledTargetCount: Int,
+        unboundTemplateTargetCount: Int,
+        recentSkipSummary: String?,
         todayJobCount: Int,
         todayJobStatusCounts: Map<String, Int>,
         recentAttemptCount: Int,
@@ -651,6 +742,7 @@ object SanitizedDiagnosticsBuilder {
         failureClassCounts: Map<String, Int>,
         errorCodeCounts: Map<String, Int>,
         probeSummary: SanitizedProbeSummary?,
+        runtimeLogLines: List<String>,
     ): String {
         val sb = StringBuilder()
         sb.append("{\n")
@@ -686,6 +778,8 @@ object SanitizedDiagnosticsBuilder {
 
         appendNumberField(sb, 1, "activeTargetCount", activeTargetCount, comma = true)
         appendNumberField(sb, 1, "enabledTargetCount", enabledTargetCount, comma = true)
+        appendNumberField(sb, 1, "unboundTemplateTargetCount", unboundTemplateTargetCount, comma = true)
+        appendNullableStringField(sb, 1, "recentSkipSummary", recentSkipSummary, comma = true)
         appendNumberField(sb, 1, "todayJobCount", todayJobCount, comma = true)
         appendIntMapField(sb, 1, "todayJobStatusCounts", todayJobStatusCounts, comma = true)
         appendNumberField(sb, 1, "recentAttemptCount", recentAttemptCount, comma = true)
@@ -695,7 +789,7 @@ object SanitizedDiagnosticsBuilder {
 
         sb.append("  \"latestProbe\": ")
         if (probeSummary == null) {
-            sb.append("null\n")
+            sb.append("null,\n")
         } else {
             sb.append("{\n")
             appendField(sb, 2, "checkedAtIso", probeSummary.checkedAtIso, comma = true)
@@ -704,8 +798,9 @@ object SanitizedDiagnosticsBuilder {
             appendNumberField(sb, 2, "passedItemCount", probeSummary.passedItemCount, comma = true)
             appendNumberField(sb, 2, "totalItemCount", probeSummary.totalItemCount, comma = true)
             appendStringListField(sb, 2, "failedKeys", probeSummary.failedKeys, comma = false)
-            sb.append("  }\n")
+            sb.append("  },\n")
         }
+        appendStringListField(sb, 1, "runtimeLogLines", runtimeLogLines, comma = false)
         sb.append("}")
         return sb.toString()
     }

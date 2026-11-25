@@ -900,11 +900,14 @@ object DouyinJsScripts {
         val convItemLit = jsStringLiteral(bundle.conversationItem)
         return """
             (function () {
+              $DOM_HELPERS_JS
               var href = String(window.location && window.location.href ? window.location.href : '');
               var host = String(window.location && window.location.hostname ? window.location.hostname : '').toLowerCase();
               var pathname = String(window.location && window.location.pathname ? window.location.pathname : '');
               var isBlankPage = !href || href === 'about:blank';
               var isErrorPage = href.indexOf('chrome-error://') === 0;
+              var isChatRoute = pathname.indexOf('/chat') === 0;
+              var pageTitleLen = String(document.title || '').trim().length;
               var bodyText = '';
               try { bodyText = String(document.body ? (document.body.innerText || '') : ''); } catch (_) {}
 
@@ -915,10 +918,65 @@ object DouyinJsScripts {
                 conversationCount = document.querySelectorAll($convItemLit).length;
               } catch (_) {}
 
-              var verificationRequired = bodyText.indexOf('身份验证') !== -1 ||
+              var verifyIframeSelectors = [
+                'iframe[src*="verify"]',
+                'iframe[src*="captcha"]',
+                'iframe[src*="bdturing"]',
+                'iframe[src*="rmc.bytedance"]'
+              ];
+              var verifyDomSelectors = [
+                '[id*="captcha"]',
+                '[class*="captcha_verify"]',
+                '[class*="secsdk-captcha"]',
+                '[class*="bdturing"]'
+              ];
+              var hasVisibleVerifyIframe = false;
+              for (var vi = 0; vi < verifyIframeSelectors.length; vi++) {
+                try {
+                  var iframes = document.querySelectorAll(verifyIframeSelectors[vi]);
+                  for (var vj = 0; vj < iframes.length; vj++) {
+                    var ifr = iframes[vj];
+                    if (!__flameIsVisible(ifr)) continue;
+                    var ir = ifr.getBoundingClientRect ? ifr.getBoundingClientRect() : null;
+                    if (ir && ir.width >= 40 && ir.height >= 40) {
+                      hasVisibleVerifyIframe = true;
+                      break;
+                    }
+                  }
+                  if (hasVisibleVerifyIframe) break;
+                } catch (_) {}
+              }
+              var hasVisibleVerifyDom = false;
+              if (!hasVisibleVerifyIframe) {
+                for (var vd = 0; vd < verifyDomSelectors.length; vd++) {
+                  try {
+                    var nodes = document.querySelectorAll(verifyDomSelectors[vd]);
+                    for (var vn = 0; vn < nodes.length; vn++) {
+                      var node = nodes[vn];
+                      if (!__flameIsVisible(node)) continue;
+                      var nr = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+                      if (nr && nr.width >= 80 && nr.height >= 80) {
+                        hasVisibleVerifyDom = true;
+                        break;
+                      }
+                    }
+                    if (hasVisibleVerifyDom) break;
+                  } catch (_) {}
+                }
+              }
+              var hasVerifyText = bodyText.indexOf('身份验证') !== -1 ||
                 bodyText.indexOf('安全验证') !== -1 ||
                 bodyText.indexOf('请完成下列验证') !== -1 ||
-                bodyText.indexOf('向右滑动') !== -1;
+                bodyText.indexOf('向右滑动') !== -1 ||
+                bodyText.indexOf('拖动滑块') !== -1 ||
+                bodyText.indexOf('请先完成验证') !== -1 ||
+                bodyText.indexOf('滑动拼图') !== -1 ||
+                bodyText.indexOf('按顺序点击') !== -1;
+
+              var verificationSignal = hasVisibleVerifyIframe
+                ? 'iframe_verify'
+                : (hasVisibleVerifyDom ? 'dom_captcha' : (hasVerifyText ? 'text_verify' : 'none'));
+              var verificationRequired = verificationSignal !== 'none';
 
               var qrFound = false;
               var qrImageDataUrl = null;
@@ -989,9 +1047,12 @@ object DouyinJsScripts {
                 isDouyinHost: host.indexOf('douyin.com') !== -1,
                 isBlankPage: isBlankPage,
                 isErrorPage: isErrorPage,
+                isChatRoute: isChatRoute,
+                pageTitleLen: pageTitleLen,
                 readyState: String(document.readyState || ''),
                 loggedIn: loggedIn,
                 verificationRequired: verificationRequired,
+                verificationSignal: verificationSignal,
                 hasQrOrLoginSignal: hasQrOrLoginSignal,
                 qrImageDataUrl: qrImageDataUrl,
                 qrDomExpired: qrDomExpired,
@@ -1089,6 +1150,7 @@ object DouyinJsScripts {
                 var streakDays = null;
                 var streakKind = null;
                 var streakLabel = null;
+                var streakIconVariant = null;
                 var streakEl = row.querySelector($streakLit);
                 if (streakEl) {
                   var daysEl = streakEl.querySelector($streakDaysLit);
@@ -1104,6 +1166,17 @@ object DouyinJsScripts {
                     if (src.indexOf('/couple/') !== -1) streakKind = 'couple';
                     else if (src.indexOf('/family/') !== -1) streakKind = 'family';
                     else if (src.indexOf('/normal/') !== -1) streakKind = 'normal';
+                    try {
+                      var cleanSrc = src.split(/[?#]/, 1)[0];
+                      var marker = 'flame_icon/';
+                      var mIdx = cleanSrc.indexOf(marker);
+                      if (mIdx !== -1) {
+                        var tail = cleanSrc.slice(mIdx + marker.length).replace(/^\/+/, '');
+                        if (tail && tail.length <= 80 && tail.indexOf('..') === -1 && /^[a-zA-Z0-9._\/-]+$/.test(tail)) {
+                          streakIconVariant = tail;
+                        }
+                      }
+                    } catch (_) {}
                   }
                 }
 
@@ -1129,6 +1202,7 @@ object DouyinJsScripts {
                   streakDays: streakDays,
                   streakKind: streakKind,
                   streakLabel: streakLabel,
+                  streakIconVariant: streakIconVariant,
                   hasSparkInPreview: hasSparkInPreview
                 });
               }
@@ -1243,11 +1317,13 @@ object DouyinJsScripts {
               }
 
               var matches = [];
+              var visibleRows = 0;
               var searchRows = [];
               try { searchRows = Array.from(document.querySelectorAll($searchResultItemLit)); } catch (_) {}
               for (var s = 0; s < searchRows.length; s++) {
                 var sr = searchRows[s];
                 if (!__flameIsVisible(sr)) continue;
+                visibleRows++;
                 if (titleOf(sr) === targetName) {
                   var btn = null;
                   try { btn = sr.querySelector($searchChatBtnLit); } catch (_) {}
@@ -1261,6 +1337,7 @@ object DouyinJsScripts {
                 for (var c = 0; c < convRows.length; c++) {
                   var cr = convRows[c];
                   if (!__flameIsVisible(cr)) continue;
+                  visibleRows++;
                   if (titleOf(cr) === targetName) {
                     matches.push(cr);
                   }
@@ -1285,9 +1362,9 @@ object DouyinJsScripts {
 
               if (wantIdx >= 0 && wantIdx < matches.length) {
                 __flameDispatchClick(matches[wantIdx]);
-                return { clicked: true, totalMatches: matches.length, candidateIndex: wantIdx };
+                return { clicked: true, totalMatches: matches.length, visibleRows: visibleRows, candidateIndex: wantIdx };
               }
-              return { clicked: false, totalMatches: matches.length, candidateIndex: wantIdx };
+              return { clicked: false, totalMatches: matches.length, visibleRows: visibleRows, candidateIndex: wantIdx };
             })();
         """.trimIndent()
     }
@@ -1307,9 +1384,11 @@ object DouyinJsScripts {
               var wantIdx = $candidateIndex;
               var rows = Array.from(document.querySelectorAll($convItemLit));
               var matches = [];
+              var visibleRows = 0;
               for (var i = 0; i < rows.length; i++) {
                 var row = rows[i];
                 if (!__flameIsVisible(row)) continue;
+                visibleRows++;
                 var titleEl = row.querySelector($convTitleLit);
                 var t = titleEl
                   ? __flameFirstNonEmptyLine(titleEl.innerText || titleEl.textContent || '')
@@ -1322,9 +1401,9 @@ object DouyinJsScripts {
                 var targetRow = matches[wantIdx];
                 var clickNode = targetRow.querySelector($convTitleLit) || targetRow;
                 __flameDispatchClick(clickNode);
-                return { clicked: true, totalMatches: matches.length };
+                return { clicked: true, totalMatches: matches.length, visibleRows: visibleRows };
               }
-              return { clicked: false, totalMatches: matches.length };
+              return { clicked: false, totalMatches: matches.length, visibleRows: visibleRows };
             })();
         """.trimIndent()
     }

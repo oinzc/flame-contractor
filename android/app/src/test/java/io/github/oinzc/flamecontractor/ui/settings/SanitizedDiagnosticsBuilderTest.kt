@@ -457,4 +457,58 @@ class SanitizedDiagnosticsBuilderTest {
         assertFalse(redactedDirect.contains("a1.jpg"))
         assertFalse(redactedDirect.contains("x.png"))
     }
+
+    @Test
+    fun includesRuntimeLogsUnboundCountAndSkipSummaryWithFinalRedactionGate() {
+        val leakNickname = "密友隐私名ABC"
+        val leakBarkKey = "SecretBarkKeyInLog9988"
+        val leakSecUid = "MS4wLjABAAAA_LogLeakUid_7766"
+
+        val report = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.1",
+                appVersionCode = 61L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                webViewVersion = "135.0.0.0",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                targets = listOf(
+                    ContractTargetEntity(
+                        id = "t-unbound",
+                        nicknameSnapshot = leakNickname,
+                        enabled = true,
+                        templateId = null,
+                    ),
+                ),
+                unboundTemplateTargetCount = 3,
+                recentSkipSummary = "3 位未绑定可用模板，请到「好友」页绑定（含误传入 $leakNickname）",
+                runtimeLogLines = listOf(
+                    "2026-11-25T08:15:02Z [WARN] [SEND] target_lookup_miss visibleRows=12 scrollSteps=6 searchHit=false",
+                    "2026-11-25T08:15:10Z [WARN] [AUTH] bad_line $leakNickname $leakSecUid https://api.day.app/$leakBarkKey",
+                ),
+            ),
+        )
+
+        assertEquals(3, report.unboundTemplateTargetCount)
+        assertEquals(2, report.runtimeLogLines.size)
+        assertTrue(report.textReport.contains("未绑定模板的启用好友数: 3"))
+        assertTrue(report.textReport.contains("最近跳过摘要:"))
+        assertTrue(report.textReport.contains("[近期脱敏运行轨迹]"))
+        assertTrue(report.textReport.contains("target_lookup_miss visibleRows=12 scrollSteps=6 searchHit=false"))
+
+        val parsedJson = ExecJson.parseObject(report.jsonReport)
+        assertEquals(3, (parsedJson["unboundTemplateTargetCount"] as Number).toInt())
+        @Suppress("UNCHECKED_CAST")
+        val jsonLogs = parsedJson["runtimeLogLines"] as List<String>
+        assertEquals(2, jsonLogs.size)
+
+        for (output in listOf(report.textReport, report.jsonReport)) {
+            assertFalse("Key unboundTemplateTargetCount must not be redacted", output.contains("[REDACTED_TOKEN]"))
+            assertFalse(output.contains(leakNickname))
+            assertFalse(output.contains(leakBarkKey))
+            assertFalse(output.contains(leakSecUid))
+        }
+    }
 }

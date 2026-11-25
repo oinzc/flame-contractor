@@ -24,6 +24,7 @@ object SendGuard {
 
     const val DAILY_SLOT_ID = "daily"
     const val MANUAL_SLOT_PREFIX = "manual:"
+    const val MANUAL_BATCH_SLOT_PREFIX = "manual_batch:"
     const val RETRY_MAX_COUNT = 2
 
     private val BLOCKING_STATUSES: Set<JobStatus> = setOf(
@@ -41,11 +42,23 @@ object SendGuard {
 
     fun manualSlotId(epochMs: Long): String = "$MANUAL_SLOT_PREFIX$epochMs"
 
+    fun manualBatchSlotId(epochMs: Long): String = "$MANUAL_BATCH_SLOT_PREFIX$epochMs"
+
     fun hasBlockingUnknownOrInflight(todayJobs: List<SendJobEntity>): Boolean =
         todayJobs.any { it.status in BLOCKING_STATUSES }
 
+    fun canDispatchManualBatchForceAll(todayJobs: List<SendJobEntity>): Boolean =
+        !hasBlockingUnknownOrInflight(todayJobs)
+
     fun canDispatchDaily(todayJobs: List<SendJobEntity>): Boolean {
         if (hasBlockingUnknownOrInflight(todayJobs)) return false
+        if (todayJobs.any {
+                it.messageSlotId.startsWith(MANUAL_BATCH_SLOT_PREFIX) &&
+                    it.status == JobStatus.SUCCEEDED
+            }
+        ) {
+            return false
+        }
         val dailyJobs = todayJobs.filter { it.messageSlotId == DAILY_SLOT_ID }
         if (dailyJobs.isEmpty()) return true
         return dailyJobs.all { job ->

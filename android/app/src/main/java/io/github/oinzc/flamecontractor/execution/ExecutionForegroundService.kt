@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import io.github.oinzc.flamecontractor.app.FlameApplication
+import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
@@ -112,6 +113,19 @@ class ExecutionForegroundService : Service() {
 
     @Volatile
     private var activeBatchOutcomes: List<BatchTargetOutcome> = emptyList()
+
+    private val batchSlotLock = Any()
+    private var lastManualBatchEpochMs: Long = 0L
+
+    private fun nextManualBatchSlotId(): String {
+        val epochMs = synchronized(batchSlotLock) {
+            val now = System.currentTimeMillis()
+            val unique = if (now > lastManualBatchEpochMs) now else lastManualBatchEpochMs + 1L
+            lastManualBatchEpochMs = unique
+            unique
+        }
+        return SendGuard.manualBatchSlotId(epochMs)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -239,10 +253,13 @@ class ExecutionForegroundService : Service() {
 
             when (action) {
                 ExecutionDispatchContract.ACTION_RUN_SCHEDULED ->
-                    runBatchCommand(accountId = accountId, scheduledOnly = true, reason = reason)
+                    runBatchCommand(accountId = accountId, scheduledOnly = true, forceAll = false, reason = reason)
 
                 ACTION_RUN_MANUAL_BATCH ->
-                    runBatchCommand(accountId = accountId, scheduledOnly = false, reason = reason)
+                    runBatchCommand(accountId = accountId, scheduledOnly = false, forceAll = false, reason = reason)
+
+                ACTION_MANUAL_BATCH_FORCE_ALL ->
+                    runBatchCommand(accountId = accountId, scheduledOnly = false, forceAll = true, reason = reason)
 
                 ExecutionDispatchContract.ACTION_AUTH_RECHECK ->
                     runAuthRecheckCommand(accountId = accountId)
@@ -275,12 +292,21 @@ class ExecutionForegroundService : Service() {
             throw ce
         } catch (exc: Throwable) {
             Log.e(TAG, "Command failed action=$action type=${exc.javaClass.simpleName}")
+            val errSummary = "执行任务发生异常（${exc.javaClass.simpleName}）"
+            DiagnosticLogStore.recordGlobal(
+                category = "SERVICE",
+                event = "cmd_error",
+                level = "ERROR",
+                detail = "action=${action.substringAfterLast('.')} ex=${exc.javaClass.simpleName}",
+                accountTag = DiagnosticLogStore.safeAccountTag(accountId),
+            )
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
                     activeAccountId = null,
                     currentTask = null,
-                    lastMessage = "执行任务发生异常（${exc.javaClass.simpleName}）",
+                    lastMessage = errSummary,
+                    lastErrorSummary = errSummary,
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
                 )
             }
@@ -309,16 +335,33 @@ class ExecutionForegroundService : Service() {
     private suspend fun runBatchCommand(
         accountId: String,
         scheduledOnly: Boolean,
+        forceAll: Boolean = false,
         reason: String,
     ) {
         val lockTimeout = if (scheduledOnly) SCHEDULED_LOCK_WAIT_MS else MANUAL_LOCK_WAIT_MS
-        val owner = if (scheduledOnly) "scheduled_batch" else "manual_batch"
+        val owner = when {
+            scheduledOnly -> "scheduled_batch"
+            forceAll -> "manual_batch_force_all"
+            else -> "manual_batch"
+        }
 
         val acquired = ExecutionMutex.tryWithLock(owner = owner, timeoutMs = lockTimeout) {
-            executeBatchLocked(accountId = accountId, scheduledOnly = scheduledOnly, reason = reason)
+            executeBatchLocked(
+                accountId = accountId,
+                scheduledOnly = scheduledOnly,
+                forceAll = forceAll,
+                reason = reason,
+            )
         }
         if (acquired == null) {
-            Log.i(TAG, "Batch skipped due to ExecutionMutex busy scheduled=$scheduledOnly")
+            Log.i(TAG, "Batch skipped due to ExecutionMutex busy scheduled=$scheduledOnly forceAll=$forceAll")
+            DiagnosticLogStore.recordGlobal(
+                category = "BATCH",
+                event = "batch_mutex_busy",
+                level = "WARN",
+                detail = "owner=$owner",
+                accountTag = DiagnosticLogStore.safeAccountTag(accountId),
+            )
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
@@ -338,17 +381,35 @@ class ExecutionForegroundService : Service() {
     private suspend fun executeBatchLocked(
         accountId: String,
         scheduledOnly: Boolean,
+        forceAll: Boolean = false,
         reason: String,
     ) {
+        val accountTag = DiagnosticLogStore.safeAccountTag(accountId)
+        val batchMode = when {
+            scheduledOnly -> BATCH_MODE_SCHEDULED
+            forceAll -> BATCH_MODE_MANUAL_FORCE_ALL
+            else -> BATCH_MODE_MANUAL_MAKEUP
+        }
         val account = database.accountDao().getAccount(accountId) ?: return
         if (!account.enabled || account.status != AccountStatus.HEALTHY) {
+            DiagnosticLogStore.recordGlobal(
+                category = "BATCH",
+                event = "batch_acct_gate",
+                level = "WARN",
+                detail = "mode=$batchMode status=${account.status.wireValue} enabled=${account.enabled}",
+                accountTag = accountTag,
+            )
             if (!scheduledOnly) {
+                val msg = "账号当前处于非健康/暂停状态，请先按首页提示恢复后再发"
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
                         activeAccountId = null,
                         currentTask = null,
-                        lastMessage = "账号当前处于非健康/暂停状态，请先按首页提示恢复后再发",
+                        lastMessage = msg,
+                        lastSkipSummary = null,
+                        lastErrorSummary = msg,
+                        lastBatchMode = batchMode,
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
                     )
                 }
@@ -365,31 +426,102 @@ class ExecutionForegroundService : Service() {
         val todayJobs = database.sendJobDao().listJobsForDate(accountId, todayStr)
         val jobsByTarget = todayJobs.groupBy { it.targetId }
 
-        val targetsToRun: List<ContractTargetEntity> = if (scheduledOnly) {
-            val networkDeferCountToday = countNetworkDefers(todayJobs)
-            val evaluation = DailySchedulePlanner.evaluateNow(
-                now = now,
-                account = account,
-                targets = enabledTargets,
-                todayJobs = todayJobs,
-                zoneId = zoneId,
-                networkDeferCountToday = networkDeferCountToday,
-            )
-            evaluation.dueTargets.map { it.target }
-        } else {
-            enabledTargets.filter { target ->
-                SendGuard.canDispatchDaily(jobsByTarget[target.id].orEmpty())
+        val skipReasonCounts = LinkedHashMap<String, Int>()
+        val errorReasonCounts = LinkedHashMap<String, Int>()
+        var preSkippedCount = 0
+
+        val targetsToRun: List<ContractTargetEntity> = when {
+            scheduledOnly -> {
+                val networkDeferCountToday = countNetworkDefers(todayJobs)
+                val evaluation = DailySchedulePlanner.evaluateNow(
+                    now = now,
+                    account = account,
+                    targets = enabledTargets,
+                    todayJobs = todayJobs,
+                    zoneId = zoneId,
+                    networkDeferCountToday = networkDeferCountToday,
+                )
+                evaluation.dueTargets.map { it.target }
+            }
+
+            forceAll -> {
+                val runnable = ArrayList<ContractTargetEntity>(enabledTargets.size)
+                for (target in enabledTargets) {
+                    val targetJobs = jobsByTarget[target.id].orEmpty()
+                    if (SendGuard.canDispatchManualBatchForceAll(targetJobs)) {
+                        runnable.add(target)
+                    } else {
+                        preSkippedCount++
+                        ExecutionServiceStoreOps.incrementReasonCount(
+                            skipReasonCounts,
+                            ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW,
+                        )
+                        DiagnosticLogStore.recordGlobal(
+                            category = "SEND",
+                            event = "target_skip",
+                            level = "WARN",
+                            detail = "mode=$batchMode reason=blocked_review",
+                            accountTag = accountTag,
+                        )
+                    }
+                }
+                runnable
+            }
+
+            else -> {
+                enabledTargets.filter { target ->
+                    SendGuard.canDispatchDaily(jobsByTarget[target.id].orEmpty())
+                }
             }
         }
 
         if (targetsToRun.isEmpty()) {
             if (!scheduledOnly) {
+                val hasBlocking = enabledTargets.any { target ->
+                    SendGuard.hasBlockingUnknownOrInflight(jobsByTarget[target.id].orEmpty())
+                }
+                val allSucceededToday = enabledTargets.isNotEmpty() && enabledTargets.all { target ->
+                    jobsByTarget[target.id].orEmpty().any { it.status == JobStatus.SUCCEEDED }
+                }
+                val preSkipSummary = ExecutionServiceStoreOps.formatSkipSummary(skipReasonCounts)
+                val noopMessage = when {
+                    enabledTargets.isEmpty() ->
+                        "暂无启用的续火好友，请先到「好友」页导入或启用"
+
+                    forceAll && preSkippedCount > 0 ->
+                        ExecutionServiceStoreOps.formatBatchSummary(
+                            succeededCount = 0,
+                            skippedCount = preSkippedCount,
+                            failedCount = 0,
+                            unknownCount = 0,
+                            skipSummary = preSkipSummary,
+                        )
+
+                    !forceAll && !hasBlocking && allSucceededToday ->
+                        "今日启用好友已全部续过火，无需补发"
+
+                    hasBlocking ->
+                        "存在待核对或进行中任务，请先在首页核对结果后再发"
+
+                    else ->
+                        "今日启用好友已全部处理或存在待核对记录，无需补发"
+                }
+                DiagnosticLogStore.recordGlobal(
+                    category = "BATCH",
+                    event = "batch_noop",
+                    level = if (hasBlocking) "WARN" else "INFO",
+                    detail = "mode=$batchMode enabled=${enabledTargets.size} blocking=$hasBlocking allOk=$allSucceededToday preSkip=$preSkippedCount",
+                    accountTag = accountTag,
+                )
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
                         activeAccountId = null,
                         currentTask = null,
-                        lastMessage = "今日所有启用好友已完成续火，或存在待核对记录需人工终裁",
+                        lastMessage = noopMessage,
+                        lastSkipSummary = preSkipSummary ?: if (hasBlocking) ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW else null,
+                        lastErrorSummary = null,
+                        lastBatchMode = batchMode,
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
                     )
                 }
@@ -397,13 +529,37 @@ class ExecutionForegroundService : Service() {
             return
         }
 
-        val taskLabel = if (scheduledOnly) "正在执行今日自动续火…" else "正在执行今日续火…"
-        updateProgressState(taskLabel, 0, targetsToRun.size, accountId)
+        val batchSlotId = if (forceAll) nextManualBatchSlotId() else SendGuard.DAILY_SLOT_ID
+        val taskLabel = when {
+            scheduledOnly -> "正在执行今日自动续火…"
+            forceAll -> "正在执行今日续火…"
+            else -> "正在补发今日未发好友…"
+        }
+        DiagnosticLogStore.recordGlobal(
+            category = "BATCH",
+            event = "batch_start",
+            level = "INFO",
+            detail = "mode=$batchMode enabled=${enabledTargets.size} run=${targetsToRun.size} preSkip=$preSkippedCount",
+            accountTag = accountTag,
+        )
+        ExecutionRuntimeBus.update {
+            it.copy(
+                running = true,
+                activeAccountId = accountId,
+                currentTask = taskLabel,
+                progressCurrent = 0,
+                progressTotal = targetsToRun.size,
+                lastSkipSummary = null,
+                lastErrorSummary = null,
+                lastBatchMode = batchMode,
+                lastUpdatedAtEpochMs = System.currentTimeMillis(),
+            )
+        }
         promoteForeground("正在检查抖音登录态…")
 
         val outcomes = mutableListOf<BatchTargetOutcome>()
         var succeededCount = 0
-        var skippedCount = 0
+        var skippedCount = preSkippedCount
         var failedCount = 0
         var unknownCount = 0
         var abortedByAuth = false
@@ -441,6 +597,13 @@ class ExecutionForegroundService : Service() {
                 )
                 if (switchDecision == SwitchDecision.REQUIRE_USER_CHOICE) {
                     abortedByAuth = true
+                    DiagnosticLogStore.recordGlobal(
+                        category = "AUTH",
+                        event = "acct_switch_gate",
+                        level = "WARN",
+                        detail = "mode=$batchMode action=paused",
+                        accountTag = accountTag,
+                    )
                     database.accountDao().update(
                         authTransition.account.copy(
                             status = AccountStatus.PAUSED,
@@ -448,13 +611,16 @@ class ExecutionForegroundService : Service() {
                         ),
                     )
                     ScheduleCoordinator(this@ExecutionForegroundService, database).rescheduleAll()
+                    val switchMsg = "检测到当前登录的抖音号与历史名单不一致，已暂停发送等待确认"
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
                             activeAccountId = null,
                             currentTask = null,
                             needsLoginChoicePrompt = true,
-                            lastMessage = "检测到当前登录的抖音号与历史名单不一致，已暂停发送等待确认",
+                            lastMessage = switchMsg,
+                            lastErrorSummary = switchMsg,
+                            lastBatchMode = batchMode,
                             lastUpdatedAtEpochMs = System.currentTimeMillis(),
                         )
                     }
@@ -511,35 +677,70 @@ class ExecutionForegroundService : Service() {
                         account = runningAccount,
                         target = target,
                         businessDate = todayStr,
-                        slotId = SendGuard.DAILY_SLOT_ID,
+                        slotId = batchSlotId,
                         zoneId = zoneId,
                         overrideText = null,
                         isVisibleActivity = false,
                     )
 
                     when (outcome.outcomeType) {
-                        TargetRunKind.SKIPPED -> skippedCount++
+                        TargetRunKind.SKIPPED -> {
+                            skippedCount++
+                            val normalizedReason = ExecutionServiceStoreOps.normalizeSkipReason(outcome.message)
+                            ExecutionServiceStoreOps.incrementReasonCount(skipReasonCounts, normalizedReason)
+                            DiagnosticLogStore.recordGlobal(
+                                category = "SEND",
+                                event = "target_skip",
+                                level = "WARN",
+                                detail = "mode=$batchMode reason=${outcome.skipCode.ifBlank { "other" }}",
+                                accountTag = accountTag,
+                            )
+                        }
                         TargetRunKind.SUCCEEDED -> {
                             succeededCount++
                             outcomes.add(BatchTargetOutcome(JobStatus.SUCCEEDED))
+                            DiagnosticLogStore.recordGlobal(
+                                category = "SEND",
+                                event = "target_ok",
+                                level = "INFO",
+                                detail = "mode=$batchMode",
+                                accountTag = accountTag,
+                            )
                         }
                         TargetRunKind.UNKNOWN -> {
                             unknownCount++
+                            ExecutionServiceStoreOps.incrementReasonCount(errorReasonCounts, "发送结果待核对")
                             outcomes.add(
                                 BatchTargetOutcome(
                                     status = JobStatus.UNKNOWN_REQUIRES_REVIEW,
                                     failureClass = FailureClass.UNKNOWN_OUTCOME,
                                 ),
                             )
+                            DiagnosticLogStore.recordGlobal(
+                                category = "SEND",
+                                event = "target_unknown",
+                                level = "ERROR",
+                                detail = "mode=$batchMode",
+                                accountTag = accountTag,
+                            )
                         }
                         TargetRunKind.FAILED -> {
                             failedCount++
+                            val errLabel = ExecutionServiceStoreOps.formatFailureClassLabel(outcome.failureClass)
+                            ExecutionServiceStoreOps.incrementReasonCount(errorReasonCounts, errLabel)
                             outcomes.add(
                                 BatchTargetOutcome(
                                     status = outcome.finalJobStatus ?: JobStatus.FAILED_TERMINAL,
                                     failureClass = outcome.failureClass,
                                     coreSkeletonBroken = outcome.coreSkeletonBroken,
                                 ),
+                            )
+                            DiagnosticLogStore.recordGlobal(
+                                category = "SEND",
+                                event = "target_fail",
+                                level = "WARN",
+                                detail = "mode=$batchMode status=${outcome.finalJobStatus?.wireValue ?: "failed"} class=${outcome.failureClass?.wireValue ?: "other"}",
+                                accountTag = accountTag,
                             )
                         }
                     }
@@ -594,8 +795,15 @@ class ExecutionForegroundService : Service() {
         }
 
         if (!abortedByAuth) {
-            val summary = "今日续火完成：成功 $succeededCount / 跳过 $skippedCount / 失败 $failedCount" +
-                if (unknownCount > 0) " / 待核对 $unknownCount" else ""
+            val skipSummary = ExecutionServiceStoreOps.formatSkipSummary(skipReasonCounts)
+            val errorSummary = ExecutionServiceStoreOps.formatErrorSummary(errorReasonCounts)
+            val summary = ExecutionServiceStoreOps.formatBatchSummary(
+                succeededCount = succeededCount,
+                skippedCount = skippedCount,
+                failedCount = failedCount,
+                unknownCount = unknownCount,
+                skipSummary = skipSummary,
+            )
             if (succeededCount + failedCount + unknownCount > 0) {
                 sendDailySummaryBoth(
                     accountId = accountId,
@@ -604,17 +812,27 @@ class ExecutionForegroundService : Service() {
                     knownAccount = account,
                 )
             }
+            DiagnosticLogStore.recordGlobal(
+                category = "BATCH",
+                event = "batch_done",
+                level = if (failedCount + unknownCount > 0 || skippedCount > 0) "WARN" else "INFO",
+                detail = "mode=$batchMode ok=$succeededCount skip=$skippedCount fail=$failedCount unk=$unknownCount",
+                accountTag = accountTag,
+            )
             ExecutionRuntimeBus.update {
                 it.copy(
                     running = false,
                     activeAccountId = null,
                     currentTask = null,
                     lastMessage = summary,
+                    lastSkipSummary = skipSummary,
+                    lastErrorSummary = errorSummary,
+                    lastBatchMode = batchMode,
                     lastUpdatedAtEpochMs = System.currentTimeMillis(),
                 )
             }
         }
-        Log.i(TAG, "Batch finished reason=$reason ok=$succeededCount skip=$skippedCount fail=$failedCount unk=$unknownCount")
+        Log.i(TAG, "Batch finished reason=$reason mode=$batchMode ok=$succeededCount skip=$skippedCount fail=$failedCount unk=$unknownCount")
     }
 
     private suspend fun handleAuthFailureTransition(
@@ -627,6 +845,14 @@ class ExecutionForegroundService : Service() {
     ) {
         val now = Instant.now()
         val nowMs = now.toEpochMilli()
+        val accountTag = DiagnosticLogStore.safeAccountTag(account.id)
+        DiagnosticLogStore.recordGlobal(
+            category = "AUTH",
+            event = "auth_gate",
+            level = "WARN",
+            detail = "outcome=${authResult.outcome.name} skelMiss=${authResult.skeletonMissingDespiteSession} fails=${account.authFailCount} recheck=$scheduleRecheckIn10Min",
+            accountTag = accountTag,
+        )
 
         when (authResult.outcome) {
             AuthProbeOutcome.NETWORK_ERROR -> {
@@ -641,12 +867,14 @@ class ExecutionForegroundService : Service() {
                         nowMs = nowMs,
                     )
                 }
+                val msg = "当前网络异常，本轮不计入鉴权失败并等待 10 分钟顺延"
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
                         activeAccountId = null,
                         currentTask = null,
-                        lastMessage = "当前网络异常，本轮不计入鉴权失败并等待 10 分钟顺延",
+                        lastMessage = msg,
+                        lastErrorSummary = msg,
                         lastUpdatedAtEpochMs = nowMs,
                     )
                 }
@@ -662,12 +890,14 @@ class ExecutionForegroundService : Service() {
                         knownAccount = account,
                     )
                 }
+                val msg = "检测到身份验证风控弹窗，已停发等待人工完成验证"
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
                         activeAccountId = null,
                         currentTask = null,
-                        lastMessage = "检测到身份验证风控弹窗，已停发等待人工完成验证",
+                        lastMessage = msg,
+                        lastErrorSummary = msg,
                         lastUpdatedAtEpochMs = nowMs,
                     )
                 }
@@ -688,12 +918,14 @@ class ExecutionForegroundService : Service() {
                         body = "已登录状态下未能渲染会话列表骨架，请到设置页运行「网页结构体检」。",
                         knownAccount = broken,
                     )
+                    val msg = "检测到页面核心骨架未渲染，已标记结构异常待体检"
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
                             activeAccountId = null,
                             currentTask = null,
-                            lastMessage = "检测到页面核心骨架未渲染，已标记结构异常待体检",
+                            lastMessage = msg,
+                            lastErrorSummary = msg,
                             lastUpdatedAtEpochMs = nowMs,
                         )
                     }
@@ -704,12 +936,15 @@ class ExecutionForegroundService : Service() {
                     val coordinator = ScheduleCoordinator(this@ExecutionForegroundService, database)
                     coordinator.rescheduleAll(now)
                     coordinator.scheduleAuthRecheckIn10Minutes(now)
+                    val msg = authResult.detail?.takeIf { it.contains("跳离") }
+                        ?: "首次未检出登录态，已预约 10 分钟后自动复判"
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
                             activeAccountId = null,
                             currentTask = null,
-                            lastMessage = "首次未检出登录态，已预约 10 分钟后自动复判",
+                            lastMessage = msg,
+                            lastErrorSummary = msg,
                             lastUpdatedAtEpochMs = nowMs,
                         )
                     }
@@ -721,12 +956,14 @@ class ExecutionForegroundService : Service() {
                         body = "连续两次确认未检测到已登录会话列表，请打开 App 重新扫码登录。",
                         knownAccount = account,
                     )
+                    val msg = "连续 2 次确认登录态失效，请重新扫码"
                     ExecutionRuntimeBus.update {
                         it.copy(
                             running = false,
                             activeAccountId = null,
                             currentTask = null,
-                            lastMessage = "连续 2 次确认登录态失效，请重新扫码",
+                            lastMessage = msg,
+                            lastErrorSummary = msg,
                             lastUpdatedAtEpochMs = nowMs,
                         )
                     }
@@ -955,6 +1192,13 @@ class ExecutionForegroundService : Service() {
                     )
                 }
 
+                DiagnosticLogStore.recordGlobal(
+                    category = "SEND",
+                    event = "single_send_done",
+                    level = if (outcome.outcomeType == TargetRunKind.SUCCEEDED) "INFO" else "WARN",
+                    detail = "kind=${outcome.outcomeType.name} class=${outcome.failureClass?.wireValue ?: "none"} skip=${outcome.skipCode.ifBlank { "none" }}",
+                    accountTag = DiagnosticLogStore.safeAccountTag(accountId),
+                )
                 ExecutionRuntimeBus.update {
                     it.copy(
                         running = false,
@@ -963,6 +1207,8 @@ class ExecutionForegroundService : Service() {
                         progressCurrent = 1,
                         progressTotal = 1,
                         lastMessage = outcome.message,
+                        lastSkipSummary = if (outcome.outcomeType == TargetRunKind.SKIPPED) outcome.message else null,
+                        lastErrorSummary = if (outcome.outcomeType == TargetRunKind.FAILED || outcome.outcomeType == TargetRunKind.UNKNOWN) outcome.message else null,
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
                     )
                 }
@@ -1505,6 +1751,7 @@ class ExecutionForegroundService : Service() {
         val failureClass: FailureClass? = null,
         val coreSkeletonBroken: Boolean = false,
         val message: String = "",
+        val skipCode: String = "",
     )
 
     private suspend fun executeSingleTargetJob(
@@ -1519,29 +1766,63 @@ class ExecutionForegroundService : Service() {
     ): TargetRunOutcome {
         val sendJobDao = database.sendJobDao()
         val freshTarget = database.targetDao().getById(target.id)
+        val isBatchSlot = slotId == SendGuard.DAILY_SLOT_ID ||
+            slotId.startsWith(SendGuard.MANUAL_BATCH_SLOT_PREFIX)
         if (freshTarget == null || freshTarget.deletedAt != null ||
             freshTarget.accountId != account.id ||
-            (slotId == SendGuard.DAILY_SLOT_ID && !freshTarget.enabled)
+            (isBatchSlot && !freshTarget.enabled)
         ) {
-            return TargetRunOutcome(TargetRunKind.SKIPPED, message = "好友已暂停或删除")
+            return TargetRunOutcome(
+                outcomeType = TargetRunKind.SKIPPED,
+                message = ExecutionServiceStoreOps.SKIP_REASON_PAUSED_OR_DELETED,
+                skipCode = "paused_or_deleted",
+            )
         }
 
         val todayJobs = sendJobDao.listJobsForTargetDate(account.id, freshTarget.id, businessDate)
         if (slotId == SendGuard.DAILY_SLOT_ID) {
+            if (SendGuard.hasBlockingUnknownOrInflight(todayJobs)) {
+                return TargetRunOutcome(
+                    outcomeType = TargetRunKind.SKIPPED,
+                    message = ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW,
+                    skipCode = "blocked_review",
+                )
+            }
             if (!SendGuard.canDispatchDaily(todayJobs)) {
-                return TargetRunOutcome(TargetRunKind.SKIPPED, message = "当日已完成、取消或待核对，已跳过")
+                return TargetRunOutcome(
+                    outcomeType = TargetRunKind.SKIPPED,
+                    message = ExecutionServiceStoreOps.SKIP_REASON_ALREADY_DONE_TODAY,
+                    skipCode = "already_done_today",
+                )
             }
         } else {
             if (SendGuard.hasBlockingUnknownOrInflight(todayJobs)) {
-                return TargetRunOutcome(TargetRunKind.SKIPPED, message = "存在待核对记录，已硬禁止拦截")
+                return TargetRunOutcome(
+                    outcomeType = TargetRunKind.SKIPPED,
+                    message = ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW,
+                    skipCode = "blocked_review",
+                )
             }
         }
 
-        val resolved = resolveSendPayload(
+        val payloadResult = resolveSendPayload(
             target = freshTarget,
             overrideText = overrideText,
             zoneId = zoneId,
-        ) ?: return TargetRunOutcome(TargetRunKind.SKIPPED, message = "未绑定可用模板或文案池今日无候选")
+        )
+        val resolved = when (payloadResult) {
+            is PayloadResolution.Ready -> payloadResult.payload
+            PayloadResolution.UnboundOrDisabledTemplate -> return TargetRunOutcome(
+                outcomeType = TargetRunKind.SKIPPED,
+                message = ExecutionServiceStoreOps.SKIP_REASON_UNBOUND_TEMPLATE,
+                skipCode = "unbound_template",
+            )
+            PayloadResolution.PoolEmptyToday -> return TargetRunOutcome(
+                outcomeType = TargetRunKind.SKIPPED,
+                message = ExecutionServiceStoreOps.SKIP_REASON_POOL_EMPTY,
+                skipCode = "pool_empty_today",
+            )
+        }
 
         val nowMs = System.currentTimeMillis()
         val allocated = ExecutionServiceStoreOps.allocateJobAndAttemptForSend(
@@ -1552,7 +1833,11 @@ class ExecutionForegroundService : Service() {
             slotId = slotId,
             sendJobDao = sendJobDao,
             nowMs = nowMs,
-        ) ?: return TargetRunOutcome(TargetRunKind.SKIPPED, message = "当日任务状态不可再次派发")
+        ) ?: return TargetRunOutcome(
+            outcomeType = TargetRunKind.SKIPPED,
+            message = ExecutionServiceStoreOps.SKIP_REASON_ALREADY_DONE_TODAY,
+            skipCode = "slot_not_dispatchable",
+        )
 
         if (resolved.poolItemId != null) {
             // 仅在真正准备触发发送前更新文案池 LRU，列表预览绝不消耗
@@ -1757,76 +2042,100 @@ class ExecutionForegroundService : Service() {
         val image: ImagePayload? = null,
     )
 
+    private sealed interface PayloadResolution {
+        data class Ready(val payload: ResolvedPayload) : PayloadResolution
+        data object UnboundOrDisabledTemplate : PayloadResolution
+        data object PoolEmptyToday : PayloadResolution
+    }
+
     private suspend fun resolveSendPayload(
         target: ContractTargetEntity,
         overrideText: String?,
         zoneId: ZoneId,
-    ): ResolvedPayload? {
+    ): PayloadResolution {
         if (!overrideText.isNullOrBlank()) {
-            return ResolvedPayload(
-                templateId = null,
-                text = renderTemplateMessage(
-                    template = overrideText,
-                    targetName = target.nicknameSnapshot,
-                    streakDays = target.streakDays,
-                    zoneId = zoneId,
+            return PayloadResolution.Ready(
+                ResolvedPayload(
+                    templateId = null,
+                    text = renderTemplateMessage(
+                        template = overrideText,
+                        targetName = target.nicknameSnapshot,
+                        streakDays = target.streakDays,
+                        zoneId = zoneId,
+                    ),
                 ),
             )
         }
-        val templateId = target.templateId ?: return null
+        val templateId = target.templateId ?: return PayloadResolution.UnboundOrDisabledTemplate
         val template: MessageTemplateEntity = database.templateDao().getTemplateById(templateId)
-            ?: return null
-        if (!template.enabled || template.accountId != target.accountId) return null
+            ?: return PayloadResolution.UnboundOrDisabledTemplate
+        if (!template.enabled || template.accountId != target.accountId) {
+            return PayloadResolution.UnboundOrDisabledTemplate
+        }
 
         return when (template.type) {
             TemplateType.TEXT -> {
                 val content = template.content.trim()
-                if (content.isEmpty()) null else ResolvedPayload(
-                    templateId = template.id,
-                    text = renderTemplateMessage(
-                        template = content,
-                        targetName = target.nicknameSnapshot,
-                        streakDays = target.streakDays,
-                        zoneId = zoneId,
-                    ),
-                )
+                if (content.isEmpty()) {
+                    PayloadResolution.UnboundOrDisabledTemplate
+                } else {
+                    PayloadResolution.Ready(
+                        ResolvedPayload(
+                            templateId = template.id,
+                            text = renderTemplateMessage(
+                                template = content,
+                                targetName = target.nicknameSnapshot,
+                                streakDays = target.streakDays,
+                                zoneId = zoneId,
+                            ),
+                        ),
+                    )
+                }
             }
             TemplateType.POOL -> {
                 val items = database.templateDao().listEnabledPoolItems(template.id)
                 val weekdayIndex = TemplatePoolPicker.weekdayIndexOf(ZonedDateTime.now(zoneId).dayOfWeek)
-                val picked = TemplatePoolPicker.pick(items, weekdayIndex) ?: return null
-                ResolvedPayload(
-                    templateId = template.id,
-                    text = renderTemplateMessage(
-                        template = picked.content,
-                        targetName = target.nicknameSnapshot,
-                        streakDays = target.streakDays,
-                        zoneId = zoneId,
+                val picked = TemplatePoolPicker.pick(items, weekdayIndex)
+                    ?: return PayloadResolution.PoolEmptyToday
+                PayloadResolution.Ready(
+                    ResolvedPayload(
+                        templateId = template.id,
+                        text = renderTemplateMessage(
+                            template = picked.content,
+                            targetName = target.nicknameSnapshot,
+                            streakDays = target.streakDays,
+                            zoneId = zoneId,
+                        ),
+                        poolItemId = picked.id,
                     ),
-                    poolItemId = picked.id,
                 )
             }
             TemplateType.STICKER -> {
-                val name = template.stickerName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-                ResolvedPayload(
-                    templateId = template.id,
-                    sticker = StickerPayload(
-                        stickerName = name,
-                        stickerLabel = template.stickerLabel,
-                        stickerCategory = template.stickerCategory,
-                        fallbackIndex = template.stickerFallbackIndex,
+                val name = template.stickerName?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: return PayloadResolution.UnboundOrDisabledTemplate
+                PayloadResolution.Ready(
+                    ResolvedPayload(
+                        templateId = template.id,
+                        sticker = StickerPayload(
+                            stickerName = name,
+                            stickerLabel = template.stickerLabel,
+                            stickerCategory = template.stickerCategory,
+                            fallbackIndex = template.stickerFallbackIndex,
+                        ),
                     ),
                 )
             }
             TemplateType.IMAGE -> {
                 val imageFile = templateImageStore.resolveExistingFile(template.imagePath)
                 val imageContentUri = imageFile?.let { templateImageStore.contentUriFor(it) }
-                ResolvedPayload(
-                    templateId = template.id,
-                    image = ImagePayload(
-                        imagePath = template.imagePath,
-                        imageFile = imageFile,
-                        imageContentUri = imageContentUri,
+                PayloadResolution.Ready(
+                    ResolvedPayload(
+                        templateId = template.id,
+                        image = ImagePayload(
+                            imagePath = template.imagePath,
+                            imageFile = imageFile,
+                            imageContentUri = imageContentUri,
+                        ),
                     ),
                 )
             }
@@ -2144,10 +2453,15 @@ class ExecutionForegroundService : Service() {
         private const val MANUAL_LOCK_WAIT_MS = 10_000L
 
         const val ACTION_RUN_MANUAL_BATCH = "io.github.oinzc.flamecontractor.action.RUN_MANUAL_BATCH"
+        const val ACTION_MANUAL_BATCH_FORCE_ALL = "io.github.oinzc.flamecontractor.action.MANUAL_BATCH_FORCE_ALL"
         const val ACTION_RUN_SINGLE_SEND = "io.github.oinzc.flamecontractor.action.RUN_SINGLE_SEND"
         const val ACTION_RUN_MANUAL_SCAN = "io.github.oinzc.flamecontractor.action.RUN_MANUAL_SCAN"
         const val ACTION_REPAIR_IDENTITY = "io.github.oinzc.flamecontractor.action.REPAIR_IDENTITY"
         const val ACTION_PROBE_STRUCTURE = "io.github.oinzc.flamecontractor.action.PROBE_STRUCTURE"
+
+        const val BATCH_MODE_SCHEDULED = "scheduled"
+        const val BATCH_MODE_MANUAL_MAKEUP = "manual_makeup"
+        const val BATCH_MODE_MANUAL_FORCE_ALL = "manual_force_all"
 
         const val EXTRA_TARGET_ID = "extra_target_id"
         const val EXTRA_OVERRIDE_TEXT = "extra_override_text"
@@ -2181,6 +2495,16 @@ class ExecutionForegroundService : Service() {
             action = ACTION_RUN_MANUAL_BATCH,
             accountId = accountId,
             reason = "ui_manual_batch",
+        )
+
+        fun enqueueManualBatchForceAll(
+            context: Context,
+            accountId: String = DEFAULT_ACCOUNT_ID,
+        ): Boolean = startAction(
+            context = context,
+            action = ACTION_MANUAL_BATCH_FORCE_ALL,
+            accountId = accountId,
+            reason = "ui_manual_batch_force_all",
         )
 
         fun enqueueSingleSend(
@@ -2566,6 +2890,80 @@ internal object ExecutionServiceStoreOps {
         accountId: String,
         totalAccounts: Int,
     ): Boolean = totalAccounts > 1 || accountId != DEFAULT_ACCOUNT_ID
+
+    const val SKIP_REASON_UNBOUND_TEMPLATE = "未绑定可用模板，请到「好友」页绑定"
+    const val SKIP_REASON_POOL_EMPTY = "文案池今日无候选"
+    const val SKIP_REASON_BLOCKED_REVIEW = "存在待核对记录，已硬禁止拦截"
+    const val SKIP_REASON_ALREADY_DONE_TODAY = "当日已完成"
+    const val SKIP_REASON_PAUSED_OR_DELETED = "好友已暂停或删除"
+
+    fun normalizeSkipReason(rawReason: String): String {
+        val trimmed = rawReason.trim()
+        return when {
+            trimmed.contains("未绑定可用模板") -> SKIP_REASON_UNBOUND_TEMPLATE
+            trimmed.contains("文案池") -> SKIP_REASON_POOL_EMPTY
+            trimmed.contains("待核对") || trimmed.contains("硬禁止") -> SKIP_REASON_BLOCKED_REVIEW
+            trimmed.contains("当日已完成") || trimmed.contains("不可再次派发") -> SKIP_REASON_ALREADY_DONE_TODAY
+            trimmed.contains("已暂停") || trimmed.contains("删除") -> SKIP_REASON_PAUSED_OR_DELETED
+            trimmed.isEmpty() -> "状态不满足发送条件"
+            else -> trimmed.take(48)
+        }
+    }
+
+    fun incrementReasonCount(counts: MutableMap<String, Int>, reason: String) {
+        if (reason.isBlank()) return
+        counts[reason] = (counts[reason] ?: 0) + 1
+    }
+
+    fun formatSkipSummary(reasonCounts: Map<String, Int>): String? {
+        val nonEmpty = reasonCounts.filterValues { it > 0 }
+        if (nonEmpty.isEmpty()) return null
+        return nonEmpty.entries.joinToString("；") { (reason, count) ->
+            "$count 位$reason"
+        }
+    }
+
+    fun formatFailureClassLabel(failureClass: FailureClass?): String = when (failureClass) {
+        FailureClass.TARGET_UNCERTAIN -> "目标会话定位或核验失败"
+        FailureClass.DOM_CHANGED -> "页面核心结构异常"
+        FailureClass.AUTH -> "登录态校验未通过"
+        FailureClass.VERIFICATION -> "触发安全验证弹窗"
+        FailureClass.NETWORK -> "网络连接异常"
+        FailureClass.UNKNOWN_OUTCOME -> "发送结果待核对"
+        FailureClass.OTHER, null -> "发送执行失败"
+    }
+
+    fun formatErrorSummary(errorCounts: Map<String, Int>): String? {
+        val nonEmpty = errorCounts.filterValues { it > 0 }
+        if (nonEmpty.isEmpty()) return null
+        return nonEmpty.entries.joinToString("；") { (label, count) ->
+            "$label ×$count"
+        }
+    }
+
+    fun formatBatchSummary(
+        succeededCount: Int,
+        skippedCount: Int,
+        failedCount: Int,
+        unknownCount: Int,
+        skipSummary: String?,
+    ): String = buildString {
+        append("今日续火完成：成功 ")
+        append(succeededCount)
+        append(" / 跳过 ")
+        append(skippedCount)
+        append(" / 失败 ")
+        append(failedCount)
+        if (unknownCount > 0) {
+            append(" / 待核对 ")
+            append(unknownCount)
+        }
+        if (skippedCount > 0 && !skipSummary.isNullOrBlank()) {
+            append("（")
+            append(skipSummary)
+            append("）")
+        }
+    }
 
     fun missingTemplateImageResult(): SendExecutionResult = SendExecutionResult(
         jobStatus = JobStatus.FAILED_TERMINAL,

@@ -211,4 +211,53 @@ class SendGuardTest {
         assertTrue(SendGuard.canDispatchDaily(jobsWithManualFailure))
         assertEquals(ManualSendDecision.ALLOWED, SendGuard.checkManualSend(jobsWithManualFailure))
     }
+
+    @Test
+    fun manualBatchSlotStillHardBlocksUnknownOrInflightAndSatisfiesDailyOnceSucceeded() {
+        assertEquals("manual_batch:", SendGuard.MANUAL_BATCH_SLOT_PREFIX)
+        assertEquals("manual_batch:1700000005555", SendGuard.manualBatchSlotId(1_700_000_005_555L))
+
+        val blockingStatuses = listOf(
+            JobStatus.UNKNOWN_REQUIRES_REVIEW,
+            JobStatus.SENDING,
+            JobStatus.CONFIRMING,
+        )
+        for (blocking in blockingStatuses) {
+            val blockedJobs = listOf(
+                job(
+                    id = "j-mb-block",
+                    slotId = SendGuard.manualBatchSlotId(1_700_000_001_000L),
+                    status = blocking,
+                ),
+            )
+            assertTrue(SendGuard.hasBlockingUnknownOrInflight(blockedJobs))
+            assertFalse(SendGuard.canDispatchManualBatchForceAll(blockedJobs))
+            assertFalse(SendGuard.canDispatchDaily(blockedJobs))
+            assertEquals(ManualSendDecision.BLOCKED_UNKNOWN_OR_INFLIGHT, SendGuard.checkManualSend(blockedJobs))
+        }
+
+        // manual_batch 成功后：补发/自动 daily 视为今日已完成，但强制全发模式仍可再次触发
+        val succeededManualBatch = listOf(
+            job(
+                id = "j-mb-ok",
+                slotId = SendGuard.manualBatchSlotId(1_700_000_002_000L),
+                status = JobStatus.SUCCEEDED,
+            ),
+        )
+        assertFalse(SendGuard.hasBlockingUnknownOrInflight(succeededManualBatch))
+        assertFalse(SendGuard.canDispatchDaily(succeededManualBatch))
+        assertTrue(SendGuard.canDispatchManualBatchForceAll(succeededManualBatch))
+        assertEquals(ManualSendDecision.CONFIRM_ALREADY_SUCCEEDED, SendGuard.checkManualSend(succeededManualBatch))
+
+        // manual_batch 失败后：补发/自动 daily 仍允许继续派发
+        val failedManualBatch = listOf(
+            job(
+                id = "j-mb-fail",
+                slotId = SendGuard.manualBatchSlotId(1_700_000_003_000L),
+                status = JobStatus.FAILED_TERMINAL,
+            ),
+        )
+        assertTrue(SendGuard.canDispatchDaily(failedManualBatch))
+        assertTrue(SendGuard.canDispatchManualBatchForceAll(failedManualBatch))
+    }
 }

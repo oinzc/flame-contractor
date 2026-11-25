@@ -232,6 +232,9 @@ data class ExecutionLiveState(
     val lastMessage: String? = null,
     val needsLoginChoicePrompt: Boolean = false,
     val lastUpdatedAtEpochMs: Long = 0L,
+    val lastSkipSummary: String? = null,
+    val lastErrorSummary: String? = null,
+    val lastBatchMode: String? = null,
 )
 
 object ExecutionRuntimeBus {

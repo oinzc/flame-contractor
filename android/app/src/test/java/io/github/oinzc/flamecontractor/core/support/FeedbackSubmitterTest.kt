@@ -280,4 +280,66 @@ class FeedbackSubmitterTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun `diagnosticLog respects 16000 char bound serializes conditionally parses response and updates clipboard fallback`() = runTest {
+        assertEquals(16_000, FeedbackSubmitter.MAX_DIAGNOSTIC_LOG_LEN)
+
+        val exactLog = "a".repeat(FeedbackSubmitter.MAX_DIAGNOSTIC_LOG_LEN)
+        val overLog = "a".repeat(FeedbackSubmitter.MAX_DIAGNOSTIC_LOG_LEN + 1)
+        assertNull(FeedbackSubmitter.validateInput("标题", "这是一条附带诊断日志的反馈内容", "", diagnosticLog = exactLog))
+        assertNotNull(FeedbackSubmitter.validateInput("标题", "这是一条附带诊断日志的反馈内容", "", diagnosticLog = overLog))
+
+        val baseReq = FeedbackSubmissionRequest(
+            kind = FeedbackKind.BUG,
+            title = "会话定位失败",
+            content = "点击续火后提示未找到目标会话，附上日志",
+            contact = "",
+            version = "v0.6.1",
+            environment = "Android 15",
+            includeEnv = true,
+        )
+        assertFalse(FeedbackSubmitter.encodeRequestJson(baseReq).contains("\"diagnosticLog\""))
+        assertFalse(FeedbackSubmitter.buildClipboardFallbackText(baseReq).contains("--- 脱敏诊断日志 ---"))
+
+        val withLogReq = baseReq.copy(
+            diagnosticLog = "2026-11-25T08:15:02Z [WARN] [SEND] target_lookup_miss visibleRows=12",
+        )
+        val encodedWithLog = FeedbackSubmitter.encodeRequestJson(withLogReq)
+        assertTrue(encodedWithLog.contains("\"diagnosticLog\":\"2026-11-25T08:15:02Z [WARN] [SEND] target_lookup_miss visibleRows=12\""))
+
+        val clipboardWithLog = FeedbackSubmitter.buildClipboardFallbackText(withLogReq)
+        assertTrue(clipboardWithLog.contains("--- 脱敏诊断日志 ---"))
+        assertTrue(clipboardWithLog.contains("target_lookup_miss visibleRows=12"))
+
+        val draft = FeedbackPreFillDraft(title = "异常反馈", content = "描述内容")
+        assertEquals(FeedbackKind.BUG, draft.kind)
+        assertTrue(draft.attachDiagnosticLog)
+
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(201)
+                .setBody("""{"ok":true,"issueNumber":99,"issueUrl":"https://github.com/oinzc/flame-contractor/issues/99","imageCount":0,"hasDiagnosticLog":true,"message":"反馈已提交（#99）"}"""),
+        )
+        server.start()
+        try {
+            val submitter = FeedbackSubmitter(endpointProvider = { server.url("/v1/feedback").toString() })
+            val result = submitter.submit(withLogReq) as FeedbackSubmitResult.Success
+            assertEquals(99, result.issueNumber)
+            assertTrue(result.hasDiagnosticLog)
+
+            val recordedBody = server.takeRequest().body.readUtf8()
+            assertTrue(recordedBody.contains("\"diagnosticLog\""))
+        } finally {
+            server.shutdown()
+        }
+
+        val parsedOmitted = FeedbackSubmitter.parseRelayResponse(
+            statusCode = 201,
+            isSuccessful = true,
+            bodyStr = """{"ok":true,"issueNumber":100}""",
+        ) as FeedbackSubmitResult.Success
+        assertFalse(parsedOmitted.hasDiagnosticLog)
+    }
 }

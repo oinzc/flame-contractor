@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import java.time.ZoneId
 
@@ -77,6 +78,11 @@ abstract class FlameDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "flame_contractor.db"
+        internal const val LEGACY_DEFAULT_TEXT_TEMPLATE_NAME = "每日续火"
+        internal const val LEGACY_DEFAULT_TEXT_TEMPLATE_CONTENT = "每日续火打卡 🔥"
+        private const val MAINTENANCE_PREFS_NAME = "flame_db_maintenance"
+        internal const val KEY_LEGACY_DEFAULT_TEXT_TEMPLATE_MIGRATED_V1 =
+            "legacy_default_text_template_migrated_v1"
 
         internal data class DefaultStickerSeed(
             val id: String,
@@ -86,6 +92,12 @@ abstract class FlameDatabase : RoomDatabase() {
         )
 
         internal val DEFAULT_STICKER_SEEDS: List<DefaultStickerSeed> = listOf(
+            DefaultStickerSeed(
+                id = DEFAULT_STICKER_SPARK_TEMPLATE_ID,
+                name = "续火花",
+                stickerName = "续火花",
+                stickerLabel = "续火花",
+            ),
             DefaultStickerSeed(
                 id = DEFAULT_STICKER_TEMPLATE_ID,
                 name = "比心",
@@ -97,12 +109,6 @@ abstract class FlameDatabase : RoomDatabase() {
                 name = "早上好",
                 stickerName = "早上好",
                 stickerLabel = "早上好",
-            ),
-            DefaultStickerSeed(
-                id = DEFAULT_STICKER_SPARK_TEMPLATE_ID,
-                name = "续火花",
-                stickerName = "续火花",
-                stickerLabel = "续火花",
             ),
         )
 
@@ -265,35 +271,10 @@ abstract class FlameDatabase : RoomDatabase() {
                 seeds = DEFAULT_STICKER_SEEDS,
                 nowEpochMs = nowEpochMs,
             )
-
-            val textCreatedAt = nowEpochMs + DEFAULT_STICKER_SEEDS.size.toLong()
-            db.execSQL(
-                """
-                INSERT OR IGNORE INTO message_templates (
-                    id, account_id, name, type, content,
-                    sticker_name, sticker_label, sticker_category, sticker_fallback_index,
-                    enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """.trimIndent(),
-                arrayOf<Any?>(
-                    DEFAULT_TEXT_TEMPLATE_ID,
-                    DEFAULT_ACCOUNT_ID,
-                    "每日续火",
-                    TemplateType.TEXT.wireValue,
-                    "每日续火打卡 🔥",
-                    null,
-                    null,
-                    null,
-                    null,
-                    1,
-                    textCreatedAt,
-                    textCreatedAt,
-                ),
-            )
         }
 
         /**
-         * 为新建的多账号播种默认的文本模板与 3 个内置表情模板，幂等执行（仅当该账号尚无任何模板时写入）。
+         * 为新建的多账号播种 3 个内置表情模板（续火花排首位），幂等执行（仅当该账号尚无任何模板时写入）。
          */
         suspend fun seedDefaultTemplatesForAccount(
             database: FlameDatabase,
@@ -323,24 +304,123 @@ abstract class FlameDatabase : RoomDatabase() {
                     ),
                 )
             }
-            val textTs = nowEpochMs + DEFAULT_STICKER_SEEDS.size.toLong()
-            val textId = if (accountId == DEFAULT_ACCOUNT_ID) {
-                DEFAULT_TEXT_TEMPLATE_ID
-            } else {
-                "$accountId:$DEFAULT_TEXT_TEMPLATE_ID"
+        }
+
+        /**
+         * 老用户一次性幂等平滑迁移：
+         * - 仅定位未改动过的旧默认文本模板（id 为 `default-text-daily` 或 `<accountId>:default-text-daily`，
+         *   且 `type == TEXT`、`name == "每日续火"`、`content.trim() == "每日续火打卡 🔥"`）；
+         * - 确保该账号具备「续火花」表情模板后，把仍指向旧模板的好友迁移至该表情模板并删除未改动的旧模板；
+         * - 用户修改过文案、改过名称或自定义同名模板的记录一律原样保留，绝不误删。
+         */
+        suspend fun migrateLegacyDefaultTextTemplateOnce(
+            context: Context,
+            database: FlameDatabase,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ): Int {
+            val prefs = (context.applicationContext ?: context)
+                .getSharedPreferences(MAINTENANCE_PREFS_NAME, Context.MODE_PRIVATE)
+            if (prefs.getBoolean(KEY_LEGACY_DEFAULT_TEXT_TEMPLATE_MIGRATED_V1, false)) {
+                return 0
             }
-            templateDao.upsertTemplate(
-                MessageTemplateEntity(
-                    id = textId,
-                    accountId = accountId,
-                    name = "每日续火",
-                    type = TemplateType.TEXT,
-                    content = "每日续火打卡 🔥",
-                    enabled = true,
-                    createdAt = textTs,
-                    updatedAt = textTs,
-                ),
-            )
+            return try {
+                val migratedTemplates = migrateLegacyDefaultTextTemplatesInDatabase(
+                    database = database,
+                    nowEpochMs = nowEpochMs,
+                )
+                prefs.edit().putBoolean(KEY_LEGACY_DEFAULT_TEXT_TEMPLATE_MIGRATED_V1, true).apply()
+                migratedTemplates
+            } catch (_: Throwable) {
+                0
+            }
+        }
+
+        internal suspend fun migrateLegacyDefaultTextTemplatesInDatabase(
+            database: FlameDatabase,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ): Int = database.withTransaction {
+            val accountIds = database.accountDao().listAll().map { it.id }.distinct()
+            if (accountIds.isEmpty()) return@withTransaction 0
+
+            val templateDao = database.templateDao()
+            val targetDao = database.targetDao()
+            var removedLegacyCount = 0
+
+            for (accountId in accountIds) {
+                val templates = templateDao.listTemplates(accountId)
+                val legacyCandidates = templates.filter { tpl ->
+                    (tpl.id == DEFAULT_TEXT_TEMPLATE_ID || tpl.id == "$accountId:$DEFAULT_TEXT_TEMPLATE_ID") &&
+                        tpl.type == TemplateType.TEXT &&
+                        tpl.name == LEGACY_DEFAULT_TEXT_TEMPLATE_NAME &&
+                        tpl.content.trim() == LEGACY_DEFAULT_TEXT_TEMPLATE_CONTENT
+                }
+                if (legacyCandidates.isEmpty()) continue
+
+                val expectedSparkId = if (accountId == DEFAULT_ACCOUNT_ID) {
+                    DEFAULT_STICKER_SPARK_TEMPLATE_ID
+                } else {
+                    "$accountId:$DEFAULT_STICKER_SPARK_TEMPLATE_ID"
+                }
+                val existingSpark = templates.firstOrNull {
+                    it.id == expectedSparkId || it.id.endsWith(":$DEFAULT_STICKER_SPARK_TEMPLATE_ID")
+                } ?: templates.firstOrNull {
+                    it.type == TemplateType.STICKER && it.name.trim() == "续火花"
+                }
+
+                val sparkTemplateId = if (existingSpark != null) {
+                    existingSpark.id
+                } else {
+                    val occupiedNames = templates.map { it.name }.toSet()
+                    val sparkName = resolveNonCollidingSparkName(occupiedNames)
+                    templateDao.upsertTemplate(
+                        MessageTemplateEntity(
+                            id = expectedSparkId,
+                            accountId = accountId,
+                            name = sparkName,
+                            type = TemplateType.STICKER,
+                            content = "",
+                            stickerName = "续火花",
+                            stickerLabel = "续火花",
+                            stickerCategory = null,
+                            stickerFallbackIndex = null,
+                            enabled = true,
+                            createdAt = nowEpochMs,
+                            updatedAt = nowEpochMs,
+                        ),
+                    )
+                    expectedSparkId
+                }
+
+                val legacyIds = legacyCandidates.mapTo(HashSet()) { it.id }
+                val allTargets = targetDao.listAllTargetsIncludingDeleted(accountId)
+                for (target in allTargets) {
+                    if (target.templateId in legacyIds) {
+                        targetDao.update(
+                            target.copy(
+                                templateId = sparkTemplateId,
+                                updatedAt = nowEpochMs,
+                            ),
+                        )
+                    }
+                }
+
+                for (legacy in legacyCandidates) {
+                    templateDao.deleteTemplateById(legacy.id)
+                    removedLegacyCount += 1
+                }
+            }
+            removedLegacyCount
+        }
+
+        private fun resolveNonCollidingSparkName(occupiedNames: Set<String>): String {
+            if ("续火花" !in occupiedNames) return "续火花"
+            if ("续火花（表情）" !in occupiedNames) return "续火花（表情）"
+            var index = 2
+            while (true) {
+                val candidate = "续火花（表情 $index）"
+                if (candidate !in occupiedNames) return candidate
+                index += 1
+            }
         }
     }
 }

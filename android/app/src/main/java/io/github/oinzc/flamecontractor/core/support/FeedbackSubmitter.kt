@@ -52,6 +52,15 @@ data class FeedbackSubmissionRequest(
     val includeEnv: Boolean,
     val client: String = "android",
     val images: List<FeedbackImageAttachment> = emptyList(),
+    val diagnosticLog: String = "",
+)
+
+data class FeedbackPreFillDraft(
+    val kind: FeedbackKind = FeedbackKind.BUG,
+    val title: String = "",
+    val content: String = "",
+    val attachDiagnosticLog: Boolean = true,
+    val nonce: Long = System.currentTimeMillis(),
 )
 
 sealed class FeedbackSubmitResult {
@@ -60,6 +69,7 @@ sealed class FeedbackSubmitResult {
         val issueUrl: String?,
         val message: String,
         val imageCount: Int = 0,
+        val hasDiagnosticLog: Boolean = false,
     ) : FeedbackSubmitResult()
 
     data class Failure(
@@ -91,6 +101,7 @@ class FeedbackSubmitter(
             content = input.content,
             contact = input.contact,
             images = input.images,
+            diagnosticLog = input.diagnosticLog,
         )
         if (validationError != null) {
             return FeedbackSubmitResult.Failure(validationError, retryable = false)
@@ -137,6 +148,7 @@ class FeedbackSubmitter(
         const val MAX_CONTENT_LEN: Int = 2000
         const val MAX_TITLE_LEN: Int = 100
         const val MAX_CONTACT_LEN: Int = 100
+        const val MAX_DIAGNOSTIC_LOG_LEN: Int = 16_000
         const val MAX_IMAGE_COUNT: Int = 3
         const val MAX_IMAGE_BYTES: Int = 800 * 1024
         val ALLOWED_IMAGE_MIMES: Set<String> = setOf(
@@ -168,6 +180,7 @@ class FeedbackSubmitter(
             content: String,
             contact: String,
             images: List<FeedbackImageAttachment> = emptyList(),
+            diagnosticLog: String = "",
         ): String? {
             val cleanContent = content.trim()
             if (cleanContent.length < MIN_CONTENT_LEN) {
@@ -181,6 +194,9 @@ class FeedbackSubmitter(
             }
             if (contact.trim().length > MAX_CONTACT_LEN) {
                 return "联系方式请控制在 $MAX_CONTACT_LEN 字以内"
+            }
+            if (diagnosticLog.trim().length > MAX_DIAGNOSTIC_LOG_LEN) {
+                return "诊断日志请控制在 $MAX_DIAGNOSTIC_LOG_LEN 字以内"
             }
             validateImages(images)?.let { return it }
             return null
@@ -241,6 +257,11 @@ class FeedbackSubmitter(
                 appendLine("--- 运行环境（已脱敏）---")
                 appendLine(input.environment.trim())
             }
+            if (input.diagnosticLog.isNotBlank()) {
+                appendLine()
+                appendLine("--- 脱敏诊断日志 ---")
+                appendLine(input.diagnosticLog.trim())
+            }
             if (input.contact.isNotBlank()) {
                 appendLine()
                 append("联系方式：${input.contact.trim()}")
@@ -258,6 +279,10 @@ class FeedbackSubmitter(
             append("\"environment\":"); appendJsonString(if (input.includeEnv) input.environment.trim() else ""); append(',')
             append("\"includeEnv\":"); append(if (input.includeEnv) "true" else "false"); append(',')
             append("\"website\":\"\"")
+            val cleanDiagnosticLog = input.diagnosticLog.trim()
+            if (cleanDiagnosticLog.isNotEmpty()) {
+                append(",\"diagnosticLog\":"); appendJsonString(cleanDiagnosticLog)
+            }
             if (input.images.isNotEmpty()) {
                 append(",\"images\":[")
                 input.images.forEachIndexed { index, img ->
@@ -286,6 +311,7 @@ class FeedbackSubmitter(
             val issueNumber = extractJsonInt(bodyStr, "issueNumber")
             val issueUrl = extractJsonString(bodyStr, "issueUrl")
             val imageCount = (extractJsonInt(bodyStr, "imageCount") ?: 0).coerceAtLeast(0)
+            val hasDiagnosticLog = extractJsonBoolean(bodyStr, "hasDiagnosticLog") ?: false
 
             if (isSuccessful) {
                 val okMessage = message?.takeIf { it.isNotBlank() }
@@ -307,6 +333,7 @@ class FeedbackSubmitter(
                     issueUrl = issueUrl,
                     message = okMessage,
                     imageCount = imageCount,
+                    hasDiagnosticLog = hasDiagnosticLog,
                 )
             }
 
@@ -408,6 +435,21 @@ class FeedbackSubmitter(
             while (i < json.length && json[i].isDigit()) i++
             if (i == start) return null
             return json.substring(start, i).toIntOrNull()
+        }
+
+        private fun extractJsonBoolean(json: String, key: String): Boolean? {
+            val keyToken = "\"$key\""
+            val keyIndex = json.indexOf(keyToken)
+            if (keyIndex < 0) return null
+            val colonIndex = json.indexOf(':', keyIndex + keyToken.length)
+            if (colonIndex < 0) return null
+            var i = colonIndex + 1
+            while (i < json.length && json[i].isWhitespace()) i++
+            return when {
+                json.startsWith("true", startIndex = i) -> true
+                json.startsWith("false", startIndex = i) -> false
+                else -> null
+            }
         }
     }
 }

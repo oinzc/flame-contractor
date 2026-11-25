@@ -465,25 +465,25 @@ class TemplatesViewModelTest {
             nowEpochMs = 1_000L,
             defaultTimezone = "Asia/Shanghai",
         )
-        assertEquals(5, calls.size)
+        assertEquals(4, calls.size)
         assertTrue(calls[0].first.contains("INSERT OR IGNORE INTO accounts"))
         assertEquals(DEFAULT_ACCOUNT_ID, calls[0].second.firstOrNull())
 
         val seededStickers = calls.subList(1, 4)
         assertEquals(
             listOf(
+                DEFAULT_STICKER_SPARK_TEMPLATE_ID,
                 DEFAULT_STICKER_TEMPLATE_ID,
                 DEFAULT_STICKER_MORNING_TEMPLATE_ID,
-                DEFAULT_STICKER_SPARK_TEMPLATE_ID,
             ),
             seededStickers.map { it.second[0] },
         )
-        assertEquals(listOf("比心", "早上好", "续火花"), seededStickers.map { it.second[2] })
-        assertEquals(listOf("比心", "早上好", "续火花"), seededStickers.map { it.second[5] })
+        assertEquals(listOf("续火花", "比心", "早上好"), seededStickers.map { it.second[2] })
+        assertEquals(listOf("续火花", "比心", "早上好"), seededStickers.map { it.second[5] })
         assertTrue(seededStickers.all { it.second.size == 13 })
         assertTrue(seededStickers.all { it.first.contains("INSERT OR IGNORE INTO message_templates") })
         assertTrue(seededStickers.all { it.first.contains("WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)") })
-        assertEquals(DEFAULT_TEXT_TEMPLATE_ID, calls[4].second[0])
+        assertTrue(calls.none { it.second.firstOrNull() == DEFAULT_TEXT_TEMPLATE_ID })
 
         calls.clear()
         FlameDatabase.MIGRATION_1_2.migrate(recordingDb)

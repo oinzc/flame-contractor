@@ -14,6 +14,7 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.data.db.SendJobDao
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.data.db.TargetSucceededJobCounts
+import io.github.oinzc.flamecontractor.domain.AuthProbeOutcome
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -703,6 +704,179 @@ class DouyinJsScriptsTest {
         assertTrue(refreshQrJs.contains("刷新"))
         assertTrue(switchSmsJs.contains("验证码登录"))
         assertTrue(switchSmsJs.contains("clicked"))
+    }
+
+    @Test
+    fun authProbeScriptDetectsCaptchaIframesDomContainersChatRouteAndFlameIconVariants() {
+        val bundle = SelectorBundle.defaults()
+        val authJs = DouyinJsScripts.buildAuthAndSelfIdentityProbeJs(bundle)
+        assertTrue(authJs.contains("iframe[src*=\"verify\"]"))
+        assertTrue(authJs.contains("iframe[src*=\"captcha\"]"))
+        assertTrue(authJs.contains("iframe[src*=\"bdturing\"]"))
+        assertTrue(authJs.contains("iframe[src*=\"rmc.bytedance\"]"))
+        assertTrue(authJs.contains("[id*=\"captcha\"]"))
+        assertTrue(authJs.contains("[class*=\"captcha_verify\"]"))
+        assertTrue(authJs.contains("[class*=\"secsdk-captcha\"]"))
+        assertTrue(authJs.contains("[class*=\"bdturing\"]"))
+        assertTrue(authJs.contains("拖动滑块"))
+        assertTrue(authJs.contains("请先完成验证"))
+        assertTrue(authJs.contains("滑动拼图"))
+        assertTrue(authJs.contains("按顺序点击"))
+        assertTrue(authJs.contains("verificationSignal:"))
+        assertTrue(authJs.contains("isChatRoute:"))
+        assertTrue(authJs.contains("pageTitleLen:"))
+
+        val scanJs = DouyinJsScripts.buildScrollAndCollectChatsJs(bundle)
+        assertTrue(scanJs.contains("streakIconVariant"))
+        assertTrue(scanJs.contains("flame_icon/"))
+    }
+
+    @Test
+    fun authPollAndTimeoutAvoidFalseDomBrokenWhenOffChatRouteAndProtectNormalChatPage() {
+        // 1) 正常聊天页即使消息预览里包含「安全验证」文字，也不应误杀正常聊天页
+        val normalChatWithVerifyWord = mapOf<String, Any?>(
+            "isDouyinHost" to true,
+            "isBlankPage" to false,
+            "isErrorPage" to false,
+            "isChatRoute" to true,
+            "loggedIn" to true,
+            "verificationRequired" to true,
+            "verificationSignal" to "text_verify",
+            "hasLocalStorageUserInfo" to true,
+            "hasQrOrLoginSignal" to false,
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.AUTHENTICATED,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = normalChatWithVerifyWord,
+                mainErr = null,
+                pageFinished = true,
+                elapsedMs = 2_000L,
+                consecutiveVerificationSignals = 3,
+                consecutiveLoginSignals = 0,
+            ),
+        )
+
+        // 2) 若出现真实可见验证码 iframe 遮罩，即使 conversationList 仍在 DOM 后方也必须识别为 VERIFICATION_REQUIRED
+        val chatWithCaptchaIframe = normalChatWithVerifyWord + mapOf(
+            "verificationSignal" to "iframe_verify",
+        )
+        assertEquals(
+            DouyinWebExecutor.AuthPollDecision.VERIFICATION_REQUIRED,
+            DouyinWebExecutor.evaluateAuthPollDecision(
+                probe = chatWithCaptchaIframe,
+                mainErr = null,
+                pageFinished = true,
+                elapsedMs = 2_000L,
+                consecutiveVerificationSignals = 1,
+                consecutiveLoginSignals = 0,
+            ),
+        )
+
+        // 3) 超时时若页面已跳离 /chat 路由，不得误判 DOM_BROKEN（skeletonMissingDespiteSession 必须为 false）
+        val offChatTimeout = DouyinWebExecutor.classifyAuthTimeout(
+            probe = mapOf(
+                "isDouyinHost" to true,
+                "isBlankPage" to false,
+                "isErrorPage" to false,
+                "isChatRoute" to false,
+                "verificationRequired" to false,
+                "hasLocalStorageUserInfo" to true,
+                "hasQrOrLoginSignal" to false,
+            ),
+            mainErr = null,
+            httpErr = null,
+            webViewVersion = "135.0.0.0",
+        )
+        assertEquals(AuthProbeOutcome.UNAUTHENTICATED, offChatTimeout.outcome)
+        assertFalse(offChatTimeout.skeletonMissingDespiteSession)
+        assertTrue(offChatTimeout.detail.orEmpty().contains("跳离聊天页"))
+
+        // 4) 仍在 /chat 路由且有 user_info 但无会话列表骨架，保持 skeletonMissingDespiteSession = true
+        val onChatSkeletonBroken = DouyinWebExecutor.classifyAuthTimeout(
+            probe = mapOf(
+                "isDouyinHost" to true,
+                "isBlankPage" to false,
+                "isErrorPage" to false,
+                "isChatRoute" to true,
+                "verificationRequired" to false,
+                "hasLocalStorageUserInfo" to true,
+                "hasQrOrLoginSignal" to false,
+            ),
+            mainErr = null,
+            httpErr = null,
+            webViewVersion = "135.0.0.0",
+        )
+        assertEquals(AuthProbeOutcome.UNAUTHENTICATED, onChatSkeletonBroken.outcome)
+        assertTrue(onChatSkeletonBroken.skeletonMissingDespiteSession)
+
+        // 5) 超时瞬间命中验证码也归类为 VERIFICATION_REQUIRED
+        val verifyAtTimeout = DouyinWebExecutor.classifyAuthTimeout(
+            probe = mapOf(
+                "isDouyinHost" to true,
+                "isBlankPage" to false,
+                "isErrorPage" to false,
+                "isChatRoute" to false,
+                "verificationRequired" to true,
+                "hasLocalStorageUserInfo" to true,
+                "hasQrOrLoginSignal" to false,
+            ),
+            mainErr = null,
+            httpErr = null,
+            webViewVersion = "135.0.0.0",
+        )
+        assertEquals(AuthProbeOutcome.VERIFICATION_REQUIRED, verifyAtTimeout.outcome)
+    }
+
+    @Test
+    fun flameIconVariantAndRouteFeatureSanitizersRejectDomainsQueriesAndIds() {
+        assertEquals(
+            "normal/light.png",
+            DouyinWebExecutor.sanitizeFlameIconVariant("https://lf3-cdn.douyin.com/obj/flame_icon/normal/light.png?x-expires=12345&uid=999"),
+        )
+        assertEquals(
+            "couple/level_2.webp",
+            DouyinWebExecutor.sanitizeFlameIconVariant("couple/level_2.webp"),
+        )
+        assertNull(DouyinWebExecutor.sanitizeFlameIconVariant("https://evil.example.com/other/icon.png"))
+        assertNull(DouyinWebExecutor.sanitizeFlameIconVariant("../secret/file.png"))
+        assertNull(DouyinWebExecutor.sanitizeFlameIconVariant("normal/包含中文昵称.png"))
+
+        assertEquals("/chat", DouyinWebExecutor.sanitizeRouteFeature("https://www.douyin.com/chat?uid=1234567890"))
+        assertEquals("/user/id", DouyinWebExecutor.sanitizeRouteFeature("https://www.douyin.com/user/MS4wLjABAAAA_LongSecretUidValue"))
+        assertEquals("/verify/id", DouyinWebExecutor.sanitizeRouteFeature("https://www.douyin.com/verify/739876543210"))
+    }
+
+    @Test
+    fun batchSkipAndErrorSummaryFormattingSurfacesTransparentReasons() {
+        val counts = linkedMapOf<String, Int>()
+        repeat(3) {
+            ExecutionServiceStoreOps.incrementReasonCount(
+                counts,
+                ExecutionServiceStoreOps.normalizeSkipReason("未绑定可用模板或文案池今日无候选"),
+            )
+        }
+        val skipSummary = ExecutionServiceStoreOps.formatSkipSummary(counts)
+        assertEquals("3 位未绑定可用模板，请到「好友」页绑定", skipSummary)
+
+        val batchSummary = ExecutionServiceStoreOps.formatBatchSummary(
+            succeededCount = 0,
+            skippedCount = 3,
+            failedCount = 0,
+            unknownCount = 0,
+            skipSummary = skipSummary,
+        )
+        assertEquals(
+            "今日续火完成：成功 0 / 跳过 3 / 失败 0（3 位未绑定可用模板，请到「好友」页绑定）",
+            batchSummary,
+        )
+
+        val errCounts = linkedMapOf<String, Int>()
+        ExecutionServiceStoreOps.incrementReasonCount(
+            errCounts,
+            ExecutionServiceStoreOps.formatFailureClassLabel(FailureClass.TARGET_UNCERTAIN),
+        )
+        assertEquals("目标会话定位或核验失败 ×1", ExecutionServiceStoreOps.formatErrorSummary(errCounts))
     }
 
     private class InMemoryAccountDao : AccountDao {

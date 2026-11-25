@@ -7,6 +7,7 @@ import io.github.oinzc.flamecontractor.core.account.PendingProfileCleanupStore
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.backup.BackupManager
 import io.github.oinzc.flamecontractor.core.backup.RoomBackupStore
+import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
@@ -48,6 +49,7 @@ class AppContainer(context: Context) {
     val scheduleCoordinator: ScheduleCoordinator = ScheduleCoordinator(appContext, database)
     val templateImageStore: AndroidTemplateImageStore = AndroidTemplateImageStore(appContext)
     val diagnosticScreenshotStore: DiagnosticScreenshotStore = DiagnosticScreenshotStore(appContext)
+    val diagnosticLogStore: DiagnosticLogStore = DiagnosticLogStore(appContext)
     val pendingProfileCleanupStore: PendingProfileCleanupStore = PendingProfileCleanupStore(appContext)
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
     val themePreferencesStore: ThemePreferencesStore = ThemePreferencesStore.fromContext(appContext)
@@ -89,8 +91,13 @@ class AppContainer(context: Context) {
     private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
+        DiagnosticLogStore.attachGlobal(diagnosticLogStore)
         ExecutionForegroundService.attachDatabase(database)
         maintenanceScope.launch {
+            FlameDatabase.migrateLegacyDefaultTextTemplateOnce(
+                context = appContext,
+                database = database,
+            )
             LocalStreakCounter.runStartupSameDayStreakReconciliationOnce(
                 context = appContext,
                 database = database,

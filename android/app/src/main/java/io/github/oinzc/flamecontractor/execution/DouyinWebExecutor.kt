@@ -14,6 +14,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.webkit.WebViewCompat
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
+import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
 import io.github.oinzc.flamecontractor.core.identity.ConversationMatch
 import io.github.oinzc.flamecontractor.core.identity.ConversationRecord
 import io.github.oinzc.flamecontractor.core.identity.DouyinProtobufParser
@@ -1251,6 +1252,48 @@ class DouyinWebExecutor(
         var consecutiveVerificationSignals = 0
         var consecutiveLoginSignals = 0
 
+        val accountTag = DiagnosticLogStore.safeAccountTag(session.accountId)
+
+        fun recordAuthOutcome(
+            event: String,
+            level: String,
+            result: AuthCheckResult,
+            probe: Map<String, Any?>?,
+            elapsedMs: Long,
+            mainErr: Pair<Int, String>?,
+            httpErr: Pair<Int, String>?,
+        ) {
+            val route = sanitizeRouteFeature(probe?.stringOrNull("originPath"))
+            val isChatRoute = probe?.boolOrDefault("isChatRoute", false) ?: false
+            val verifySig = probe?.stringOrNull("verificationSignal") ?: "none"
+            val loginSig = probe?.boolOrDefault("hasQrOrLoginSignal", false) ?: false
+            val hasUserInfo = probe?.boolOrDefault("hasLocalStorageUserInfo", false) ?: false
+            val convCount = probe?.intOrNull("conversationCount") ?: 0
+            val titleLen = probe?.intOrNull("pageTitleLen") ?: 0
+            val detail = buildString {
+                append("outcome=").append(result.outcome.name)
+                append(" elapsedMs=").append(elapsedMs)
+                append(" route=").append(route)
+                append(" isChat=").append(isChatRoute)
+                append(" verifySig=").append(verifySig)
+                append(" loginSig=").append(loginSig)
+                append(" userInfo=").append(hasUserInfo)
+                append(" convs=").append(convCount)
+                append(" titleLen=").append(titleLen)
+                append(" skelMiss=").append(result.skeletonMissingDespiteSession)
+                if (reloadedSkeletonOnce) append(" reloaded=true")
+                if (mainErr != null) append(" mainErr=").append(mainErr.first)
+                if (httpErr != null) append(" httpErr=").append(httpErr.first)
+            }
+            DiagnosticLogStore.recordGlobal(
+                category = "AUTH",
+                event = event,
+                level = level,
+                detail = detail,
+                accountTag = accountTag,
+            )
+        }
+
         while (true) {
             val probe = evalObject(
                 session.webView,
@@ -1292,17 +1335,25 @@ class DouyinWebExecutor(
                     consecutiveLoginSignals = consecutiveLoginSignals,
                 )
             ) {
-                AuthPollDecision.NETWORK_ERROR -> return AuthCheckResult(
-                    outcome = AuthProbeOutcome.NETWORK_ERROR,
-                    webViewVersion = session.webViewVersion,
-                    detail = "页面未能正常加载（网络异常）",
-                )
+                AuthPollDecision.NETWORK_ERROR -> {
+                    val result = AuthCheckResult(
+                        outcome = AuthProbeOutcome.NETWORK_ERROR,
+                        webViewVersion = session.webViewVersion,
+                        detail = "页面未能正常加载（网络异常）",
+                    )
+                    recordAuthOutcome("auth_probe", "WARN", result, probe, elapsed, mainErr, httpErr)
+                    return result
+                }
 
-                AuthPollDecision.VERIFICATION_REQUIRED -> return AuthCheckResult(
-                    outcome = AuthProbeOutcome.VERIFICATION_REQUIRED,
-                    webViewVersion = session.webViewVersion,
-                    detail = "检测到抖音安全验证弹窗，请在页面内完成验证",
-                )
+                AuthPollDecision.VERIFICATION_REQUIRED -> {
+                    val result = AuthCheckResult(
+                        outcome = AuthProbeOutcome.VERIFICATION_REQUIRED,
+                        webViewVersion = session.webViewVersion,
+                        detail = "检测到抖音安全验证弹窗，请在页面内完成验证",
+                    )
+                    recordAuthOutcome("auth_verify", "WARN", result, probe, elapsed, mainErr, httpErr)
+                    return result
+                }
 
                 AuthPollDecision.AUTHENTICATED -> {
                     // 真机 M1 实证：CONVERSATION_LIST 首次出现后停 1000ms 让火花徽标与行水合完成
@@ -1311,24 +1362,31 @@ class DouyinWebExecutor(
                         session.webView,
                         DouyinJsScripts.buildAuthAndSelfIdentityProbeJs(bundle),
                     ) ?: probe
-                    return AuthCheckResult(
+                    val result = AuthCheckResult(
                         outcome = AuthProbeOutcome.AUTHENTICATED,
                         selfUid = refreshed?.stringOrNull("selfUid"),
                         douyinNickname = refreshed?.stringOrNull("douyinNickname"),
                         webViewVersion = session.webViewVersion,
                         detail = "登录态有效",
                     )
+                    recordAuthOutcome("auth_ok", "INFO", result, refreshed, elapsed, mainErr, httpErr)
+                    return result
                 }
 
-                AuthPollDecision.UNAUTHENTICATED -> return AuthCheckResult(
-                    outcome = AuthProbeOutcome.UNAUTHENTICATED,
-                    webViewVersion = session.webViewVersion,
-                    detail = "页面存在扫码或登录提示，请重新扫码登录",
-                )
+                AuthPollDecision.UNAUTHENTICATED -> {
+                    val result = AuthCheckResult(
+                        outcome = AuthProbeOutcome.UNAUTHENTICATED,
+                        webViewVersion = session.webViewVersion,
+                        detail = "页面存在扫码或登录提示，请重新扫码登录",
+                    )
+                    recordAuthOutcome("auth_unauth", "WARN", result, probe, elapsed, mainErr, httpErr)
+                    return result
+                }
 
                 AuthPollDecision.CONTINUE -> {
                     val hasUserInfo = probe?.boolOrDefault("hasLocalStorageUserInfo", false) == true
-                    if (hasUserInfo && !reloadedSkeletonOnce && elapsed >= 6_000L) {
+                    val isChatRoute = probe?.boolOrDefault("isChatRoute", true) == true
+                    if (hasUserInfo && isChatRoute && !reloadedSkeletonOnce && elapsed >= 6_000L) {
                         reloadedSkeletonOnce = true
                         withContext(Dispatchers.Main) {
                             session.webView.reload()
@@ -1340,24 +1398,14 @@ class DouyinWebExecutor(
             }
 
             if (SystemClock.elapsedRealtime() >= deadline) {
-                val isBlank = probe?.boolOrDefault("isBlankPage", false) == true
-                if (mainErr != null || (httpErr != null && httpErr.first >= 500) || probe == null ||
-                    probe.boolOrDefault("isErrorPage", false) || isBlank || !probe.boolOrDefault("isDouyinHost", false)
-                ) {
-                    return AuthCheckResult(
-                        outcome = AuthProbeOutcome.NETWORK_ERROR,
-                        webViewVersion = session.webViewVersion,
-                        detail = "加载抖音聊天页超时或网络异常",
-                    )
-                }
-                val skeletonBroken = probe.boolOrDefault("hasLocalStorageUserInfo", false) &&
-                    !probe.boolOrDefault("hasQrOrLoginSignal", false)
-                return AuthCheckResult(
-                    outcome = AuthProbeOutcome.UNAUTHENTICATED,
+                val result = classifyAuthTimeout(
+                    probe = probe,
+                    mainErr = mainErr,
+                    httpErr = httpErr,
                     webViewVersion = session.webViewVersion,
-                    skeletonMissingDespiteSession = skeletonBroken,
-                    detail = if (skeletonBroken) "已保留会话信息但未渲染会话列表，可能结构已变更" else "未检测到有效登录态",
                 )
+                recordAuthOutcome("auth_timeout", "WARN", result, probe, elapsed, mainErr, httpErr)
+                return result
             }
             delay(500L)
         }
@@ -1390,13 +1438,24 @@ class DouyinWebExecutor(
         )
 
         val discovered = LinkedHashMap<String, RawScannedRow>()
+        val iconVariants = LinkedHashSet<String>()
         var idleRounds = 0
+        var roundsCompleted = 0
+        val accountTag = DiagnosticLogStore.safeAccountTag(session.accountId)
 
         for (round in 1..SCAN_MAX_ROUNDS) {
+            roundsCompleted = round
             val countBefore = discovered.size
             val pageObj = evalObject(session.webView, DouyinJsScripts.buildScrollAndCollectChatsJs(bundle))
             if (pageObj == null || !pageObj.boolOrDefault("listFound", false)) {
                 if (discovered.isEmpty()) {
+                    DiagnosticLogStore.recordGlobal(
+                        category = "SCAN",
+                        event = "scan_dom_miss",
+                        level = "WARN",
+                        detail = "round=$round listFound=false",
+                        accountTag = accountTag,
+                    )
                     return ScanExecutionResult.Error(
                         failureClass = FailureClass.DOM_CHANGED,
                         detail = "未找到左侧会话列表容器",
@@ -1409,6 +1468,11 @@ class DouyinWebExecutor(
             for (raw in rawItems) {
                 @Suppress("UNCHECKED_CAST")
                 val row = raw as? Map<String, Any?> ?: continue
+                sanitizeFlameIconVariant(row.stringOrNull("streakIconVariant"))?.let { variant ->
+                    if (iconVariants.size < MAX_LOGGED_ICON_VARIANTS) {
+                        iconVariants.add(variant)
+                    }
+                }
                 val title = row.stringOrNull("title") ?: continue
                 if (!discovered.containsKey(title)) {
                     discovered[title] = RawScannedRow(
@@ -1497,6 +1561,14 @@ class DouyinWebExecutor(
             discoveredCount = sortedCandidates.size,
             sparkCount = sparkCount,
             candidates = sortedCandidates,
+        )
+        val variantsSummary = if (iconVariants.isEmpty()) "none" else iconVariants.joinToString(",")
+        DiagnosticLogStore.recordGlobal(
+            category = "SCAN",
+            event = "scan_done",
+            level = "INFO",
+            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount iconVariants=$variantsSummary",
+            accountTag = accountTag,
         )
         return ScanExecutionResult.Success(
             snapshot = snapshot,
@@ -1681,6 +1753,7 @@ class DouyinWebExecutor(
         val observedPlatformHandle: String? = null,
         val observedPlatformConversationId: String? = null,
         val observedConversationType: String? = null,
+        val reason: String = "",
     )
 
     internal data class EncodedImagePayload(
@@ -1726,6 +1799,14 @@ class DouyinWebExecutor(
         expectedUserId: String?,
         expectedConversationId: String?,
     ): OpenConversationResult {
+        val accountTag = DiagnosticLogStore.safeAccountTag(session.accountId)
+        val nameLen = targetName.trim().length
+        val expectedIdType = when {
+            expectedUserId != null -> "user"
+            expectedConversationId != null -> "group"
+            else -> "none"
+        }
+
         if (!session.warmedUp) {
             for (i in 0 until WARMUP_SCROLLS) {
                 val res = evalObject(
@@ -1751,6 +1832,27 @@ class DouyinWebExecutor(
 
         var sawMismatch = false
         var sawAmbiguous = false
+        var searchHit = false
+        var maxVisibleRows = 0
+        var totalMatchCount = 0
+        var scrollSteps = 0
+        var lastConfirmReason = "not_found"
+
+        fun logLookupResult(result: OpenConversationResult, via: String) {
+            val event = if (result.opened && result.exact) "target_lookup_ok" else "target_lookup_miss"
+            val level = if (result.opened && result.exact) "INFO" else "WARN"
+            val reason = result.reason.ifBlank { lastConfirmReason }
+            DiagnosticLogStore.recordGlobal(
+                category = "SEND",
+                event = event,
+                level = level,
+                detail = "via=$via nameLen=$nameLen idType=$expectedIdType searchFill=$searchFilled " +
+                    "searchHit=$searchHit visibleRows=$maxVisibleRows scrollSteps=$scrollSteps " +
+                    "matchCount=$totalMatchCount opened=${result.opened} exact=${result.exact} " +
+                    "ambig=${result.ambiguous} reason=$reason",
+                accountTag = accountTag,
+            )
+        }
 
         if (searchFilled) {
             delay(2_000L)
@@ -1760,8 +1862,12 @@ class DouyinWebExecutor(
                     session.webView,
                     DouyinJsScripts.buildSearchAndOpenJs(bundle, targetName, 0),
                 )
+                val probeRows = firstProbe?.intOrNull("visibleRows") ?: 0
+                if (probeRows > maxVisibleRows) maxVisibleRows = probeRows
                 val totalMatches = firstProbe?.intOrNull("totalMatches") ?: 0
                 if (totalMatches > 0) {
+                    searchHit = true
+                    totalMatchCount = maxOf(totalMatchCount, totalMatches)
                     val outcome = verifyAndTryRemainingCandidates(
                         session = session,
                         bundle = bundle,
@@ -1776,7 +1882,11 @@ class DouyinWebExecutor(
                             DouyinJsScripts.buildSearchAndOpenJs(bundle, targetName, nextIdx),
                         )?.boolOrDefault("clicked", false) == true
                     }
-                    if (outcome.opened && outcome.exact) return outcome
+                    if (outcome.reason.isNotBlank()) lastConfirmReason = outcome.reason
+                    if (outcome.opened && outcome.exact) {
+                        logLookupResult(outcome, via = "search")
+                        return outcome
+                    }
                     if (outcome.opened) sawMismatch = true
                     if (outcome.ambiguous) sawAmbiguous = true
                     break
@@ -1792,12 +1902,16 @@ class DouyinWebExecutor(
         evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
         delay(300L)
         for (scrollRound in 0 until MAX_LIST_SCROLLS) {
+            scrollSteps = scrollRound + 1
             val firstProbe = evalObject(
                 session.webView,
                 DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, 0),
             )
+            val probeRows = firstProbe?.intOrNull("visibleRows") ?: 0
+            if (probeRows > maxVisibleRows) maxVisibleRows = probeRows
             val totalMatches = firstProbe?.intOrNull("totalMatches") ?: 0
             if (totalMatches > 0) {
+                totalMatchCount = maxOf(totalMatchCount, totalMatches)
                 val outcome = verifyAndTryRemainingCandidates(
                     session = session,
                     bundle = bundle,
@@ -1812,7 +1926,11 @@ class DouyinWebExecutor(
                         DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, nextIdx),
                     )?.boolOrDefault("clicked", false) == true
                 }
-                if (outcome.opened && outcome.exact) return outcome
+                if (outcome.reason.isNotBlank()) lastConfirmReason = outcome.reason
+                if (outcome.opened && outcome.exact) {
+                    logLookupResult(outcome, via = "list")
+                    return outcome
+                }
                 if (outcome.opened) sawMismatch = true
                 if (outcome.ambiguous) sawAmbiguous = true
             }
@@ -1824,11 +1942,14 @@ class DouyinWebExecutor(
             delay(800L)
         }
 
-        return OpenConversationResult(
+        val missResult = OpenConversationResult(
             opened = sawMismatch,
             exact = false,
             ambiguous = sawAmbiguous,
+            reason = lastConfirmReason,
         )
+        logLookupResult(missResult, via = "fallback_miss")
+        return missResult
     }
 
     private suspend fun verifyAndTryRemainingCandidates(
@@ -1843,6 +1964,7 @@ class DouyinWebExecutor(
     ): OpenConversationResult {
         var anyOpened = false
         var anyAmbiguous = false
+        var lastReason = "click_failed"
         for (idx in 0 until totalMatches) {
             val clicked = if (idx == 0) firstClicked else clickIndex(idx)
             if (!clicked) continue
@@ -1853,13 +1975,19 @@ class DouyinWebExecutor(
                 expectedUserId = expectedUserId,
                 expectedConversationId = expectedConversationId,
             )
+            if (confirmed.reason.isNotBlank()) lastReason = confirmed.reason
             if (confirmed.opened && confirmed.exact) {
                 return confirmed
             }
             if (confirmed.opened) anyOpened = true
             if (confirmed.ambiguous) anyAmbiguous = true
         }
-        return OpenConversationResult(opened = anyOpened, exact = false, ambiguous = anyAmbiguous)
+        return OpenConversationResult(
+            opened = anyOpened,
+            exact = false,
+            ambiguous = anyAmbiguous,
+            reason = lastReason,
+        )
     }
 
     private suspend fun confirmOpenedPanel(
@@ -1898,13 +2026,14 @@ class DouyinWebExecutor(
                             observedPlatformUserId = expectedUserId,
                             observedPlatformHandle = match.platformHandle,
                             observedConversationType = "friend",
+                            reason = "uid_exact",
                         )
                     }
                     if (ids.size == 1 && normalizedPrimary == normalizedTarget) {
-                        return OpenConversationResult(opened = true, exact = false)
+                        return OpenConversationResult(opened = true, exact = false, reason = "uid_mismatch")
                     }
                     if (ids.size > 1) {
-                        return OpenConversationResult(opened = true, exact = false, ambiguous = true)
+                        return OpenConversationResult(opened = true, exact = false, ambiguous = true, reason = "uid_ambig")
                     }
                 }
 
@@ -1917,13 +2046,14 @@ class DouyinWebExecutor(
                             exact = true,
                             observedPlatformConversationId = expectedConversationId,
                             observedConversationType = "group",
+                            reason = "cid_exact",
                         )
                     }
                     if (ids.size == 1 && normalizedPrimary == normalizedTarget) {
-                        return OpenConversationResult(opened = true, exact = false)
+                        return OpenConversationResult(opened = true, exact = false, reason = "cid_mismatch")
                     }
                     if (ids.size > 1) {
-                        return OpenConversationResult(opened = true, exact = false, ambiguous = true)
+                        return OpenConversationResult(opened = true, exact = false, ambiguous = true, reason = "cid_ambig")
                     }
                 }
 
@@ -1938,7 +2068,7 @@ class DouyinWebExecutor(
                             groupMatch.status == MatchStatus.AMBIGUOUS ||
                             (userMatch.status == MatchStatus.BOUND && groupMatch.status == MatchStatus.BOUND)
                         if (isAmbiguous) {
-                            return OpenConversationResult(opened = true, exact = false, ambiguous = true)
+                            return OpenConversationResult(opened = true, exact = false, ambiguous = true, reason = "title_ambig")
                         }
                         return OpenConversationResult(
                             opened = true,
@@ -1951,13 +2081,20 @@ class DouyinWebExecutor(
                                 userMatch.status == MatchStatus.BOUND -> "friend"
                                 else -> null
                             },
+                            reason = "title_exact",
                         )
                     }
                 }
             }
 
             if (SystemClock.elapsedRealtime() >= deadline) {
-                return OpenConversationResult(opened = lastPrimary != null, exact = false)
+                val timeoutReason = when {
+                    lastPrimary == null -> "right_title_empty"
+                    expectedUserId != null -> "uid_not_observed"
+                    expectedConversationId != null -> "cid_not_observed"
+                    else -> "title_mismatch"
+                }
+                return OpenConversationResult(opened = lastPrimary != null, exact = false, reason = timeoutReason)
             }
             delay(500L)
         }
@@ -2357,7 +2494,11 @@ class DouyinWebExecutor(
         private const val SCAN_MAX_ROUNDS = 15
         private const val SCAN_IDLE_ROUNDS = 3
         private const val SCAN_SCROLL_STEP_PX = 900
+        private const val MAX_LOGGED_ICON_VARIANTS = 20
         private val SAFE_UPLOAD_NAME_REGEX = Regex("""^[A-Za-z0-9._-]{1,64}$""")
+        private val SAFE_FLAME_ICON_VARIANT_REGEX = Regex("""^[A-Za-z0-9._/-]{1,80}$""")
+        private val SAFE_ROUTE_SEGMENT_REGEX = Regex("""^[A-Za-z0-9._-]{1,20}$""")
+        private val LONG_DIGIT_SEGMENT_REGEX = Regex("""\d{6,}""")
 
         private fun safeLogInfo(message: String) {
             try {
@@ -2851,6 +2992,89 @@ class DouyinWebExecutor(
                 elapsedMs >= minWaitMs &&
                 (current.totalBoxes > 0 || elapsedMs >= emptyMinWaitMs)
 
+        internal fun sanitizeFlameIconVariant(raw: String?): String? {
+            val trimmed = raw?.trim().orEmpty()
+            if (trimmed.isEmpty()) return null
+            val withoutQuery = trimmed.substringBefore('?').substringBefore('#')
+            val tail = if (withoutQuery.contains("flame_icon/")) {
+                withoutQuery.substringAfter("flame_icon/")
+            } else if (withoutQuery.contains("://")) {
+                return null
+            } else {
+                withoutQuery
+            }.trimStart('/')
+            if (tail.isEmpty() || tail.contains("..")) return null
+            return if (SAFE_FLAME_ICON_VARIANT_REGEX.matches(tail)) tail else null
+        }
+
+        internal fun sanitizeRouteFeature(originPath: String?): String {
+            val trimmed = originPath?.trim().orEmpty()
+            if (trimmed.isEmpty()) return "empty"
+            if (trimmed.startsWith("about:", ignoreCase = true)) return "blank"
+            if (trimmed.startsWith("chrome-error:", ignoreCase = true)) return "chrome_error"
+            val withoutQuery = trimmed.substringBefore('?').substringBefore('#')
+            val pathPart = if (withoutQuery.contains("://")) {
+                val afterScheme = withoutQuery.substringAfter("://")
+                val slashIdx = afterScheme.indexOf('/')
+                if (slashIdx < 0) "/" else afterScheme.substring(slashIdx)
+            } else {
+                withoutQuery
+            }
+            val segments = pathPart.split('/')
+                .filter { it.isNotBlank() }
+                .take(3)
+                .map { seg ->
+                    if (!SAFE_ROUTE_SEGMENT_REGEX.matches(seg) || LONG_DIGIT_SEGMENT_REGEX.containsMatchIn(seg)) {
+                        "id"
+                    } else {
+                        seg
+                    }
+                }
+            return if (segments.isEmpty()) "/" else "/" + segments.joinToString("/")
+        }
+
+        internal fun classifyAuthTimeout(
+            probe: Map<String, Any?>?,
+            mainErr: Pair<Int, String>?,
+            httpErr: Pair<Int, String>?,
+            webViewVersion: String,
+        ): AuthCheckResult {
+            val isBlank = probe?.boolOrDefault("isBlankPage", false) == true
+            if (mainErr != null || (httpErr != null && httpErr.first >= 500) || probe == null ||
+                probe.boolOrDefault("isErrorPage", false) || isBlank || !probe.boolOrDefault("isDouyinHost", false)
+            ) {
+                return AuthCheckResult(
+                    outcome = AuthProbeOutcome.NETWORK_ERROR,
+                    webViewVersion = webViewVersion,
+                    detail = "加载抖音聊天页超时或网络异常",
+                )
+            }
+            if (probe.boolOrDefault("verificationRequired", false)) {
+                return AuthCheckResult(
+                    outcome = AuthProbeOutcome.VERIFICATION_REQUIRED,
+                    webViewVersion = webViewVersion,
+                    detail = "检测到抖音安全验证弹窗，请在页面内完成验证",
+                )
+            }
+            val isChatRoute = probe.boolOrDefault("isChatRoute", true)
+            if (!isChatRoute) {
+                return AuthCheckResult(
+                    outcome = AuthProbeOutcome.UNAUTHENTICATED,
+                    webViewVersion = webViewVersion,
+                    skeletonMissingDespiteSession = false,
+                    detail = "页面已跳离聊天页，请重新登录或查看网页",
+                )
+            }
+            val skeletonBroken = probe.boolOrDefault("hasLocalStorageUserInfo", false) &&
+                !probe.boolOrDefault("hasQrOrLoginSignal", false)
+            return AuthCheckResult(
+                outcome = AuthProbeOutcome.UNAUTHENTICATED,
+                webViewVersion = webViewVersion,
+                skeletonMissingDespiteSession = skeletonBroken,
+                detail = if (skeletonBroken) "已保留会话信息但未渲染会话列表，可能结构已变更" else "未检测到有效登录态",
+            )
+        }
+
         internal fun evaluateAuthPollDecision(
             probe: Map<String, Any?>?,
             mainErr: Pair<Int, String>?,
@@ -2865,6 +3089,9 @@ class DouyinWebExecutor(
                 val isErrorPage = probe.boolOrDefault("isErrorPage", false)
                 val loggedIn = probe.boolOrDefault("loggedIn", false)
                 val verificationRequired = probe.boolOrDefault("verificationRequired", false)
+                val verificationSignal = probe.stringOrNull("verificationSignal")
+                    ?: if (verificationRequired) "text_verify" else "none"
+                val strongCaptchaOverlay = verificationSignal == "iframe_verify" || verificationSignal == "dom_captcha"
                 val hasUserInfo = probe.boolOrDefault("hasLocalStorageUserInfo", false)
                 val hasLoginSignal = probe.boolOrDefault("hasQrOrLoginSignal", false)
 
@@ -2876,6 +3103,9 @@ class DouyinWebExecutor(
                 }
                 if (mainErr != null && !isDouyinHost && (!isBlankPage || pageFinished || elapsedMs >= 1_500L)) {
                     return AuthPollDecision.NETWORK_ERROR
+                }
+                if (strongCaptchaOverlay && (pageFinished || consecutiveVerificationSignals >= 2)) {
+                    return AuthPollDecision.VERIFICATION_REQUIRED
                 }
                 if (loggedIn) {
                     return AuthPollDecision.AUTHENTICATED

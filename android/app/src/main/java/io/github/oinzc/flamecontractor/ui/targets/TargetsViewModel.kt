@@ -11,7 +11,7 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
-import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_SPARK_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
@@ -1614,12 +1614,12 @@ class TargetsViewModel(
     }
 
     companion object {
-        private const val DEFAULT_DAILY_TEMPLATE_NAME = "每日续火"
+        private const val DEFAULT_SPARK_TEMPLATE_NAME = "续火花"
         private val STRICT_HHMM_REGEX = Regex("""^\d{2}:\d{2}$""")
 
         /**
          * 为扫描导入与手工新增解析默认绑定的发送模板：
-         * 优先内置「每日续火」模板（含多账号作用域 ID 与同名备份模板），其次首个启用的文本模板，再其次首个启用模板。
+         * 优先内置「续火花」表情模板（含多账号作用域 ID 与同名表情模板），其次首个启用的表情模板，再其次首个启用模板。
          */
         fun resolvePreferredDefaultTemplateId(
             templates: List<MessageTemplateEntity>,
@@ -1627,10 +1627,13 @@ class TargetsViewModel(
             val enabled = templates.filter { it.enabled }
             if (enabled.isEmpty()) return null
             return enabled.firstOrNull {
-                it.id == DEFAULT_TEXT_TEMPLATE_ID || it.id.endsWith(":$DEFAULT_TEXT_TEMPLATE_ID")
+                it.id == DEFAULT_STICKER_SPARK_TEMPLATE_ID ||
+                    it.id.endsWith(":$DEFAULT_STICKER_SPARK_TEMPLATE_ID")
             }?.id
-                ?: enabled.firstOrNull { it.name.trim() == DEFAULT_DAILY_TEMPLATE_NAME }?.id
-                ?: enabled.firstOrNull { it.type == TemplateType.TEXT }?.id
+                ?: enabled.firstOrNull {
+                    it.type == TemplateType.STICKER && it.name.trim() == DEFAULT_SPARK_TEMPLATE_NAME
+                }?.id
+                ?: enabled.firstOrNull { it.type == TemplateType.STICKER }?.id
                 ?: enabled.firstOrNull()?.id
         }
 

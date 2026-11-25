@@ -8,6 +8,7 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_SPARK_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
@@ -1043,12 +1044,12 @@ class ScanReconcileViewModelTest {
     }
 
     @Test
-    fun scanImportAndManualCreateDefaultToDailyStreakTemplateAndRespectExplicitOverride() = runTest {
+    fun scanImportAndManualCreateDefaultToSparkStickerTemplateAndRespectExplicitOverride() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
         try {
             val repo = FakeTargetsRepository().apply {
-                // 模拟真实种子顺序：3 个表情模板创建早于「每日续火」文本模板
+                // 即使「比心」或自定义文本模板排在前面，仍优先命中内置「续火花」表情模板
                 templatesState.value = listOf(
                     MessageTemplateEntity(
                         id = DEFAULT_STICKER_TEMPLATE_ID,
@@ -1062,7 +1063,15 @@ class ScanReconcileViewModelTest {
                         id = DEFAULT_TEXT_TEMPLATE_ID,
                         name = "每日续火",
                         type = TemplateType.TEXT,
-                        content = "每日续火打卡 🔥",
+                        content = "早安打卡",
+                        createdAt = 150L,
+                    ),
+                    MessageTemplateEntity(
+                        id = DEFAULT_STICKER_SPARK_TEMPLATE_ID,
+                        name = "续火花",
+                        type = TemplateType.STICKER,
+                        stickerName = "续火花",
+                        stickerLabel = "续火花",
                         createdAt = 200L,
                     ),
                 )
@@ -1092,16 +1101,16 @@ class ScanReconcileViewModelTest {
             )
             advanceUntilIdle()
 
-            // 1. 扫描对账抽屉默认自动选中「每日续火」模板而非排在前面的表情模板
-            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, vm.uiState.value.reconcileState.defaultTemplateId)
+            // 1. 扫描对账抽屉默认自动选中「续火花」表情模板
+            assertEquals(DEFAULT_STICKER_SPARK_TEMPLATE_ID, vm.uiState.value.reconcileState.defaultTemplateId)
 
-            // 手工新增弹窗同样默认绑定「每日续火」
+            // 手工新增弹窗同样默认绑定「续火花」表情模板
             vm.openCreateTargetDialog()
             advanceUntilIdle()
-            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, vm.uiState.value.editorState?.templateId)
+            assertEquals(DEFAULT_STICKER_SPARK_TEMPLATE_ID, vm.uiState.value.editorState?.templateId)
             vm.dismissTargetEditor()
 
-            // 只勾选「好友甲」并导入，应自动绑定「每日续火」
+            // 只勾选「好友甲」并导入，应自动绑定「续火花」
             val friendB = vm.uiState.value.reconcileState.allCandidates.first { it.candidate.displayName == "好友乙" }.candidate
             vm.toggleCandidateSelection(friendB)
             advanceUntilIdle()
@@ -1109,7 +1118,7 @@ class ScanReconcileViewModelTest {
             advanceUntilIdle()
 
             val importedA = repo.targetsState.value.first { it.nicknameSnapshot == "好友甲" }
-            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, importedA.templateId)
+            assertEquals(DEFAULT_STICKER_SPARK_TEMPLATE_ID, importedA.templateId)
 
             // 2. 用户显式选择「暂不绑定模板」(null) 后，必须严格尊重用户选择
             vm.onReconcileDefaultTemplateChanged(null)
@@ -1122,7 +1131,7 @@ class ScanReconcileViewModelTest {
             val importedB = repo.targetsState.value.first { it.nicknameSnapshot == "好友乙" }
             assertNull(importedB.templateId)
 
-            // 3. 多账号作用域模板 ID（acct2:default-text-daily）同样优先命中
+            // 3. 多账号作用域模板 ID（acct-2:default-sticker-xuhuohua）同样优先命中
             val multiTemplates = listOf(
                 MessageTemplateEntity(
                     id = "acct-2:$DEFAULT_STICKER_TEMPLATE_ID",
@@ -1131,17 +1140,36 @@ class ScanReconcileViewModelTest {
                     type = TemplateType.STICKER,
                 ),
                 MessageTemplateEntity(
-                    id = "acct-2:$DEFAULT_TEXT_TEMPLATE_ID",
+                    id = "acct-2:$DEFAULT_STICKER_SPARK_TEMPLATE_ID",
                     accountId = "acct-2",
-                    name = "每日续火",
-                    type = TemplateType.TEXT,
-                    content = "打卡",
+                    name = "续火花",
+                    type = TemplateType.STICKER,
+                    stickerName = "续火花",
+                    stickerLabel = "续火花",
                 ),
             )
             assertEquals(
-                "acct-2:$DEFAULT_TEXT_TEMPLATE_ID",
+                "acct-2:$DEFAULT_STICKER_SPARK_TEMPLATE_ID",
                 TargetsViewModel.resolvePreferredDefaultTemplateId(multiTemplates),
             )
+
+            // 4. 备份恢复的同名「续火花」表情模板与回退策略（其他表情 -> 任意启用模板）
+            val renamedSparkTemplates = listOf(
+                MessageTemplateEntity(id = "txt-1", name = "早安", type = TemplateType.TEXT, content = "hi"),
+                MessageTemplateEntity(id = "backup-spark", name = "续火花", type = TemplateType.STICKER, stickerName = "续火花"),
+            )
+            assertEquals("backup-spark", TargetsViewModel.resolvePreferredDefaultTemplateId(renamedSparkTemplates))
+
+            val otherStickerFallback = listOf(
+                MessageTemplateEntity(id = "txt-1", name = "早安", type = TemplateType.TEXT, content = "hi"),
+                MessageTemplateEntity(id = "stk-bixin", name = "比心", type = TemplateType.STICKER, stickerName = "比心"),
+            )
+            assertEquals("stk-bixin", TargetsViewModel.resolvePreferredDefaultTemplateId(otherStickerFallback))
+
+            val textOnlyFallback = listOf(
+                MessageTemplateEntity(id = "txt-only", name = "自定义文本", type = TemplateType.TEXT, content = "hi"),
+            )
+            assertEquals("txt-only", TargetsViewModel.resolvePreferredDefaultTemplateId(textOnlyFallback))
         } finally {
             vmScope.cancel()
         }

@@ -14,6 +14,7 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_SPARK_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.FailureClass
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
@@ -83,10 +84,11 @@ class AccountManagerTest {
         val allAccounts = db.fakeAccountDao.listAll()
         assertEquals(2, allAccounts.size)
         val seededTemplates = db.fakeTemplateDao.listTemplates(created.id)
-        assertEquals(4, seededTemplates.size)
+        assertEquals(3, seededTemplates.size)
         assertEquals(3, seededTemplates.count { it.type == TemplateType.STICKER })
-        assertEquals(1, seededTemplates.count { it.type == TemplateType.TEXT })
-        assertTrue(seededTemplates.any { it.id == "${created.id}:$DEFAULT_TEXT_TEMPLATE_ID" })
+        assertEquals(0, seededTemplates.count { it.type == TemplateType.TEXT })
+        assertEquals("${created.id}:$DEFAULT_STICKER_SPARK_TEMPLATE_ID", seededTemplates.first().id)
+        assertFalse(seededTemplates.any { it.id == "${created.id}:$DEFAULT_TEXT_TEMPLATE_ID" })
     }
 
     @Test
