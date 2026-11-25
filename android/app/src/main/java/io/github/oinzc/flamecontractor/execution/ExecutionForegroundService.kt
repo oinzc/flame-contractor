@@ -18,6 +18,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.diagnostics.DiagnosticLogStore
+import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.core.notify.BarkNotifier
 import io.github.oinzc.flamecontractor.core.notify.EncryptedSecretStore
 import io.github.oinzc.flamecontractor.core.notify.LocalNotifier
@@ -26,6 +27,7 @@ import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -100,6 +102,7 @@ class ExecutionForegroundService : Service() {
     private lateinit var localNotifier: LocalNotifier
     private lateinit var templateImageStore: AndroidTemplateImageStore
     private lateinit var diagnosticScreenshotStore: DiagnosticScreenshotStore
+    private lateinit var officialSparkLitStore: OfficialSparkLitStore
     private lateinit var executor: DouyinWebExecutor
 
     @Volatile
@@ -140,6 +143,11 @@ class ExecutionForegroundService : Service() {
             ?.container
             ?.diagnosticScreenshotStore
             ?: DiagnosticScreenshotStore(appCtx)
+        officialSparkLitStore = (application as? FlameApplication)
+            ?.container
+            ?.officialSparkLitStore
+            ?: OfficialSparkLitStore.globalOrNull()
+            ?: OfficialSparkLitStore(appCtx).also { OfficialSparkLitStore.attachGlobal(it) }
         executor = DouyinWebExecutor(appCtx, selectorStore)
         ensureProgressChannel()
     }
@@ -315,12 +323,13 @@ class ExecutionForegroundService : Service() {
 
     private suspend fun recoverCrashedJobsOnStartup(accountId: String) {
         val nowMs = System.currentTimeMillis()
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
         val hasUnknown = ExecutionServiceStoreOps.recoverInterruptedAccountAndJobs(
             accountId = accountId,
             accountDao = database.accountDao(),
             sendJobDao = database.sendJobDao(),
             nowMs = nowMs,
-            isMutexLocked = ExecutionMutex.isLocked(),
+            isMutexLocked = ExecutionMutex.isLocked(scopeKey),
         )
         if (hasUnknown) {
             sendUrgentBoth(
@@ -344,8 +353,13 @@ class ExecutionForegroundService : Service() {
             forceAll -> "manual_batch_force_all"
             else -> "manual_batch"
         }
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
 
-        val acquired = ExecutionMutex.tryWithLock(owner = owner, timeoutMs = lockTimeout) {
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = owner,
+            timeoutMs = lockTimeout,
+            scopeKey = scopeKey,
+        ) {
             executeBatchLocked(
                 accountId = accountId,
                 scheduledOnly = scheduledOnly,
@@ -425,10 +439,12 @@ class ExecutionForegroundService : Service() {
         val enabledTargets = database.targetDao().listEnabledTargets(accountId)
         val todayJobs = database.sendJobDao().listJobsForDate(accountId, todayStr)
         val jobsByTarget = todayJobs.groupBy { it.targetId }
+        val activeLitStore = OfficialSparkLitStore.globalOrNull() ?: officialSparkLitStore
 
         val skipReasonCounts = LinkedHashMap<String, Int>()
         val errorReasonCounts = LinkedHashMap<String, Int>()
         var preSkippedCount = 0
+        var officialLitSkippedCount = 0
 
         val targetsToRun: List<ContractTargetEntity> = when {
             scheduledOnly -> {
@@ -469,9 +485,28 @@ class ExecutionForegroundService : Service() {
             }
 
             else -> {
-                enabledTargets.filter { target ->
-                    SendGuard.canDispatchDaily(jobsByTarget[target.id].orEmpty())
+                val plan = ExecutionServiceStoreOps.planManualMakeupBatch(
+                    enabledTargets = enabledTargets,
+                    jobsByTarget = jobsByTarget,
+                    businessDate = todayStr,
+                    officialSparkLitStore = activeLitStore,
+                )
+                officialLitSkippedCount = plan.officialLitSkippedTargets.size
+                for (skippedTarget in plan.officialLitSkippedTargets) {
+                    preSkippedCount++
+                    ExecutionServiceStoreOps.incrementReasonCount(
+                        skipReasonCounts,
+                        ExecutionServiceStoreOps.SKIP_REASON_OFFICIAL_LIT_TODAY,
+                    )
+                    DiagnosticLogStore.recordGlobal(
+                        category = "SEND",
+                        event = "target_skip",
+                        level = "INFO",
+                        detail = "mode=$batchMode reason=official_lit_today",
+                        accountTag = accountTag,
+                    )
                 }
+                plan.targetsToRun
             }
         }
 
@@ -480,37 +515,21 @@ class ExecutionForegroundService : Service() {
                 val hasBlocking = enabledTargets.any { target ->
                     SendGuard.hasBlockingUnknownOrInflight(jobsByTarget[target.id].orEmpty())
                 }
-                val allSucceededToday = enabledTargets.isNotEmpty() && enabledTargets.all { target ->
-                    jobsByTarget[target.id].orEmpty().any { it.status == JobStatus.SUCCEEDED }
-                }
                 val preSkipSummary = ExecutionServiceStoreOps.formatSkipSummary(skipReasonCounts)
-                val noopMessage = when {
-                    enabledTargets.isEmpty() ->
-                        "暂无启用的续火好友，请先到「好友」页导入或启用"
-
-                    forceAll && preSkippedCount > 0 ->
-                        ExecutionServiceStoreOps.formatBatchSummary(
-                            succeededCount = 0,
-                            skippedCount = preSkippedCount,
-                            failedCount = 0,
-                            unknownCount = 0,
-                            skipSummary = preSkipSummary,
-                        )
-
-                    !forceAll && !hasBlocking && allSucceededToday ->
-                        "今日启用好友已全部续过火，无需补发"
-
-                    hasBlocking ->
-                        "存在待核对或进行中任务，请先在首页核对结果后再发"
-
-                    else ->
-                        "今日启用好友已全部处理或存在待核对记录，无需补发"
-                }
+                val noopMessage = ExecutionServiceStoreOps.resolveManualBatchNoopMessage(
+                    enabledTargets = enabledTargets,
+                    jobsByTarget = jobsByTarget,
+                    businessDate = todayStr,
+                    forceAll = forceAll,
+                    preSkippedCount = preSkippedCount,
+                    preSkipSummary = preSkipSummary,
+                    officialSparkLitStore = activeLitStore,
+                )
                 DiagnosticLogStore.recordGlobal(
                     category = "BATCH",
                     event = "batch_noop",
                     level = if (hasBlocking) "WARN" else "INFO",
-                    detail = "mode=$batchMode enabled=${enabledTargets.size} blocking=$hasBlocking allOk=$allSucceededToday preSkip=$preSkippedCount",
+                    detail = "mode=$batchMode enabled=${enabledTargets.size} blocking=$hasBlocking officialLitSkip=$officialLitSkippedCount preSkip=$preSkippedCount",
                     accountTag = accountTag,
                 )
                 ExecutionRuntimeBus.update {
@@ -519,7 +538,11 @@ class ExecutionForegroundService : Service() {
                         activeAccountId = null,
                         currentTask = null,
                         lastMessage = noopMessage,
-                        lastSkipSummary = preSkipSummary ?: if (hasBlocking) ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW else null,
+                        lastSkipSummary = if (hasBlocking) {
+                            ExecutionServiceStoreOps.SKIP_REASON_BLOCKED_REVIEW
+                        } else {
+                            preSkipSummary
+                        },
                         lastErrorSummary = null,
                         lastBatchMode = batchMode,
                         lastUpdatedAtEpochMs = System.currentTimeMillis(),
@@ -681,6 +704,7 @@ class ExecutionForegroundService : Service() {
                         zoneId = zoneId,
                         overrideText = null,
                         isVisibleActivity = false,
+                        skipIfOfficiallyLitToday = !scheduledOnly && !forceAll,
                     )
 
                     when (outcome.outcomeType) {
@@ -975,7 +999,12 @@ class ExecutionForegroundService : Service() {
     }
 
     private suspend fun runAuthRecheckCommand(accountId: String) {
-        val acquired = ExecutionMutex.tryWithLock("auth_recheck", SCHEDULED_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "auth_recheck",
+            timeoutMs = SCHEDULED_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             val account = database.accountDao().getAccount(accountId) ?: return@tryWithLock
             if (!account.enabled || account.status != AccountStatus.HEALTHY) return@tryWithLock
 
@@ -1081,7 +1110,12 @@ class ExecutionForegroundService : Service() {
         targetId: String,
         overrideText: String?,
     ) {
-        val acquired = ExecutionMutex.tryWithLock("single_send", MANUAL_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "single_send",
+            timeoutMs = MANUAL_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             val account = database.accountDao().getAccount(accountId) ?: return@tryWithLock
             val target = database.targetDao().getById(targetId)
             if (target == null || target.deletedAt != null || target.accountId != accountId) {
@@ -1228,7 +1262,12 @@ class ExecutionForegroundService : Service() {
     }
 
     private suspend fun runManualScanCommand(accountId: String) {
-        val acquired = ExecutionMutex.tryWithLock("manual_scan", MANUAL_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "manual_scan",
+            timeoutMs = MANUAL_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             val scanId = UUID.randomUUID().toString()
             val startedAt = System.currentTimeMillis()
             val scanEntity = ScanRunEntity(
@@ -1271,6 +1310,30 @@ class ExecutionForegroundService : Service() {
             val finishedAt = System.currentTimeMillis()
             when (result) {
                 is ScanExecutionResult.Success -> {
+                    val sparkEvaluation = SparkDeteriorationDetector.evaluate(
+                        existingTargets = allTargets,
+                        candidates = result.snapshot.candidates,
+                        scannedAtEpochMs = finishedAt,
+                    )
+                    for (update in sparkEvaluation.updates) {
+                        database.targetDao().updateOfficialSparkSnapshot(
+                            id = update.targetId,
+                            sparkDays = update.sparkDays,
+                            sparkKind = update.sparkKind,
+                            sparkLabel = update.sparkLabel,
+                            scannedAt = update.scannedAtEpochMs,
+                        )
+                    }
+
+                    val account = database.accountDao().getAccount(accountId)
+                    syncOfficialSparkLitFromScan(
+                        accountId = accountId,
+                        accountTimezone = account?.timezone,
+                        existingTargets = allTargets,
+                        candidates = result.snapshot.candidates,
+                        scannedAtEpochMs = finishedAt,
+                    )
+
                     val encoded = ScanReconciliationCodec.encode(result.snapshot)
                     database.scanRunDao().update(
                         scanEntity.copy(
@@ -1281,7 +1344,7 @@ class ExecutionForegroundService : Service() {
                             finishedAt = finishedAt,
                         ),
                     )
-                    database.accountDao().getAccount(accountId)?.let { acc ->
+                    account?.let { acc ->
                         val authTransition = AccountHealthReducer.onAuthProbeResult(
                             acc,
                             AuthProbeOutcome.AUTHENTICATED,
@@ -1379,8 +1442,38 @@ class ExecutionForegroundService : Service() {
         }
     }
 
+    private fun syncOfficialSparkLitFromScan(
+        accountId: String,
+        accountTimezone: String?,
+        existingTargets: List<ContractTargetEntity>,
+        candidates: List<ScannedChatCandidate>,
+        scannedAtEpochMs: Long,
+    ) {
+        val zoneId = DailySchedulePlanner.resolveZoneId(accountTimezone)
+        val businessDate = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(scannedAtEpochMs),
+            zoneId,
+        ).toLocalDate().toString()
+        val updates = ExecutionServiceStoreOps.extractOfficialSparkLitUpdates(
+            existingTargets = existingTargets,
+            candidates = candidates,
+        )
+        val store = OfficialSparkLitStore.globalOrNull() ?: officialSparkLitStore
+        store.recordScanResults(
+            accountId = accountId,
+            businessDate = businessDate,
+            updates = updates,
+            scannedAtEpochMs = scannedAtEpochMs,
+        )
+    }
+
     private suspend fun runAutoScanCommand(accountId: String) {
-        val acquired = ExecutionMutex.tryWithLock("auto_scan", SCHEDULED_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "auto_scan",
+            timeoutMs = SCHEDULED_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             val account = database.accountDao().getAccount(accountId) ?: return@tryWithLock
             if (!account.enabled ||
                 !account.autoScanEnabled ||
@@ -1485,6 +1578,14 @@ class ExecutionForegroundService : Service() {
                             scannedAt = update.scannedAtEpochMs,
                         )
                     }
+
+                    syncOfficialSparkLitFromScan(
+                        accountId = accountId,
+                        accountTimezone = account.timezone,
+                        existingTargets = activeTargets,
+                        candidates = result.snapshot.candidates,
+                        scannedAtEpochMs = finishedAt,
+                    )
 
                     val alertSummary = ExecutionServiceStoreOps.formatSparkDeteriorationAlertSummary(
                         sparkEvaluation.alerts,
@@ -1630,7 +1731,12 @@ class ExecutionForegroundService : Service() {
         accountId: String,
         targetId: String,
     ) {
-        val acquired = ExecutionMutex.tryWithLock("identity_repair", MANUAL_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "identity_repair",
+            timeoutMs = MANUAL_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             val target = database.targetDao().getById(targetId)
             if (target == null || target.deletedAt != null || target.accountId != accountId) {
                 ExecutionRuntimeBus.update {
@@ -1707,7 +1813,12 @@ class ExecutionForegroundService : Service() {
     }
 
     private suspend fun runStructureProbeCommand(accountId: String) {
-        val acquired = ExecutionMutex.tryWithLock("structure_probe", MANUAL_LOCK_WAIT_MS) {
+        val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+        val acquired = ExecutionMutex.tryWithLock(
+            owner = "structure_probe",
+            timeoutMs = MANUAL_LOCK_WAIT_MS,
+            scopeKey = scopeKey,
+        ) {
             promoteForeground("正在执行只读网页结构体检…")
             updateProgressState("正在执行网页结构体检…", 0, 1, accountId)
             val sampleTarget = database.targetDao().listEnabledTargets(accountId).firstOrNull()
@@ -1763,6 +1874,7 @@ class ExecutionForegroundService : Service() {
         zoneId: ZoneId,
         overrideText: String?,
         isVisibleActivity: Boolean,
+        skipIfOfficiallyLitToday: Boolean = false,
     ): TargetRunOutcome {
         val sendJobDao = database.sendJobDao()
         val freshTarget = database.targetDao().getById(target.id)
@@ -1793,6 +1905,16 @@ class ExecutionForegroundService : Service() {
                     outcomeType = TargetRunKind.SKIPPED,
                     message = ExecutionServiceStoreOps.SKIP_REASON_ALREADY_DONE_TODAY,
                     skipCode = "already_done_today",
+                )
+            }
+            if (skipIfOfficiallyLitToday &&
+                (OfficialSparkLitStore.globalOrNull() ?: officialSparkLitStore)
+                    .isOfficiallyLitToday(freshTarget.id, businessDate)
+            ) {
+                return TargetRunOutcome(
+                    outcomeType = TargetRunKind.SKIPPED,
+                    message = ExecutionServiceStoreOps.SKIP_REASON_OFFICIAL_LIT_TODAY,
+                    skipCode = "official_lit_today",
                 )
             }
         } else {
@@ -2895,7 +3017,111 @@ internal object ExecutionServiceStoreOps {
     const val SKIP_REASON_POOL_EMPTY = "文案池今日无候选"
     const val SKIP_REASON_BLOCKED_REVIEW = "存在待核对记录，已硬禁止拦截"
     const val SKIP_REASON_ALREADY_DONE_TODAY = "当日已完成"
+    const val SKIP_REASON_OFFICIAL_LIT_TODAY = "今日抖音已点亮火花"
     const val SKIP_REASON_PAUSED_OR_DELETED = "好友已暂停或删除"
+
+    data class ManualMakeupBatchPlan(
+        val targetsToRun: List<ContractTargetEntity>,
+        val officialLitSkippedTargets: List<ContractTargetEntity>,
+    )
+
+    fun extractOfficialSparkLitUpdates(
+        existingTargets: List<ContractTargetEntity>,
+        candidates: List<ScannedChatCandidate>,
+    ): Map<String, Boolean?> {
+        val activeIds = existingTargets
+            .asSequence()
+            .filter { it.deletedAt == null }
+            .map { it.id }
+            .toHashSet()
+        if (activeIds.isEmpty()) return emptyMap()
+
+        val updates = LinkedHashMap<String, Boolean?>()
+        for (candidate in candidates) {
+            if (candidate.matchStatus == MatchStatus.AMBIGUOUS) continue
+            if (!candidate.alreadyImported) continue
+            val targetId = candidate.existingTargetId?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            if (targetId !in activeIds || updates.containsKey(targetId)) continue
+            updates[targetId] = candidate.sparkLitToday
+        }
+        return updates
+    }
+
+    fun planManualMakeupBatch(
+        enabledTargets: List<ContractTargetEntity>,
+        jobsByTarget: Map<String, List<SendJobEntity>>,
+        businessDate: String,
+        officialSparkLitStore: OfficialSparkLitStore?,
+    ): ManualMakeupBatchPlan {
+        val runnable = ArrayList<ContractTargetEntity>(enabledTargets.size)
+        val officialLitSkipped = ArrayList<ContractTargetEntity>()
+        for (target in enabledTargets) {
+            val targetJobs = jobsByTarget[target.id].orEmpty()
+            // 安全底线：UNKNOWN_REQUIRES_REVIEW / SENDING / CONFIRMING 永远最先拦截
+            if (SendGuard.hasBlockingUnknownOrInflight(targetJobs)) {
+                continue
+            }
+            if (!SendGuard.canDispatchDaily(targetJobs)) {
+                continue
+            }
+            if (officialSparkLitStore?.isOfficiallyLitToday(target.id, businessDate) == true) {
+                officialLitSkipped.add(target)
+                continue
+            }
+            runnable.add(target)
+        }
+        return ManualMakeupBatchPlan(
+            targetsToRun = runnable,
+            officialLitSkippedTargets = officialLitSkipped,
+        )
+    }
+
+    fun resolveManualBatchNoopMessage(
+        enabledTargets: List<ContractTargetEntity>,
+        jobsByTarget: Map<String, List<SendJobEntity>>,
+        businessDate: String,
+        forceAll: Boolean,
+        preSkippedCount: Int,
+        preSkipSummary: String?,
+        officialSparkLitStore: OfficialSparkLitStore?,
+    ): String {
+        val hasBlocking = enabledTargets.any { target ->
+            SendGuard.hasBlockingUnknownOrInflight(jobsByTarget[target.id].orEmpty())
+        }
+        val allLocalSucceededToday = enabledTargets.isNotEmpty() && enabledTargets.all { target ->
+            jobsByTarget[target.id].orEmpty().any { it.status == JobStatus.SUCCEEDED }
+        }
+        val allDoneIncludingOfficialLit = enabledTargets.isNotEmpty() && enabledTargets.all { target ->
+            val targetJobs = jobsByTarget[target.id].orEmpty()
+            targetJobs.any { it.status == JobStatus.SUCCEEDED } ||
+                officialSparkLitStore?.isOfficiallyLitToday(target.id, businessDate) == true
+        }
+        return when {
+            enabledTargets.isEmpty() ->
+                "暂无启用的续火好友，请先到「好友」页导入或启用"
+
+            forceAll && preSkippedCount > 0 ->
+                formatBatchSummary(
+                    succeededCount = 0,
+                    skippedCount = preSkippedCount,
+                    failedCount = 0,
+                    unknownCount = 0,
+                    skipSummary = preSkipSummary,
+                )
+
+            !forceAll && !hasBlocking && allLocalSucceededToday ->
+                "今日启用好友已全部续过火，无需补发"
+
+            !forceAll && !hasBlocking && allDoneIncludingOfficialLit ->
+                "今日启用好友已全部续过火（含抖音已点亮），无需补发"
+
+            hasBlocking ->
+                "存在待核对或进行中任务，请先在首页核对结果后再发"
+
+            else ->
+                "今日启用好友已全部处理或存在待核对记录，无需补发"
+        }
+    }
 
     fun normalizeSkipReason(rawReason: String): String {
         val trimmed = rawReason.trim()
@@ -2903,6 +3129,7 @@ internal object ExecutionServiceStoreOps {
             trimmed.contains("未绑定可用模板") -> SKIP_REASON_UNBOUND_TEMPLATE
             trimmed.contains("文案池") -> SKIP_REASON_POOL_EMPTY
             trimmed.contains("待核对") || trimmed.contains("硬禁止") -> SKIP_REASON_BLOCKED_REVIEW
+            trimmed.contains("今日抖音已点亮") || trimmed.contains("抖音已点亮") -> SKIP_REASON_OFFICIAL_LIT_TODAY
             trimmed.contains("当日已完成") || trimmed.contains("不可再次派发") -> SKIP_REASON_ALREADY_DONE_TODAY
             trimmed.contains("已暂停") || trimmed.contains("删除") -> SKIP_REASON_PAUSED_OR_DELETED
             trimmed.isEmpty() -> "状态不满足发送条件"

@@ -15,6 +15,7 @@ import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
@@ -49,6 +50,7 @@ class AppContainer(context: Context) {
     val scheduleCoordinator: ScheduleCoordinator = ScheduleCoordinator(appContext, database)
     val templateImageStore: AndroidTemplateImageStore = AndroidTemplateImageStore(appContext)
     val diagnosticScreenshotStore: DiagnosticScreenshotStore = DiagnosticScreenshotStore(appContext)
+    val officialSparkLitStore: OfficialSparkLitStore = OfficialSparkLitStore(appContext)
     val diagnosticLogStore: DiagnosticLogStore = DiagnosticLogStore(appContext)
     val pendingProfileCleanupStore: PendingProfileCleanupStore = PendingProfileCleanupStore(appContext)
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
@@ -92,6 +94,7 @@ class AppContainer(context: Context) {
 
     init {
         DiagnosticLogStore.attachGlobal(diagnosticLogStore)
+        OfficialSparkLitStore.attachGlobal(officialSparkLitStore)
         ExecutionForegroundService.attachDatabase(database)
         maintenanceScope.launch {
             FlameDatabase.migrateLegacyDefaultTextTemplateOnce(

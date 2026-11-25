@@ -36,6 +36,7 @@ import io.github.oinzc.flamecontractor.app.FlameApplication
 import io.github.oinzc.flamecontractor.core.account.AccountManager
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -468,13 +469,24 @@ class LoginWebViewActivity : AppCompatActivity() {
         }
 
         lifecycleScope.launch {
-            var token: ExecutionMutex.SessionToken? = ExecutionMutex.tryAcquireSession(MUTEX_OWNER)
+            val scopeKey = ExecutionMutex.scopeKeyForAccount(accountId)
+            var token: ExecutionMutex.SessionToken? = ExecutionMutex.tryAcquireSession(
+                owner = MUTEX_OWNER,
+                scopeKey = scopeKey,
+            )
             while (token == null && isActive) {
-                screenState = screenState.copy(statusHint = "等待后台续火或扫描任务释放环境…")
-                token = ExecutionMutex.acquireSession(MUTEX_OWNER, timeoutMs = 2_000L)
+                screenState = screenState.copy(statusHint = "当前账号正在后台续火或扫描，等待完成后自动加载…")
+                token = ExecutionMutex.acquireSession(
+                    owner = MUTEX_OWNER,
+                    timeoutMs = 2_000L,
+                    scopeKey = scopeKey,
+                )
+            }
+            if (!isActive || isFinishing || isDestroyed) {
+                ExecutionMutex.releaseSession(token)
+                return@launch
             }
             mutexSession = token
-            if (!isActive || isFinishing) return@launch
 
             val chatUrl = selectorStore.current().chatUrl
             if (loginMode == LoginMode.CLEAR_AND_RELOGIN) {
@@ -1168,6 +1180,10 @@ class LoginWebViewActivity : AppCompatActivity() {
                     }
                 }
 
+                try {
+                    OfficialSparkLitStore.globalOrNull()?.clearForAccount(accountId)
+                } catch (_: Throwable) {
+                }
                 try {
                     WebViewProfileRegistry.cookieManagerForProfileName(profileName).flush()
                 } catch (_: Throwable) {

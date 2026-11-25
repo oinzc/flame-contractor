@@ -53,8 +53,8 @@ class FlameApplication : Application() {
 
         appScope.launch {
             try {
-                val recoveryReport = if (!ExecutionMutex.isLocked()) {
-                    val token = ExecutionMutex.tryAcquireSession(COLD_START_OWNER)
+                val recoveryReport = if (!ExecutionMutex.isAnyLocked()) {
+                    val token = ExecutionMutex.tryAcquireGlobalSession(COLD_START_OWNER)
                     if (token != null) {
                         try {
                             performColdStartRecovery(database = appContainer.database)

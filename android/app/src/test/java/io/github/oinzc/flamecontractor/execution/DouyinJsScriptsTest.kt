@@ -728,7 +728,17 @@ class DouyinJsScriptsTest {
 
         val scanJs = DouyinJsScripts.buildScrollAndCollectChatsJs(bundle)
         assertTrue(scanJs.contains("streakIconVariant"))
+        assertTrue(scanJs.contains("streakLitToday"))
         assertTrue(scanJs.contains("flame_icon/"))
+        assertTrue(scanJs.contains("'/couple/'"))
+        assertTrue(scanJs.contains("'/family/'"))
+        assertTrue(scanJs.contains("'/soulmate/'"))
+        assertTrue(scanJs.contains("'/mate/'"))
+        assertTrue(scanJs.contains("'/bosom/'"))
+        assertTrue(scanJs.contains("'/normal/'"))
+        assertTrue(scanJs.contains("'gray_'"))
+        assertTrue(scanJs.contains("'重燃'"))
+        assertTrue(scanJs.contains("'消失'"))
     }
 
     @Test
@@ -877,6 +887,11 @@ class DouyinJsScriptsTest {
             ExecutionServiceStoreOps.formatFailureClassLabel(FailureClass.TARGET_UNCERTAIN),
         )
         assertEquals("目标会话定位或核验失败 ×1", ExecutionServiceStoreOps.formatErrorSummary(errCounts))
+
+        assertEquals(
+            ExecutionServiceStoreOps.SKIP_REASON_OFFICIAL_LIT_TODAY,
+            ExecutionServiceStoreOps.normalizeSkipReason("今日抖音已点亮火花"),
+        )
     }
 
     private class InMemoryAccountDao : AccountDao {

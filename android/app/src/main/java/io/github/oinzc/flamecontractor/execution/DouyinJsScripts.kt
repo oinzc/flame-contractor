@@ -1151,6 +1151,7 @@ object DouyinJsScripts {
                 var streakKind = null;
                 var streakLabel = null;
                 var streakIconVariant = null;
+                var streakLitToday = null;
                 var streakEl = row.querySelector($streakLit);
                 if (streakEl) {
                   var daysEl = streakEl.querySelector($streakDaysLit);
@@ -1163,9 +1164,13 @@ object DouyinJsScripts {
                   var icon = streakEl.querySelector("img[src*='flame_icon']");
                   var src = icon ? String(icon.getAttribute('src') || '') : '';
                   if (src) {
-                    if (src.indexOf('/couple/') !== -1) streakKind = 'couple';
-                    else if (src.indexOf('/family/') !== -1) streakKind = 'family';
-                    else if (src.indexOf('/normal/') !== -1) streakKind = 'normal';
+                    var lowerSrc = src.toLowerCase();
+                    if (lowerSrc.indexOf('/couple/') !== -1) streakKind = 'couple';
+                    else if (lowerSrc.indexOf('/family/') !== -1) streakKind = 'family';
+                    else if (lowerSrc.indexOf('/soulmate/') !== -1) streakKind = 'soulmate';
+                    else if (lowerSrc.indexOf('/mate/') !== -1) streakKind = 'mate';
+                    else if (lowerSrc.indexOf('/bosom/') !== -1) streakKind = 'bosom';
+                    else if (lowerSrc.indexOf('/normal/') !== -1) streakKind = 'normal';
                     try {
                       var cleanSrc = src.split(/[?#]/, 1)[0];
                       var marker = 'flame_icon/';
@@ -1177,6 +1182,18 @@ object DouyinJsScripts {
                         }
                       }
                     } catch (_) {}
+                  }
+                  if (streakIconVariant) {
+                    var slashIdx = streakIconVariant.lastIndexOf('/');
+                    var iconFileName = slashIdx !== -1 ? streakIconVariant.slice(slashIdx + 1) : streakIconVariant;
+                    var lowerFileName = String(iconFileName || '').toLowerCase();
+                    if (lowerFileName.indexOf('gray_') !== -1) {
+                      streakLitToday = false;
+                    } else if (iconFileName &&
+                        typeof streakDays === 'number' && streakDays > 0 &&
+                        (!streakLabel || (streakLabel.indexOf('重燃') === -1 && streakLabel.indexOf('消失') === -1))) {
+                      streakLitToday = true;
+                    }
                   }
                 }
 
@@ -1203,6 +1220,7 @@ object DouyinJsScripts {
                   streakKind: streakKind,
                   streakLabel: streakLabel,
                   streakIconVariant: streakIconVariant,
+                  streakLitToday: streakLitToday,
                   hasSparkInPreview: hasSparkInPreview
                 });
               }

@@ -1434,6 +1434,7 @@ class DouyinWebExecutor(
             val sparkDays: Int?,
             val sparkKind: String?,
             val sparkLabel: String?,
+            val sparkLitToday: Boolean?,
             val hasSparkInPreview: Boolean,
         )
 
@@ -1468,18 +1469,33 @@ class DouyinWebExecutor(
             for (raw in rawItems) {
                 @Suppress("UNCHECKED_CAST")
                 val row = raw as? Map<String, Any?> ?: continue
-                sanitizeFlameIconVariant(row.stringOrNull("streakIconVariant"))?.let { variant ->
+                val iconVariant = sanitizeFlameIconVariant(row.stringOrNull("streakIconVariant"))
+                iconVariant?.let { variant ->
                     if (iconVariants.size < MAX_LOGGED_ICON_VARIANTS) {
                         iconVariants.add(variant)
                     }
                 }
                 val title = row.stringOrNull("title") ?: continue
                 if (!discovered.containsKey(title)) {
+                    val sparkDays = row.intOrNull("streakDays")
+                    val sparkLabel = row.stringOrNull("streakLabel")
+                    val sparkKind = row.stringOrNull("streakKind")
+                        ?: ScanReconciliationBuilder.inferSparkKindFromIconVariant(iconVariant)
+                    val sparkLitToday = if (iconVariant != null) {
+                        ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
+                            iconVariant = iconVariant,
+                            sparkDays = sparkDays,
+                            sparkLabel = sparkLabel,
+                        )
+                    } else {
+                        row.boolOrNull("streakLitToday")
+                    }
                     discovered[title] = RawScannedRow(
                         title = title,
-                        sparkDays = row.intOrNull("streakDays"),
-                        sparkKind = row.stringOrNull("streakKind"),
-                        sparkLabel = row.stringOrNull("streakLabel"),
+                        sparkDays = sparkDays,
+                        sparkKind = sparkKind,
+                        sparkLabel = sparkLabel,
+                        sparkLitToday = sparkLitToday,
                         hasSparkInPreview = row.boolOrDefault("hasSparkInPreview", false),
                     )
                 }
@@ -1550,11 +1566,14 @@ class DouyinWebExecutor(
                 alreadyImported = activeMatch != null,
                 existingTargetId = activeMatch?.id ?: deletedMatch?.id,
                 preselected = false,
+                sparkLitToday = row.sparkLitToday,
             )
         }
 
         val sortedCandidates = ScanReconciliationBuilder.sortAndComputePreselection(rawCandidates)
         val sparkCount = sortedCandidates.count { ScanReconciliationBuilder.hasOfficialSpark(it) }
+        val litCount = sortedCandidates.count { it.sparkLitToday == true }
+        val grayCount = sortedCandidates.count { it.sparkLitToday == false }
         val snapshot = ScanReconciliationSnapshot(
             scanRunId = scanRunId,
             scannedAtEpochMs = System.currentTimeMillis(),
@@ -1567,7 +1586,7 @@ class DouyinWebExecutor(
             category = "SCAN",
             event = "scan_done",
             level = "INFO",
-            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount iconVariants=$variantsSummary",
+            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount iconVariants=$variantsSummary",
             accountTag = accountTag,
         )
         return ScanExecutionResult.Success(

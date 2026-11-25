@@ -45,6 +45,7 @@ data class ScannedChatCandidate(
     val alreadyImported: Boolean,
     val existingTargetId: String?,
     val preselected: Boolean,
+    val sparkLitToday: Boolean? = null,
 )
 
 data class ScanReconciliationSnapshot(
@@ -56,6 +57,9 @@ data class ScanReconciliationSnapshot(
 )
 
 object ScanReconciliationBuilder {
+
+    private val SAFE_ICON_VARIANT_REGEX = Regex("""^[A-Za-z0-9._/-]{1,80}$""")
+    private val KNOWN_SPARK_KINDS = setOf("couple", "family", "normal", "soulmate", "mate", "bosom")
 
     fun hasOfficialSpark(candidate: ScannedChatCandidate): Boolean =
         hasOfficialSpark(candidate.sparkDays, candidate.sparkKind, candidate.sparkLabel)
@@ -71,6 +75,54 @@ object ScanReconciliationBuilder {
         if (cleanedLabel != null) return true
         if (!sparkKind.isNullOrBlank()) return true
         return false
+    }
+
+    /**
+     * 基于抖音网页端 `flame_icon` 图标路径尾段与火花文本纯函数判定今日官方亮/灰态：
+     * - 尾段文件名含 `gray_`（大小写不敏感）-> `false`（灰火：今日未点亮）；
+     * - 有效 `flame_icon` 路径尾段不含 `gray_`，且 `sparkDays > 0`，且 `sparkLabel` 不含 `重燃`/`消失` -> `true`（亮火：今日已点亮）；
+     * - 其余情形（无图标、异常标签、天数缺失等）保守返回 `null`（未知）。
+     */
+    fun inferSparkLitTodayFromIconVariant(
+        iconVariant: String?,
+        sparkDays: Int?,
+        sparkLabel: String?,
+    ): Boolean? {
+        val tail = normalizeFlameIconTail(iconVariant) ?: return null
+        val fileName = tail.substringAfterLast('/').trim()
+        if (fileName.isEmpty()) return null
+        val lowerFileName = fileName.lowercase(Locale.ROOT)
+        if (lowerFileName.contains("gray_")) {
+            return false
+        }
+        val cleanedLabel = sparkLabel?.trim().orEmpty()
+        val hasAbnormalLabel = cleanedLabel.contains("重燃") || cleanedLabel.contains("消失")
+        if (sparkDays != null && sparkDays > 0 && !hasAbnormalLabel) {
+            return true
+        }
+        return null
+    }
+
+    fun inferSparkKindFromIconVariant(iconVariant: String?): String? {
+        val tail = normalizeFlameIconTail(iconVariant) ?: return null
+        val segments = tail.lowercase(Locale.ROOT).split('/')
+        for (seg in segments) {
+            if (seg in KNOWN_SPARK_KINDS) return seg
+        }
+        return null
+    }
+
+    private fun normalizeFlameIconTail(raw: String?): String? {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return null
+        val withoutQuery = trimmed.substringBefore('?').substringBefore('#')
+        val tail = when {
+            withoutQuery.contains("flame_icon/") -> withoutQuery.substringAfter("flame_icon/")
+            withoutQuery.contains("://") -> return null
+            else -> withoutQuery
+        }.trimStart('/')
+        if (tail.isEmpty() || tail.contains("..")) return null
+        return if (SAFE_ICON_VARIANT_REGEX.matches(tail)) tail else null
     }
 
     fun sortAndComputePreselection(
@@ -147,6 +199,7 @@ object ScanReconciliationCodec {
                     "alreadyImported" to c.alreadyImported,
                     "existingTargetId" to c.existingTargetId,
                     "preselected" to c.preselected,
+                    "sparkLitToday" to c.sparkLitToday,
                 )
             },
         )
@@ -185,6 +238,7 @@ object ScanReconciliationCodec {
                 alreadyImported = obj.boolOrDefault("alreadyImported", false),
                 existingTargetId = obj.stringOrNull("existingTargetId"),
                 preselected = obj.boolOrDefault("preselected", false),
+                sparkLitToday = obj.boolOrNull("sparkLitToday"),
             )
         }
 
@@ -530,6 +584,9 @@ internal fun Map<String, Any?>.intOrNull(key: String): Int? =
 
 internal fun Map<String, Any?>.longOrNull(key: String): Long? =
     (this[key] as? Number)?.toLong()
+
+internal fun Map<String, Any?>.boolOrNull(key: String): Boolean? =
+    this[key] as? Boolean
 
 internal fun Map<String, Any?>.boolOrDefault(key: String, default: Boolean = false): Boolean =
     (this[key] as? Boolean) ?: default
