@@ -79,6 +79,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -181,8 +183,17 @@ internal fun SettingsAboutPage(
     var attachedImages by remember { mutableStateOf<List<FeedbackImageUiItem>>(emptyList()) }
     var encodingImages by remember { mutableStateOf(false) }
     var imageError by remember { mutableStateOf<String?>(null) }
+    var contentValidationError by rememberSaveable { mutableStateOf<String?>(null) }
     var submitting by remember { mutableStateOf(false) }
     var submitResult by remember { mutableStateOf<FeedbackSubmitResult?>(null) }
+    val contentFocusRequester = remember { FocusRequester() }
+
+    fun buildShortContentMessage(trimmedLen: Int): String = if (trimmedLen <= 0) {
+        "请先填写至少 ${FeedbackSubmitter.MIN_CONTENT_LEN} 个字的详细描述再提交"
+    } else {
+        val remaining = (FeedbackSubmitter.MIN_CONTENT_LEN - trimmedLen).coerceAtLeast(1)
+        "详细描述还差 $remaining 个字即可提交（至少 ${FeedbackSubmitter.MIN_CONTENT_LEN} 个字）"
+    }
 
     fun buildCurrentRequest(): FeedbackSubmissionRequest = FeedbackSubmissionRequest(
         kind = selectedKind,
@@ -339,6 +350,16 @@ internal fun SettingsAboutPage(
     fun handleDirectSubmit() {
         if (submitting || encodingImages) return
         val req = buildCurrentRequest()
+        val trimmedLen = req.content.trim().length
+        if (trimmedLen < FeedbackSubmitter.MIN_CONTENT_LEN) {
+            val shortMessage = buildShortContentMessage(trimmedLen)
+            haptics.performFlameLightTick()
+            contentValidationError = shortMessage
+            submitResult = FeedbackSubmitResult.Failure(shortMessage, retryable = false)
+            showNotice(shortMessage)
+            runCatching { contentFocusRequester.requestFocus() }
+            return
+        }
         val validationError = FeedbackSubmitter.validateInput(
             title = req.title,
             content = req.content,
@@ -346,10 +367,13 @@ internal fun SettingsAboutPage(
             images = req.images,
         )
         if (validationError != null) {
+            haptics.performFlameLightTick()
             submitResult = FeedbackSubmitResult.Failure(validationError, retryable = false)
+            showNotice(validationError)
             return
         }
         haptics.performFlameLightTick()
+        contentValidationError = null
         submitting = true
         submitResult = null
         coroutineScope.launch {
@@ -361,6 +385,7 @@ internal fun SettingsAboutPage(
                 contentInput = ""
                 attachedImages = emptyList()
                 imageError = null
+                contentValidationError = null
                 showNotice(result.message)
             }
         }
@@ -502,30 +527,67 @@ internal fun SettingsAboutPage(
                     )
 
                     // 正文（必填）
+                    val trimmedContentLen = contentInput.trim().length
+                    val missingContentChars = (FeedbackSubmitter.MIN_CONTENT_LEN - trimmedContentLen).coerceAtLeast(0)
                     OutlinedTextField(
                         value = contentInput,
                         onValueChange = { next ->
                             if (next.length <= FeedbackSubmitter.MAX_CONTENT_LEN) {
                                 contentInput = next
+                                val nextTrimmedLen = next.trim().length
+                                if (nextTrimmedLen >= FeedbackSubmitter.MIN_CONTENT_LEN) {
+                                    contentValidationError = null
+                                } else if (contentValidationError != null) {
+                                    contentValidationError = buildShortContentMessage(nextTrimmedLen)
+                                }
                                 if (submitResult is FeedbackSubmitResult.Failure) {
                                     submitResult = null
                                 }
                             }
                         },
                         enabled = !submitting,
+                        isError = contentValidationError != null,
                         minLines = 4,
                         maxLines = 8,
-                        label = { Text("详细描述（必填）") },
+                        label = { Text("详细描述（必填，至少 ${FeedbackSubmitter.MIN_CONTENT_LEN} 字）") },
                         placeholder = { Text(selectedKind.placeholder) },
                         supportingText = {
+                            val (supportText, supportColor, supportWeight) = when {
+                                contentValidationError != null -> Triple(
+                                    contentValidationError.orEmpty(),
+                                    semantics.danger,
+                                    FontWeight.SemiBold,
+                                )
+
+                                trimmedContentLen in 1 until FeedbackSubmitter.MIN_CONTENT_LEN -> Triple(
+                                    "还差 $missingContentChars 个字即可提交 · $trimmedContentLen / ${FeedbackSubmitter.MAX_CONTENT_LEN}",
+                                    semantics.warning,
+                                    FontWeight.Medium,
+                                )
+
+                                trimmedContentLen == 0 -> Triple(
+                                    "至少输入 ${FeedbackSubmitter.MIN_CONTENT_LEN} 个字（请勿包含好友昵称、Cookie 或推送密钥）",
+                                    palette.inkTertiary,
+                                    FontWeight.Normal,
+                                )
+
+                                else -> Triple(
+                                    "$trimmedContentLen / ${FeedbackSubmitter.MAX_CONTENT_LEN}（请勿包含好友昵称、Cookie 或推送密钥）",
+                                    palette.inkTertiary,
+                                    FontWeight.Normal,
+                                )
+                            }
                             Text(
-                                text = "${contentInput.trim().length} / ${FeedbackSubmitter.MAX_CONTENT_LEN}（请勿包含好友昵称、Cookie 或推送密钥）",
+                                text = supportText,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = palette.inkTertiary,
+                                fontWeight = supportWeight,
+                                color = supportColor,
                             )
                         },
                         colors = settingsTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(contentFocusRequester),
                     )
 
                     // 补充截图（可选，最多 3 张）
@@ -616,6 +678,7 @@ internal fun SettingsAboutPage(
                         submitResult?.let { result ->
                             FeedbackResultBanner(
                                 result = result,
+                                showCopyFallback = titleInput.isNotBlank() || contentInput.isNotBlank(),
                                 onOpenIssue = { url -> openUrlWithFeedback(url) },
                                 onCopyFallback = {
                                     haptics.performFlameLightTick()
@@ -635,9 +698,7 @@ internal fun SettingsAboutPage(
                     ) {
                         if (relayConfigured) {
                             val submitInteraction = remember { MutableInteractionSource() }
-                            val canSubmit = !submitting &&
-                                !encodingImages &&
-                                contentInput.trim().length >= FeedbackSubmitter.MIN_CONTENT_LEN
+                            val canSubmit = !submitting && !encodingImages
                             Button(
                                 onClick = { handleDirectSubmit() },
                                 enabled = canSubmit,
@@ -680,10 +741,17 @@ internal fun SettingsAboutPage(
                             }
                         } else {
                             val copyFeedbackInteraction = remember { MutableInteractionSource() }
-                            val canCopy = contentInput.trim().isNotEmpty() && !encodingImages
+                            val canCopy = !encodingImages
                             Button(
                                 onClick = {
                                     haptics.performFlameLightTick()
+                                    if (contentInput.trim().isEmpty()) {
+                                        val emptyMsg = "请先填写反馈内容后再复制"
+                                        contentValidationError = emptyMsg
+                                        showNotice(emptyMsg)
+                                        runCatching { contentFocusRequester.requestFocus() }
+                                        return@Button
+                                    }
                                     val text = FeedbackSubmitter.buildClipboardFallbackText(buildCurrentRequest())
                                     copyPlainText(context, label = "flame_feedback_draft", text = text)
                                     showNotice("已复制完整脱敏反馈内容")
@@ -748,6 +816,7 @@ internal fun SettingsAboutPage(
                                     contactInput = ""
                                     attachedImages = emptyList()
                                     imageError = null
+                                    contentValidationError = null
                                     submitResult = null
                                 },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
@@ -1278,6 +1347,7 @@ private fun FeedbackAddScreenshotTile(
 @Composable
 private fun FeedbackResultBanner(
     result: FeedbackSubmitResult,
+    showCopyFallback: Boolean,
     onOpenIssue: (String) -> Unit,
     onCopyFallback: () -> Unit,
 ) {
@@ -1337,16 +1407,18 @@ private fun FeedbackResultBanner(
                 }
 
                 is FeedbackSubmitResult.Failure -> {
-                    TextButton(
-                        onClick = onCopyFallback,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                    ) {
-                        Text(
-                            text = "复制已填反馈内容",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = fg,
-                        )
+                    if (showCopyFallback) {
+                        TextButton(
+                            onClick = onCopyFallback,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                text = "复制已填反馈内容",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = fg,
+                            )
+                        }
                     }
                 }
             }

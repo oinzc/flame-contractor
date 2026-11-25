@@ -785,18 +785,25 @@ internal fun settingsSwitchColors(): SwitchColors {
 @Composable
 internal fun settingsTextFieldColors(): TextFieldColors {
     val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
     return OutlinedTextFieldDefaults.colors(
         focusedBorderColor = palette.monoCtaContainer,
         unfocusedBorderColor = palette.hairlineStrong,
+        errorBorderColor = semantics.danger,
         focusedLabelColor = palette.ink,
         unfocusedLabelColor = palette.inkSecondary,
+        errorLabelColor = semantics.danger,
         cursorColor = palette.monoCtaContainer,
+        errorCursorColor = semantics.danger,
         focusedTextColor = palette.ink,
         unfocusedTextColor = palette.ink,
+        errorTextColor = palette.ink,
         focusedPlaceholderColor = palette.inkTertiary,
         unfocusedPlaceholderColor = palette.inkTertiary,
+        errorSupportingTextColor = semantics.danger,
         focusedContainerColor = palette.surface,
         unfocusedContainerColor = palette.surfaceSubtle.copy(alpha = 0.45f),
+        errorContainerColor = palette.surface,
     )
 }
 

@@ -1458,6 +1458,32 @@ a.fc-btn {
   flex-wrap: wrap;
 }
 
+.fc-textarea.is-invalid {
+  border-color: var(--err-border);
+}
+
+.fc-textarea.is-invalid:focus {
+  border-color: var(--err);
+}
+
+.fc-feedback-char-count.is-short {
+  color: var(--warn-ink);
+  font-weight: 500;
+}
+
+.fc-feedback-char-count.is-err {
+  color: var(--err);
+  font-weight: 600;
+}
+
+.fc-feedback-field-error {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--err);
+  font-weight: 500;
+}
+
 .fc-feedback-inline-link {
   color: inherit;
   font-size: 12px;

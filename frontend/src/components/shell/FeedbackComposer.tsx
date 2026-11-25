@@ -85,10 +85,12 @@ export function FeedbackComposer({
 
   const [submitting, setSubmitting] = useState(false)
   const [outcome, setOutcome] = useState<FeedbackSubmitOutcome | null>(null)
+  const [contentError, setContentError] = useState<string | null>(null)
   const [copiedDraft, setCopiedDraft] = useState(false)
   const [copyFeedbackError, setCopyFeedbackError] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const copyTimerRef = useRef<number | null>(null)
   const dragDepthRef = useRef(0)
   const mountedRef = useRef(true)
@@ -298,9 +300,27 @@ export function FeedbackComposer({
     }
   }
 
+  function buildShortContentMessage(trimmedLen: number): string {
+    if (trimmedLen <= 0) {
+      return `请先填写至少 ${FEEDBACK_LIMITS.minContent} 个字的详细描述再提交`
+    }
+    const remaining = Math.max(1, FEEDBACK_LIMITS.minContent - trimmedLen)
+    return `详细描述还差 ${remaining} 个字即可提交（至少 ${FEEDBACK_LIMITS.minContent} 个字）`
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     if (submitting || processingImages) return
+    const trimmedLen = content.trim().length
+    if (trimmedLen < FEEDBACK_LIMITS.minContent) {
+      const msg = buildShortContentMessage(trimmedLen)
+      setContentError(msg)
+      setOutcome({ ok: false, error: msg, retryable: false })
+      contentRef.current?.focus()
+      contentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      return
+    }
+    setContentError(null)
     setSubmitting(true)
     setOutcome(null)
     setCopyFeedbackError(null)
@@ -311,6 +331,7 @@ export function FeedbackComposer({
       if (result.ok) {
         setTitle('')
         setContent('')
+        setContentError(null)
         clearAllImages()
         onSubmitted?.(result)
       }
@@ -322,6 +343,9 @@ export function FeedbackComposer({
   }
 
   const remainingSlots = FEEDBACK_LIMITS.maxImages - images.length
+  const trimmedContentLen = content.trim().length
+  const missingContentChars = Math.max(0, FEEDBACK_LIMITS.minContent - trimmedContentLen)
+  const hasCopyableText = Boolean(title.trim() || content.trim())
   const hasDraft = Boolean(title || content || contact || images.length > 0)
   const titleId = `${idPrefix}-title`
   const contentId = `${idPrefix}-content`
@@ -377,24 +401,45 @@ export function FeedbackComposer({
 
       <div className="fc-field">
         <label className="fc-label" htmlFor={contentId}>
-          <span>详细描述（必填）</span>
-          <span className="fc-hint fc-mono">
-            {content.trim().length}/{FEEDBACK_LIMITS.maxContent}
+          <span>详细描述（必填，至少 {FEEDBACK_LIMITS.minContent} 字）</span>
+          <span
+            className={`fc-hint fc-mono fc-feedback-char-count${
+              contentError ? ' is-err' : trimmedContentLen > 0 && missingContentChars > 0 ? ' is-short' : ''
+            }`}
+          >
+            {trimmedContentLen > 0 && missingContentChars > 0
+              ? `还差 ${missingContentChars} 字 · ${trimmedContentLen}/${FEEDBACK_LIMITS.maxContent}`
+              : `${trimmedContentLen}/${FEEDBACK_LIMITS.maxContent}`}
           </span>
         </label>
         <textarea
+          ref={contentRef}
           id={contentId}
           rows={3}
           maxLength={FEEDBACK_LIMITS.maxContent}
-          className="fc-textarea fc-feedback-textarea"
+          className={`fc-textarea fc-feedback-textarea${contentError ? ' is-invalid' : ''}`}
+          aria-invalid={Boolean(contentError)}
+          aria-describedby={contentError ? `${contentId}-error` : undefined}
           placeholder={activeKindMeta?.placeholder}
           value={content}
           disabled={submitting}
           onChange={(e) => {
-            setContent(e.target.value)
+            const next = e.target.value
+            setContent(next)
+            const nextTrimmedLen = next.trim().length
+            if (nextTrimmedLen >= FEEDBACK_LIMITS.minContent) {
+              setContentError(null)
+            } else if (contentError) {
+              setContentError(buildShortContentMessage(nextTrimmedLen))
+            }
             if (outcome && !outcome.ok) setOutcome(null)
           }}
         />
+        {contentError && (
+          <div id={`${contentId}-error`} className="fc-feedback-field-error" role="alert">
+            {contentError}
+          </div>
+        )}
       </div>
 
       {/* Screenshot Upload Section */}
@@ -568,7 +613,7 @@ export function FeedbackComposer({
                 在 GitHub 查看进展 →
               </a>
             )}
-            {!outcome.ok && (
+            {!outcome.ok && hasCopyableText && (
               <button
                 type="button"
                 className="fc-feedback-inline-link"
@@ -587,11 +632,7 @@ export function FeedbackComposer({
             <button
               type="submit"
               className="fc-btn fc-btn-primary fc-btn-sm"
-              disabled={
-                submitting ||
-                processingImages ||
-                content.trim().length < FEEDBACK_LIMITS.minContent
-              }
+              disabled={submitting || processingImages}
             >
               <FeedbackIcon width={14} height={14} />
               {submitting ? '提交中…' : '直接提交反馈'}
@@ -618,8 +659,16 @@ export function FeedbackComposer({
             <button
               type="button"
               className="fc-btn fc-btn-primary fc-btn-sm"
-              disabled={!content.trim()}
-              onClick={() => void handleCopyDraft()}
+              disabled={processingImages}
+              onClick={() => {
+                if (!content.trim()) {
+                  const emptyMsg = '请先填写反馈内容后再复制'
+                  setContentError(emptyMsg)
+                  contentRef.current?.focus()
+                  return
+                }
+                void handleCopyDraft()
+              }}
             >
               {copiedDraft ? (
                 <>
@@ -653,6 +702,7 @@ export function FeedbackComposer({
               setContent('')
               setContact('')
               clearAllImages()
+              setContentError(null)
               setOutcome(null)
               setCopyFeedbackError(null)
             }}
