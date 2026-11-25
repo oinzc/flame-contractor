@@ -121,7 +121,7 @@ private data class WidgetQueryData(
     val hideFriendNames: Boolean,
 )
 
-private data class WidgetVisualTheme(
+internal data class WidgetVisualTheme(
     val surface: ResolvedWidgetSurface,
     @DrawableRes val cardBgNormal: Int,
     @DrawableRes val cardBgAlert: Int,
@@ -443,7 +443,7 @@ abstract class BaseFlameAppWidgetProvider(
         )
     }
 
-    private fun buildRemoteViews(
+    internal fun buildRemoteViews(
         context: Context,
         targetKind: FlameWidgetKind,
         snapshot: FlameStatusWidgetSnapshot,
@@ -988,7 +988,7 @@ abstract class BaseFlameAppWidgetProvider(
         )
     }
 
-    private fun resolveVisualTheme(surface: ResolvedWidgetSurface): WidgetVisualTheme = when (surface) {
+    internal fun resolveVisualTheme(surface: ResolvedWidgetSurface): WidgetVisualTheme = when (surface) {
         ResolvedWidgetSurface.LIGHT -> WidgetVisualTheme(
             surface = surface,
             cardBgNormal = R.drawable.widget_bg_light,

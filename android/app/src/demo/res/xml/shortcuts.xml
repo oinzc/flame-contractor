@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="shortcut_today"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_today"
+        android:shortcutShortLabel="@string/shortcut_today_short"
+        android:shortcutLongLabel="@string/shortcut_today_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.oinzc.flamecontractor.demo"
+            android:targetClass="io.github.oinzc.flamecontractor.ui.shell.MainActivity">
+            <extra
+                android:name="extra_urgent_category"
+                android:value="shortcut_today" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_targets"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_targets"
+        android:shortcutShortLabel="@string/shortcut_targets_short"
+        android:shortcutLongLabel="@string/shortcut_targets_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.oinzc.flamecontractor.demo"
+            android:targetClass="io.github.oinzc.flamecontractor.ui.shell.MainActivity">
+            <extra
+                android:name="extra_urgent_category"
+                android:value="shortcut_targets" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_templates"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_templates"
+        android:shortcutShortLabel="@string/shortcut_templates_short"
+        android:shortcutLongLabel="@string/shortcut_templates_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.oinzc.flamecontractor.demo"
+            android:targetClass="io.github.oinzc.flamecontractor.ui.shell.MainActivity">
+            <extra
+                android:name="extra_urgent_category"
+                android:value="shortcut_templates" />
+        </intent>
+    </shortcut>
+</shortcuts>

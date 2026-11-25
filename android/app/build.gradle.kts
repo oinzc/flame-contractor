@@ -65,6 +65,18 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
+        create("demo") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".demo"
+            versionNameSuffix = "-demo"
+            matchingFallbacks += listOf("debug")
+            // 演示变体专用不可路由占位地址，仅用于展示官方直连反馈 UI，绝不发送网络请求
+            buildConfigField(
+                "String",
+                "FEEDBACK_ENDPOINT",
+                "\"https://feedback-demo.invalid/v1/submit\"",
+            )
+        }
         release {
             isMinifyEnabled = false
             if (hasReleaseSigning) {
