@@ -6,8 +6,22 @@ compatibility_date = "2026-01-01"
 GITHUB_REPO = "oinzc/flame-contractor"
 RATE_LIMIT_MAX = "5"
 RATE_LIMIT_WINDOW_SEC = "600"
+# 可选：自定义图片公网访问基准地址（默认自动使用当前 Worker 请求的 origin）
+# PUBLIC_BASE_URL = "https://feedback.yourdomain.com"
 
 # 可选：若需要跨边缘节点共享限流计数，取消下方注释并填入你创建的 KV namespace id
 # [[kv_namespaces]]
 # binding = "RATE_LIMIT_KV"
 # id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# 推荐（免费、免信用卡）：启用反馈截图托管的 Workers KV（默认自动保存 180 天）
+# 创建命令：npx wrangler kv namespace create FEEDBACK_IMAGES_KV
+# [[kv_namespaces]]
+# binding = "FEEDBACK_IMAGES_KV"
+# id = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+
+# 可选（需开通 R2，永久存储、容量更大）：若同时绑定 R2 与 KV，写入优先使用 R2，读取自动按 R2 -> KV 兼容
+# 创建命令：npx wrangler r2 bucket create flame-feedback-images
+# [[r2_buckets]]
+# binding = "FEEDBACK_IMAGES_R2"
+# bucket_name = "flame-feedback-images"
