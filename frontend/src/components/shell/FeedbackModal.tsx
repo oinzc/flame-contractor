@@ -127,7 +127,7 @@ export function FeedbackModal({
                 <StatusPill tone="neutral">{appVersionLabel}</StatusPill>
               </div>
               <p id="fc-feedback-modal-desc" className="fc-modal-subtitle">
-                提交后自动创建 GitHub Issue，支持拖拽或 Ctrl+V 直接粘贴截图
+                提交后自动创建 GitHub Issue，支持拖拽或 Ctrl+V 粘贴截图与附带脱敏诊断日志
               </p>
             </div>
           </div>

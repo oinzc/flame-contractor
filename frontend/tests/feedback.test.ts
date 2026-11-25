@@ -3,9 +3,11 @@ import assert from 'node:assert/strict'
 import {
   FEEDBACK_LIMITS,
   buildFeedbackFallbackText,
+  buildWebDiagnosticLog,
   estimateBase64DecodedBytes,
   normalizeFeedbackEndpoint,
   submitInAppFeedback,
+  validateDiagnosticLog,
   validateFeedbackDraft,
   validateFeedbackImages,
 } from '../src/lib/feedback.ts'
@@ -150,12 +152,14 @@ test('submitInAppFeedback posts JSON, serializes images, parses imageCount, and 
     assert.equal(ok.issueNumber, 18)
     assert.equal(ok.issueUrl, 'https://github.com/oinzc/flame-contractor/issues/18')
     assert.equal(ok.imageCount, 0)
+    assert.equal(ok.hasDiagnosticLog, false)
   }
   const parsedBody = JSON.parse(capturedBody) as Record<string, unknown>
   assert.equal(parsedBody.kind, 'bug')
   assert.equal(parsedBody.client, 'desktop')
   assert.equal(parsedBody.website, '')
   assert.equal('images' in parsedBody, false)
+  assert.equal('diagnosticLog' in parsedBody, false)
 
   // 2. Feedback with screenshots serializes images and parses imageCount
   let capturedWithImages = ''
@@ -322,6 +326,259 @@ test('buildFeedbackFallbackText appends screenshot notice only when images are a
   assert.ok(withImages.includes('2 张截图'))
   assert.ok(withImages.includes('复制文本不含图片'))
   assert.ok(withImages.includes('手动补传'))
+  assert.equal(withImages.includes('--- 脱敏诊断日志 ---'), false)
+})
+
+test('validateDiagnosticLog and validateFeedbackDraft enforce 16000 character cap', () => {
+  assert.equal(FEEDBACK_LIMITS.maxDiagnosticLog, 16_000)
+  assert.equal(validateDiagnosticLog(undefined), null)
+  assert.equal(validateDiagnosticLog(null), null)
+  assert.equal(validateDiagnosticLog('   \n  '), null)
+  assert.equal(validateDiagnosticLog('a'.repeat(16_000)), null)
+
+  const overLimit = validateDiagnosticLog('a'.repeat(16_001))
+  assert.ok(overLimit && overLimit.includes('16000'))
+
+  const draftError = validateFeedbackDraft({
+    title: '诊断日志超长测试',
+    content: '附带的诊断日志超过了协议规定的最大长度',
+    contact: '',
+    diagnosticLog: 'x'.repeat(16_001),
+  })
+  assert.ok(draftError && draftError.includes('16000'))
+
+  // Explicitly disabled diagnostic log does not block submission
+  assert.equal(
+    validateFeedbackDraft({
+      title: '关闭附带诊断日志',
+      content: '用户未勾选附带诊断日志时不拦截提交',
+      contact: '',
+      includeDiagnosticLog: false,
+      diagnosticLog: 'x'.repeat(16_001),
+    }),
+    null,
+  )
+})
+
+test('submitInAppFeedback handles diagnosticLog serialization, validation, and hasDiagnosticLog parsing', async () => {
+  // 1. Whitespace-only or includeDiagnosticLog=false omits diagnosticLog field
+  let capturedOmitted = ''
+  const omittedRes = await submitInAppFeedback(
+    'https://feedback.example.com/v1/feedback',
+    {
+      kind: 'bug',
+      title: '不带日志提交',
+      content: '纯文本提交时不应向服务端发送空的诊断日志字段',
+      contact: '',
+      includeEnv: true,
+      includeDiagnosticLog: true,
+      diagnosticLog: '   \n\t  ',
+      client: 'web',
+      version: 'v0.6.1',
+      environment: 'Web / Docker 控制台',
+    },
+    async (_input, init) => {
+      capturedOmitted = String(init?.body ?? '')
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          issueNumber: 31,
+          issueUrl: 'https://github.com/oinzc/flame-contractor/issues/31',
+          imageCount: 0,
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      )
+    },
+  )
+  assert.equal(omittedRes.ok, true)
+  if (omittedRes.ok) {
+    assert.equal(omittedRes.hasDiagnosticLog, false)
+  }
+  const omittedBody = JSON.parse(capturedOmitted) as Record<string, unknown>
+  assert.equal('diagnosticLog' in omittedBody, false)
+
+  let capturedDisabled = ''
+  await submitInAppFeedback(
+    'https://feedback.example.com/v1/feedback',
+    {
+      kind: 'question',
+      title: '禁用日志开关',
+      content: '关闭开关后即便草稿里残留日志也不会发送',
+      contact: '',
+      includeEnv: false,
+      includeDiagnosticLog: false,
+      diagnosticLog: 'line 1\nline 2',
+      client: 'desktop',
+      version: 'v0.6.1',
+      environment: '',
+    },
+    async (_input, init) => {
+      capturedDisabled = String(init?.body ?? '')
+      return new Response(JSON.stringify({ ok: true, issueNumber: 32 }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  )
+  const disabledBody = JSON.parse(capturedDisabled) as Record<string, unknown>
+  assert.equal('diagnosticLog' in disabledBody, false)
+
+  // 2. Non-empty diagnosticLog is trimmed and serialized, and hasDiagnosticLog is parsed
+  let capturedWithLog = ''
+  const withLogRes = await submitInAppFeedback(
+    'https://feedback.example.com/v1/feedback',
+    {
+      kind: 'bug',
+      title: '附带诊断日志提交',
+      content: '点击续火后提示页面结构变化，已附带脱敏日志',
+      contact: '',
+      includeEnv: true,
+      includeDiagnosticLog: true,
+      diagnosticLog: '  === 控制台脱敏诊断摘要 ===\n版本：v0.6.1  ',
+      client: 'desktop',
+      version: 'v0.6.1',
+      environment: 'Windows 桌面端',
+    },
+    async (_input, init) => {
+      capturedWithLog = String(init?.body ?? '')
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          issueNumber: 33,
+          issueUrl: 'https://github.com/oinzc/flame-contractor/issues/33',
+          imageCount: 0,
+          hasDiagnosticLog: true,
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      )
+    },
+  )
+  assert.equal(withLogRes.ok, true)
+  if (withLogRes.ok) {
+    assert.equal(withLogRes.issueNumber, 33)
+    assert.equal(withLogRes.hasDiagnosticLog, true)
+    assert.ok(withLogRes.message.includes('已附诊断日志'))
+  }
+  const withLogBody = JSON.parse(capturedWithLog) as Record<string, unknown>
+  assert.equal(withLogBody.diagnosticLog, '=== 控制台脱敏诊断摘要 ===\n版本：v0.6.1')
+
+  // 3. Over-limit diagnosticLog fails locally without calling fetch
+  let fetchCalled = false
+  const tooLongRes = await submitInAppFeedback(
+    'https://feedback.example.com/v1/feedback',
+    {
+      kind: 'bug',
+      title: '日志超限拦截',
+      content: '诊断日志超过 16000 字符应在客户端提前拦截',
+      contact: '',
+      includeEnv: true,
+      includeDiagnosticLog: true,
+      diagnosticLog: 'z'.repeat(FEEDBACK_LIMITS.maxDiagnosticLog + 1),
+      client: 'web',
+      version: 'v0.6.1',
+      environment: 'Web',
+    },
+    async () => {
+      fetchCalled = true
+      return new Response('{}', { status: 201 })
+    },
+  )
+  assert.equal(fetchCalled, false)
+  assert.equal(tooLongRes.ok, false)
+  if (!tooLongRes.ok) {
+    assert.equal(tooLongRes.retryable, false)
+    assert.ok(tooLongRes.error.includes('16000'))
+  }
+})
+
+test('buildWebDiagnosticLog outputs concise runtime digest without leaking sensitive data', () => {
+  const summary = buildWebDiagnosticLog({
+    version: 'v0.6.1',
+    isDesktop: true,
+    browserRuntimeLabel: '系统 Edge (WebView2)',
+    viewport: { width: 1440, height: 900, devicePixelRatio: 1.25 },
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0',
+    pathname: 'https://user:pass@192.168.1.9:8080/settings?token=topsecret999&account=alice#hashSecret',
+    platform: 'Win32',
+    language: 'zh-CN',
+    theme: 'dark',
+    online: true,
+    timestamp: '2026-11-25T08:30:00.000Z',
+  })
+
+  assert.ok(summary.includes('版本：v0.6.1'))
+  assert.ok(summary.includes('模式：Windows 桌面端'))
+  assert.ok(summary.includes('浏览器内核：系统 Edge (WebView2)'))
+  assert.ok(summary.includes('视口尺寸：1440x900 (DPR 1.25)'))
+  assert.ok(summary.includes('用户代理简摘：Edg/134.0.0.0 (Windows NT 10.0; Win64; x64)'))
+  assert.ok(summary.includes('页面路径：/settings'))
+  assert.ok(summary.includes('时间：2026-11-25T08:30:00.000Z'))
+  assert.ok(summary.length <= FEEDBACK_LIMITS.maxDiagnosticLog)
+
+  // Must strip origin, credentials, query params, and hash fragments
+  assert.equal(summary.includes('192.168.1.9'), false)
+  assert.equal(summary.includes('topsecret999'), false)
+  assert.equal(summary.includes('alice'), false)
+  assert.equal(summary.includes('hashSecret'), false)
+  assert.equal(summary.includes('user:pass'), false)
+
+  // Defensive redaction if sensitive strings appear in inputs
+  const scrubbed = buildWebDiagnosticLog({
+    version: 'v0.6.1',
+    isDesktop: false,
+    browserRuntimeLabel:
+      'Custom https://api.day.app/MyBarkSecret99 sessionid=cookieVal123 MS4wLjABAAAA1234567890',
+    userAgent: 'Agent Authorization: Bearer jwt_secret_token_999 ghp_123456789012345678901234',
+    pathname: '/accounts/MS4wLjABAAAA1234567890/logs?device_key=dk_secret_888',
+    timestamp: '2026-11-25T08:31:00.000Z',
+  })
+  assert.ok(scrubbed.includes('模式：Web / Docker 控制台'))
+  assert.equal(scrubbed.includes('MyBarkSecret99'), false)
+  assert.equal(scrubbed.includes('cookieVal123'), false)
+  assert.equal(scrubbed.includes('MS4wLjABAAAA1234567890'), false)
+  assert.equal(scrubbed.includes('jwt_secret_token_999'), false)
+  assert.equal(scrubbed.includes('ghp_123456789012345678901234'), false)
+  assert.equal(scrubbed.includes('dk_secret_888'), false)
+  assert.ok(scrubbed.includes('[REDACTED_BARK_KEY]'))
+  assert.ok(scrubbed.includes('[REDACTED_UID]'))
+})
+
+test('buildFeedbackFallbackText appends diagnostic log block only when attached', () => {
+  const logText = '=== 控制台脱敏诊断摘要 ===\n版本：v0.6.1\n视口尺寸：1280x800'
+  const withLog = buildFeedbackFallbackText({
+    kind: 'bug',
+    title: '页面渲染异常',
+    content: '在窄屏窗口打开设置页时顶部按钮换行异常',
+    contact: 'dev@example.com',
+    includeEnv: true,
+    includeDiagnosticLog: true,
+    diagnosticLog: `  ${logText}  `,
+    client: 'web',
+    version: 'v0.6.1',
+    environment: 'Web / Docker 控制台',
+  })
+  assert.ok(withLog.includes('--- 运行环境（已脱敏）---'))
+  assert.ok(withLog.includes('--- 脱敏诊断日志 ---'))
+  assert.ok(withLog.includes(logText))
+  assert.ok(
+    withLog.indexOf('--- 运行环境（已脱敏）---') < withLog.indexOf('--- 脱敏诊断日志 ---'),
+  )
+  assert.ok(withLog.indexOf('--- 脱敏诊断日志 ---') < withLog.indexOf('联系方式：dev@example.com'))
+
+  const disabledLog = buildFeedbackFallbackText({
+    kind: 'bug',
+    title: '未勾选日志',
+    content: '未勾选附带诊断日志时不应出现在复制文本里',
+    contact: '',
+    includeEnv: true,
+    includeDiagnosticLog: false,
+    diagnosticLog: logText,
+    client: 'web',
+    version: 'v0.6.1',
+    environment: 'Web / Docker 控制台',
+  })
+  assert.equal(disabledLog.includes('--- 脱敏诊断日志 ---'), false)
 })
 
 test('feedbackImages pure helpers scale dimensions, strip prefixes, and validate file types', () => {

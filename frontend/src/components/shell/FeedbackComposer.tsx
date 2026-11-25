@@ -15,9 +15,11 @@ import {
   FEEDBACK_KIND_OPTIONS,
   FEEDBACK_LIMITS,
   buildFeedbackFallbackText,
+  buildWebDiagnosticLog,
   buildWebEnvSummary,
   getConfiguredFeedbackEndpoint,
   submitInAppFeedback,
+  validateDiagnosticLog,
   type FeedbackKind,
   type FeedbackSubmitOutcome,
   type FeedbackSubmitPayload,
@@ -32,6 +34,7 @@ import {
 import { buildBugReportUrl } from '../../lib/links.ts'
 import {
   CheckIcon,
+  ChevronDownIcon,
   CloseIcon,
   CopyIcon,
   ExternalLinkIcon,
@@ -57,6 +60,16 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable
 }
 
+function composeDiagnosticLogText(localSummary: string, externalLog: string): string {
+  const cleanExternal = externalLog.trim()
+  if (!cleanExternal) return localSummary
+  const combined = `${localSummary}\n\n--- 附加诊断日志 ---\n${cleanExternal}`
+  if (combined.length <= FEEDBACK_LIMITS.maxDiagnosticLog) {
+    return combined
+  }
+  return cleanExternal
+}
+
 export function FeedbackComposer({
   isDesktop,
   appVersionLabel,
@@ -78,6 +91,12 @@ export function FeedbackComposer({
   const [content, setContent] = useState('')
   const [contact, setContact] = useState('')
   const [includeEnv, setIncludeEnv] = useState(true)
+  const [includeDiagnosticLog, setIncludeDiagnosticLog] = useState(false)
+  const [diagExpanded, setDiagExpanded] = useState(false)
+  const [externalDiagnosticLog, setExternalDiagnosticLog] = useState('')
+  const [diagnosticLogError, setDiagnosticLogError] = useState<string | null>(null)
+  const [copiedDiagnosticLog, setCopiedDiagnosticLog] = useState(false)
+  const [diagSnapshotTick, setDiagSnapshotTick] = useState(0)
   const [images, setImages] = useState<PreparedFeedbackImage[]>([])
   const [processingImages, setProcessingImages] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
@@ -91,7 +110,9 @@ export function FeedbackComposer({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLTextAreaElement | null>(null)
+  const diagTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const copyTimerRef = useRef<number | null>(null)
+  const copyDiagTimerRef = useRef<number | null>(null)
   const dragDepthRef = useRef(0)
   const mountedRef = useRef(true)
   const imagesRef = useRef<PreparedFeedbackImage[]>([])
@@ -109,6 +130,9 @@ export function FeedbackComposer({
       mountedRef.current = false
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current)
+      }
+      if (copyDiagTimerRef.current !== null) {
+        window.clearTimeout(copyDiagTimerRef.current)
       }
       if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
         for (const url of previewUrlsRef.current) {
@@ -256,13 +280,39 @@ export function FeedbackComposer({
     }
   }
 
+  const localDiagnosticSummary = useMemo(() => {
+    void diagSnapshotTick
+    return buildWebDiagnosticLog({
+      version: appVersionLabel,
+      isDesktop,
+      browserRuntimeLabel,
+    })
+  }, [appVersionLabel, browserRuntimeLabel, diagSnapshotTick, isDesktop])
+
+  const previewDiagnosticLog = useMemo(
+    () => composeDiagnosticLogText(localDiagnosticSummary, externalDiagnosticLog),
+    [externalDiagnosticLog, localDiagnosticSummary],
+  )
+
+  function buildFreshDiagnosticLog(): string {
+    const freshSummary = buildWebDiagnosticLog({
+      version: appVersionLabel,
+      isDesktop,
+      browserRuntimeLabel,
+    })
+    return composeDiagnosticLogText(freshSummary, externalDiagnosticLog)
+  }
+
   function buildCurrentPayload(): FeedbackSubmitPayload {
+    const diagnosticLog = includeDiagnosticLog ? buildFreshDiagnosticLog() : undefined
     return {
       kind,
       title,
       content,
       contact,
       includeEnv,
+      includeDiagnosticLog,
+      diagnosticLog,
       client: isDesktop ? 'desktop' : 'web',
       version: appVersionLabel,
       environment: buildWebEnvSummary({
@@ -300,6 +350,25 @@ export function FeedbackComposer({
     }
   }
 
+  async function handleCopyDiagnosticLog() {
+    const text = buildFreshDiagnosticLog()
+    setCopyFeedbackError(null)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedDiagnosticLog(true)
+      if (copyDiagTimerRef.current !== null) {
+        window.clearTimeout(copyDiagTimerRef.current)
+      }
+      copyDiagTimerRef.current = window.setTimeout(() => {
+        setCopiedDiagnosticLog(false)
+      }, 1800)
+    } catch {
+      const msg = '无法访问剪贴板，请展开诊断摘要后手动复制'
+      setCopyFeedbackError(msg)
+      onNotice?.(msg)
+    }
+  }
+
   function buildShortContentMessage(trimmedLen: number): string {
     if (trimmedLen <= 0) {
       return `请先填写至少 ${FEEDBACK_LIMITS.minContent} 个字的详细描述再提交`
@@ -320,18 +389,35 @@ export function FeedbackComposer({
       contentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
       return
     }
+    const payload = buildCurrentPayload()
+    if (includeDiagnosticLog) {
+      const diagErr = validateDiagnosticLog(payload.diagnosticLog)
+      if (diagErr) {
+        setDiagnosticLogError(diagErr)
+        setDiagExpanded(true)
+        setOutcome({ ok: false, error: diagErr, retryable: false })
+        window.requestAnimationFrame(() => {
+          diagTextareaRef.current?.focus()
+          diagTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        })
+        return
+      }
+    }
     setContentError(null)
+    setDiagnosticLogError(null)
     setSubmitting(true)
     setOutcome(null)
     setCopyFeedbackError(null)
     try {
-      const result = await submitInAppFeedback(feedbackEndpoint, buildCurrentPayload())
+      const result = await submitInAppFeedback(feedbackEndpoint, payload)
       if (!mountedRef.current) return
       setOutcome(result)
       if (result.ok) {
         setTitle('')
         setContent('')
         setContentError(null)
+        setExternalDiagnosticLog('')
+        setDiagnosticLogError(null)
         clearAllImages()
         onSubmitted?.(result)
       }
@@ -345,12 +431,18 @@ export function FeedbackComposer({
   const remainingSlots = FEEDBACK_LIMITS.maxImages - images.length
   const trimmedContentLen = content.trim().length
   const missingContentChars = Math.max(0, FEEDBACK_LIMITS.minContent - trimmedContentLen)
+  const diagnosticLogLen = previewDiagnosticLog.length
+  const diagnosticLogTooLong = diagnosticLogLen > FEEDBACK_LIMITS.maxDiagnosticLog
   const hasCopyableText = Boolean(title.trim() || content.trim())
-  const hasDraft = Boolean(title || content || contact || images.length > 0)
+  const hasDraft = Boolean(
+    title || content || contact || images.length > 0 || externalDiagnosticLog.trim(),
+  )
   const titleId = `${idPrefix}-title`
   const contentId = `${idPrefix}-content`
   const contactId = `${idPrefix}-contact`
   const fileInputId = `${idPrefix}-images`
+  const diagPanelId = `${idPrefix}-diag-panel`
+  const diagInputId = `${idPrefix}-diag-input`
   const activeKindMeta = FEEDBACK_KIND_OPTIONS.find((opt) => opt.kind === kind)
 
   return (
@@ -583,6 +675,151 @@ export function FeedbackComposer({
         <span>附带脱敏运行环境信息（仅版本号与浏览器内核，不含账号与好友隐私）</span>
       </label>
 
+      <div className="fc-feedback-diag">
+        <div className="fc-feedback-diag-bar">
+          <label className="fc-feedback-env-check fc-feedback-diag-check">
+            <input
+              type="checkbox"
+              checked={includeDiagnosticLog}
+              disabled={submitting}
+              onChange={(e) => {
+                const next = e.target.checked
+                setIncludeDiagnosticLog(next)
+                if (!next) {
+                  setDiagnosticLogError(null)
+                } else {
+                  setDiagSnapshotTick((n) => n + 1)
+                }
+                if (outcome && !outcome.ok) setOutcome(null)
+              }}
+            />
+            <span>
+              附带脱敏诊断日志
+              {externalDiagnosticLog.trim()
+                ? '（含已粘贴日志）'
+                : '（可选本机摘要或粘贴他端日志）'}
+            </span>
+          </label>
+
+          <div className="fc-feedback-diag-actions">
+            <button
+              type="button"
+              className={`fc-feedback-diag-btn${diagExpanded ? ' is-active' : ''}`}
+              aria-expanded={diagExpanded}
+              aria-controls={diagPanelId}
+              disabled={submitting}
+              onClick={() => {
+                setDiagExpanded((prev) => {
+                  if (!prev) setDiagSnapshotTick((n) => n + 1)
+                  return !prev
+                })
+              }}
+            >
+              <span>{diagExpanded ? '收起' : '预览 / 粘贴'}</span>
+              <ChevronDownIcon
+                width={12}
+                height={12}
+                className={`fc-feedback-diag-chevron${diagExpanded ? ' is-open' : ''}`}
+              />
+            </button>
+            <button
+              type="button"
+              className={`fc-feedback-diag-btn${copiedDiagnosticLog ? ' is-copied' : ''}`}
+              disabled={submitting}
+              onClick={() => void handleCopyDiagnosticLog()}
+              title="复制完整脱敏诊断摘要，可直接发给维护者"
+            >
+              {copiedDiagnosticLog ? (
+                <>
+                  <CheckIcon width={12} height={12} />
+                  <span>已复制</span>
+                </>
+              ) : (
+                <>
+                  <CopyIcon width={12} height={12} />
+                  <span>复制摘要</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {diagExpanded && (
+          <div id={diagPanelId} className="fc-feedback-diag-panel">
+            <div className="fc-feedback-diag-section">
+              <div className="fc-feedback-diag-head">
+                <span>本机脱敏诊断摘要（自动生成）</span>
+                <span className="fc-hint">不含 Cookie、Token 或好友昵称</span>
+              </div>
+              <pre className="fc-feedback-diag-pre fc-mono">{localDiagnosticSummary}</pre>
+            </div>
+
+            <div className="fc-feedback-diag-section">
+              <label className="fc-feedback-diag-head" htmlFor={diagInputId}>
+                <span>补充或粘贴他端诊断日志（可选）</span>
+                <span
+                  className={`fc-hint fc-mono fc-feedback-char-count${
+                    diagnosticLogError || diagnosticLogTooLong ? ' is-err' : ''
+                  }`}
+                >
+                  {diagnosticLogLen}/{FEEDBACK_LIMITS.maxDiagnosticLog}
+                </span>
+              </label>
+              <textarea
+                ref={diagTextareaRef}
+                id={diagInputId}
+                rows={3}
+                className={`fc-textarea fc-mono fc-feedback-diag-textarea${
+                  diagnosticLogError || diagnosticLogTooLong ? ' is-invalid' : ''
+                }`}
+                aria-invalid={Boolean(diagnosticLogError || diagnosticLogTooLong)}
+                aria-describedby={diagnosticLogError ? `${diagInputId}-error` : undefined}
+                placeholder="可粘贴从 Android 端或其他设备复制的脱敏诊断日志；留空时仅附带上方本机摘要…"
+                value={externalDiagnosticLog}
+                disabled={submitting}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setExternalDiagnosticLog(next)
+                  if (next.trim() && !includeDiagnosticLog) {
+                    setIncludeDiagnosticLog(true)
+                  }
+                  const nextComposed = composeDiagnosticLogText(localDiagnosticSummary, next)
+                  setDiagnosticLogError(validateDiagnosticLog(nextComposed))
+                  if (outcome && !outcome.ok) setOutcome(null)
+                }}
+              />
+              <div className="fc-feedback-diag-foot">
+                <span className="fc-hint">
+                  将以折叠块写入 Issue，上限 {FEEDBACK_LIMITS.maxDiagnosticLog} 字
+                </span>
+                {externalDiagnosticLog.trim() && (
+                  <button
+                    type="button"
+                    className="fc-feedback-inline-link"
+                    disabled={submitting}
+                    onClick={() => {
+                      setExternalDiagnosticLog('')
+                      setDiagnosticLogError(null)
+                    }}
+                  >
+                    清空粘贴日志
+                  </button>
+                )}
+              </div>
+              {diagnosticLogError && (
+                <div
+                  id={`${diagInputId}-error`}
+                  className="fc-feedback-field-error"
+                  role="alert"
+                >
+                  {diagnosticLogError}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {copyFeedbackError && (
         <div className="fc-feedback-status is-err" role="alert">
           <div>{copyFeedbackError}</div>
@@ -600,7 +837,11 @@ export function FeedbackComposer({
               <span className="fc-mono fc-feedback-issue-tag">
                 #{outcome.issueNumber}
                 {outcome.imageCount > 0 ? ` · ${outcome.imageCount} 张截图` : ''}
+                {outcome.hasDiagnosticLog ? ' · 已附诊断日志' : ''}
               </span>
+            )}
+            {outcome.ok && outcome.issueNumber === null && outcome.hasDiagnosticLog && (
+              <span className="fc-mono fc-feedback-issue-tag">已附诊断日志</span>
             )}
             {outcome.ok && outcome.issueUrl && (
               <a
@@ -701,6 +942,9 @@ export function FeedbackComposer({
               setTitle('')
               setContent('')
               setContact('')
+              setExternalDiagnosticLog('')
+              setIncludeDiagnosticLog(false)
+              setDiagnosticLogError(null)
               clearAllImages()
               setContentError(null)
               setOutcome(null)

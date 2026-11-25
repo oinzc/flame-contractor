@@ -43,6 +43,7 @@ export const FEEDBACK_LIMITS = {
   maxContent: 2000,
   maxTitle: 100,
   maxContact: 100,
+  maxDiagnosticLog: 16_000,
   maxImages: 3,
   maxImageBytes: 800 * 1024,
   maxImageDimension: 1600,
@@ -55,6 +56,8 @@ export interface FeedbackDraft {
   content: string
   contact: string
   includeEnv: boolean
+  includeDiagnosticLog?: boolean
+  diagnosticLog?: string
   images?: FeedbackImageAttachment[]
 }
 
@@ -70,6 +73,7 @@ export type FeedbackSubmitOutcome =
       issueNumber: number | null
       issueUrl: string | null
       imageCount: number
+      hasDiagnosticLog: boolean
       message: string
     }
   | {
@@ -77,6 +81,20 @@ export type FeedbackSubmitOutcome =
       error: string
       retryable: boolean
     }
+
+export interface WebDiagnosticLogOptions {
+  version: string
+  isDesktop: boolean
+  browserRuntimeLabel?: string | null
+  viewport?: { width: number; height: number; devicePixelRatio?: number } | null
+  userAgent?: string | null
+  pathname?: string | null
+  platform?: string | null
+  language?: string | null
+  online?: boolean | null
+  theme?: string | null
+  timestamp?: Date | string | number
+}
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/
 
@@ -149,9 +167,31 @@ export function getConfiguredFeedbackEndpoint(): string | null {
   return normalizeFeedbackEndpoint(env?.VITE_FEEDBACK_ENDPOINT)
 }
 
+export function validateDiagnosticLog(raw?: string | null): string | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string') {
+    return '诊断日志格式无效，请输入纯文本内容'
+  }
+  const clean = raw.trim()
+  if (clean.length > FEEDBACK_LIMITS.maxDiagnosticLog) {
+    return `诊断日志请控制在 ${FEEDBACK_LIMITS.maxDiagnosticLog} 字以内`
+  }
+  return null
+}
+
+function resolveEffectiveDiagnosticLog(
+  payload: Pick<FeedbackDraft, 'includeDiagnosticLog' | 'diagnosticLog'>,
+): string {
+  if (payload.includeDiagnosticLog === false) return ''
+  if (typeof payload.diagnosticLog !== 'string') return ''
+  return payload.diagnosticLog.trim()
+}
+
 export function validateFeedbackDraft(
   draft: Pick<FeedbackDraft, 'title' | 'content' | 'contact'> & {
     images?: ReadonlyArray<{ name?: unknown; mimeType?: unknown; dataBase64?: unknown }>
+    diagnosticLog?: string | null
+    includeDiagnosticLog?: boolean
   },
 ): string | null {
   const cleanContent = draft.content.trim()
@@ -167,7 +207,220 @@ export function validateFeedbackDraft(
   if (draft.contact.trim().length > FEEDBACK_LIMITS.maxContact) {
     return `联系方式请控制在 ${FEEDBACK_LIMITS.maxContact} 字以内`
   }
+  if (draft.includeDiagnosticLog !== false) {
+    const diagnosticLogError = validateDiagnosticLog(draft.diagnosticLog)
+    if (diagnosticLogError) return diagnosticLogError
+  }
   return validateFeedbackImages(draft.images)
+}
+
+function sanitizeDiagnosticField(raw: string): string {
+  if (!raw) return ''
+  return raw
+    .replace(/(https?:\/\/api\.day\.app\/)([^/\s"'`<>]+)/gi, '$1[REDACTED_BARK_KEY]')
+    .replace(
+      /\b(sessionid|sessionid_ss|sid_tt|sid_guard|passport_csrf_token|ttwid|cookie|token|access_token|refresh_token|device_key|secret|password)\s*=\s*[^;\s&"'`]+/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(/\b(Authorization\s*:\s*Bearer\s+)[^\s"'`]+/gi, '$1[REDACTED_TOKEN]')
+    .replace(/\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]')
+    .replace(/\bMS4wLjAB[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_UID]')
+    .replace(/`{3,}/g, '` ` `')
+}
+
+function sanitizeDiagnosticPathname(raw?: string | null): string {
+  const source =
+    raw !== undefined
+      ? (raw ?? '')
+      : typeof window !== 'undefined' && window.location
+        ? window.location.pathname
+        : ''
+  let path = source.trim()
+  if (!path) return '/'
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(path)) {
+    try {
+      path = new URL(path).pathname || '/'
+    } catch {
+      path = '/'
+    }
+  } else {
+    path = path.split(/[?#]/, 1)[0] || '/'
+  }
+  if (!path.startsWith('/')) {
+    path = `/${path}`
+  }
+  return sanitizeDiagnosticField(path).replace(/[\r\n]+/g, '').slice(0, 120)
+}
+
+function summarizeUserAgent(raw?: string | null): string {
+  const source =
+    raw !== undefined
+      ? (raw ?? '')
+      : typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string'
+        ? navigator.userAgent
+        : ''
+  const clean = sanitizeDiagnosticField(source).replace(/\s+/g, ' ').trim()
+  if (!clean) return '未知'
+
+  const edgeMatch = clean.match(/\bEdg(?:A|iOS)?\/[\d.]+/)
+  const operaMatch = clean.match(/\bOPR\/[\d.]+/)
+  const firefoxMatch = clean.match(/\bFirefox\/[\d.]+/)
+  const chromeMatch = clean.match(/\b(?:Chrome|CriOS)\/[\d.]+/)
+  const safariVersionMatch = clean.match(/\bVersion\/([\d.]+).*\bSafari\/[\d.]+/)
+  const safariMatch = clean.match(/\bSafari\/[\d.]+/)
+
+  const browserToken =
+    edgeMatch?.[0] ??
+    operaMatch?.[0] ??
+    firefoxMatch?.[0] ??
+    chromeMatch?.[0] ??
+    (safariVersionMatch ? `Safari/${safariVersionMatch[1]}` : safariMatch?.[0] ?? null)
+
+  const parenMatch = clean.match(/\(([^)]+)\)/)
+  let osToken: string | null = null
+  if (parenMatch) {
+    const inner = parenMatch[1]
+    const winMatch = inner.match(/Windows NT [\d.]+(?:;\s*(?:Win64;\s*x64|WOW64|ARM64))?/i)
+    const macMatch = inner.match(/Mac OS X [\d_.]+/i)
+    const androidMatch = inner.match(/Android [\d.]+/i)
+    const iosMatch = inner.match(/CPU (?:iPhone )?OS [\d_]+/i)
+    const linuxMatch = inner.match(/Linux(?:\s+[a-z0-9_]+)?/i)
+    const crosMatch = inner.match(/CrOS\s+[a-z0-9_]+/i)
+    osToken =
+      winMatch?.[0] ??
+      macMatch?.[0] ??
+      androidMatch?.[0] ??
+      iosMatch?.[0] ??
+      crosMatch?.[0] ??
+      linuxMatch?.[0] ??
+      null
+  }
+
+  if (browserToken) {
+    return osToken ? `${browserToken} (${osToken})` : browserToken
+  }
+  return clean.slice(0, 96)
+}
+
+function formatDiagnosticViewport(
+  viewport?: { width: number; height: number; devicePixelRatio?: number } | null,
+): string {
+  const resolved =
+    viewport !== undefined
+      ? viewport
+      : typeof window !== 'undefined' &&
+          typeof window.innerWidth === 'number' &&
+          typeof window.innerHeight === 'number'
+        ? {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+          }
+        : null
+
+  if (
+    !resolved ||
+    !Number.isFinite(resolved.width) ||
+    !Number.isFinite(resolved.height) ||
+    resolved.width <= 0 ||
+    resolved.height <= 0
+  ) {
+    return '未知'
+  }
+  const dpr =
+    typeof resolved.devicePixelRatio === 'number' &&
+    Number.isFinite(resolved.devicePixelRatio) &&
+    resolved.devicePixelRatio > 0
+      ? ` (DPR ${Number(resolved.devicePixelRatio.toFixed(2))})`
+      : ''
+  return `${Math.round(resolved.width)}x${Math.round(resolved.height)}${dpr}`
+}
+
+function formatDiagnosticTimestamp(timestamp?: Date | string | number): string {
+  if (timestamp !== undefined) {
+    const parsed = timestamp instanceof Date ? timestamp : new Date(timestamp)
+    if (Number.isFinite(parsed.getTime())) {
+      return parsed.toISOString()
+    }
+  }
+  return new Date().toISOString()
+}
+
+export function buildWebDiagnosticLog(options: WebDiagnosticLogOptions): string {
+  const version =
+    sanitizeDiagnosticField(options.version || '')
+      .replace(/[\r\n]+/g, ' ')
+      .trim() || '未知'
+  const mode = options.isDesktop ? 'Windows 桌面端' : 'Web / Docker 控制台'
+  const browserRuntime = options.browserRuntimeLabel
+    ? sanitizeDiagnosticField(options.browserRuntimeLabel)
+        .replace(/[\r\n]+/g, ' ')
+        .trim()
+    : ''
+  const viewportText = formatDiagnosticViewport(options.viewport)
+  const userAgentDigest = summarizeUserAgent(options.userAgent)
+  const pathname = sanitizeDiagnosticPathname(options.pathname)
+  const timestamp = formatDiagnosticTimestamp(options.timestamp)
+
+  const resolvedPlatform =
+    options.platform !== undefined
+      ? (options.platform ?? '').trim()
+      : typeof navigator !== 'undefined' && navigator.platform
+        ? navigator.platform.trim()
+        : ''
+  const resolvedLanguage =
+    options.language !== undefined
+      ? (options.language ?? '').trim()
+      : typeof navigator !== 'undefined' && navigator.language
+        ? navigator.language.trim()
+        : ''
+  const resolvedOnline =
+    options.online !== undefined
+      ? options.online
+      : typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
+        ? navigator.onLine
+        : null
+  const resolvedTheme =
+    options.theme !== undefined
+      ? (options.theme ?? '').trim()
+      : typeof document !== 'undefined'
+        ? (document.documentElement?.dataset?.theme ?? 'light').trim()
+        : ''
+
+  const lines = [
+    '=== 控制台脱敏诊断摘要 ===',
+    `时间：${timestamp}`,
+    `模式：${mode}`,
+    `版本：${version}`,
+  ]
+  if (browserRuntime) {
+    lines.push(`浏览器内核：${browserRuntime}`)
+  }
+  lines.push(
+    `页面路径：${pathname}`,
+    `视口尺寸：${viewportText}`,
+    `用户代理简摘：${userAgentDigest}`,
+  )
+
+  const runtimeExtras: string[] = []
+  if (resolvedPlatform) {
+    runtimeExtras.push(`平台 ${sanitizeDiagnosticField(resolvedPlatform).replace(/[\r\n]+/g, ' ')}`)
+  }
+  if (resolvedLanguage) {
+    runtimeExtras.push(`语言 ${sanitizeDiagnosticField(resolvedLanguage).replace(/[\r\n]+/g, ' ')}`)
+  }
+  if (resolvedTheme) {
+    runtimeExtras.push(`主题 ${sanitizeDiagnosticField(resolvedTheme).replace(/[\r\n]+/g, ' ')}`)
+  }
+  if (resolvedOnline !== null) {
+    runtimeExtras.push(resolvedOnline ? '网络在线' : '网络离线')
+  }
+  if (runtimeExtras.length > 0) {
+    lines.push(`运行状态：${runtimeExtras.join(' · ')}`)
+  }
+  lines.push('说明：已脱敏，不含账号、好友昵称、Cookie 或密钥信息')
+
+  return lines.join('\n').slice(0, FEEDBACK_LIMITS.maxDiagnosticLog)
 }
 
 export function buildWebEnvSummary(options: {
@@ -206,6 +459,10 @@ export function buildFeedbackFallbackText(payload: FeedbackSubmitPayload): strin
   }
   if (payload.includeEnv && payload.environment.trim()) {
     lines.push('', '--- 运行环境（已脱敏）---', payload.environment.trim())
+  }
+  const effectiveDiagnosticLog = resolveEffectiveDiagnosticLog(payload)
+  if (effectiveDiagnosticLog) {
+    lines.push('', '--- 脱敏诊断日志 ---', effectiveDiagnosticLog)
   }
   if (payload.contact.trim()) {
     lines.push('', `联系方式：${payload.contact.trim()}`)
@@ -260,6 +517,10 @@ export async function submitInAppFeedback(
     includeEnv: payload.includeEnv,
     website: '',
   }
+  const effectiveDiagnosticLog = resolveEffectiveDiagnosticLog(payload)
+  if (effectiveDiagnosticLog) {
+    requestBody.diagnosticLog = effectiveDiagnosticLog
+  }
   if (serializedImages) {
     requestBody.images = serializedImages
   }
@@ -295,18 +556,23 @@ export async function submitInAppFeedback(
         parsed.imageCount >= 0
           ? Math.floor(parsed.imageCount)
           : 0
+      const hasDiagnosticLog = Boolean(parsed.hasDiagnosticLog)
+      const detailParts: string[] = []
+      if (imageCount > 0) detailParts.push(`含 ${imageCount} 张截图`)
+      if (hasDiagnosticLog) detailParts.push('已附诊断日志')
+      const detailSuffix = detailParts.length > 0 ? detailParts.join('、') : ''
       const defaultMessage = issueNumber
-        ? imageCount > 0
-          ? `反馈已提交（#${issueNumber}，含 ${imageCount} 张截图），感谢你的帮助！`
+        ? detailSuffix
+          ? `反馈已提交（#${issueNumber}，${detailSuffix}），感谢你的帮助！`
           : `反馈已提交（#${issueNumber}），感谢你的帮助！`
-        : imageCount > 0
-          ? `反馈已提交成功（含 ${imageCount} 张截图），感谢你的帮助！`
+        : detailSuffix
+          ? `反馈已提交成功（${detailSuffix}），感谢你的帮助！`
           : '反馈已提交成功，感谢你的帮助！'
       const message =
         typeof parsed.message === 'string' && parsed.message.trim()
           ? parsed.message
           : defaultMessage
-      return { ok: true, issueNumber, issueUrl, imageCount, message }
+      return { ok: true, issueNumber, issueUrl, imageCount, hasDiagnosticLog, message }
     }
 
     const serverError =
