@@ -45,6 +45,8 @@ data class SetupReadinessSnapshot(
     val vendorFamily: OemVendorFamily,
     val manufacturer: String,
     val checkedAtEpochMs: Long,
+    val overlayAutoReturnAllowed: Boolean = false,
+    val backgroundPopupAllowed: Boolean = true,
 ) {
     val totalCount: Int
         get() = items.size
@@ -101,10 +103,17 @@ object SetupReadinessBuilder {
         val loggedIn = isAccountLoggedIn(accountStatus)
         val targetsReady = enabledTargetCount > 0
 
-        val overlayHowTo = if (vendor.hasExtraBackgroundPopupSwitch) {
-            "先点击「开启悬浮窗权限」允许「显示在其他应用上层」，再点击「后台弹出界面」确认已开启（${vendor.displayName}需两项都放行才能稳定自动跳回）。"
-        } else {
-            "点击「开启悬浮窗权限」，在系统列表中找到「抖音续火工」并打开「允许显示在其他应用上层」。"
+        val autoReturnReady = survivalSnapshot.autoReturnFullyAllowed
+        val needsBgPopupOnly = survivalSnapshot.overlayAutoReturnAllowed && !survivalSnapshot.backgroundPopupAllowed
+        val overlayHowTo = when {
+            needsBgPopupOnly ->
+                "悬浮窗已开启，还差最后一步：点击「开启后台弹出界面」，在${vendor.displayName}权限页里打开「后台弹出界面」，返回本页后即自动亮绿勾。"
+
+            vendor.hasExtraBackgroundPopupSwitch ->
+                "先点击「开启悬浮窗权限」允许「显示在其他应用上层」，再点击「开启后台弹出界面」在${vendor.displayName}其他权限中放行，两项全开后抖音确认登录即可自动跳回。"
+
+            else ->
+                "点击「开启悬浮窗权限」，在系统列表中找到「抖音续火工」并打开「允许显示在其他应用上层」。"
         }
 
         val oemWhyNeeded = when (vendor) {
@@ -165,13 +174,33 @@ object SetupReadinessBuilder {
                 id = SetupItemId.AUTO_RETURN_OVERLAY,
                 category = SetupItemCategory.SYSTEM_PERMISSION,
                 importance = SetupItemImportance.RECOMMENDED,
-                title = "抖音确认后自动跳回（悬浮窗权限）",
-                whyNeeded = "Android 10 及以上系统默认阻止后台应用切回前台。允许「显示在其他应用上层」后，在抖音点击「确认登录」即可自动跳回本应用，无需手动切屏。",
+                title = if (vendor.hasExtraBackgroundPopupSwitch) {
+                    "抖音确认后自动跳回（悬浮窗 + 后台弹出）"
+                } else {
+                    "抖音确认后自动跳回（悬浮窗权限）"
+                },
+                whyNeeded = if (vendor.hasExtraBackgroundPopupSwitch) {
+                    "Android 10+ 与${vendor.displayName}双重限制后台应用自动切回前台。同时允许「悬浮窗」与「后台弹出界面」后，在抖音点击「确认登录」即可自动跳回本应用。"
+                } else {
+                    "Android 10 及以上系统默认阻止后台应用切回前台。允许「显示在其他应用上层」后，在抖音点击「确认登录」即可自动跳回本应用，无需手动切屏。"
+                },
                 howToHint = overlayHowTo,
-                completed = survivalSnapshot.overlayAutoReturnAllowed,
-                statusLabel = if (survivalSnapshot.overlayAutoReturnAllowed) "已开启" else "待开启",
-                primaryActionLabel = if (survivalSnapshot.overlayAutoReturnAllowed) "查看悬浮窗权限" else "开启悬浮窗权限",
-                secondaryActionLabel = if (vendor.hasExtraBackgroundPopupSwitch) "后台弹出界面" else null,
+                completed = autoReturnReady,
+                statusLabel = when {
+                    autoReturnReady -> "已开启"
+                    needsBgPopupOnly -> "还差后台弹出"
+                    else -> "待开启"
+                },
+                primaryActionLabel = when {
+                    !survivalSnapshot.overlayAutoReturnAllowed -> "开启悬浮窗权限"
+                    !survivalSnapshot.backgroundPopupAllowed -> "开启后台弹出界面"
+                    else -> "查看悬浮窗权限"
+                },
+                secondaryActionLabel = when {
+                    vendor.hasExtraBackgroundPopupSwitch && needsBgPopupOnly -> "查看悬浮窗权限"
+                    vendor.hasExtraBackgroundPopupSwitch -> "后台弹出界面"
+                    else -> null
+                },
             ),
             SetupChecklistItem(
                 id = SetupItemId.BATTERY_OPTIMIZATION,
@@ -246,6 +275,8 @@ object SetupReadinessBuilder {
             vendorFamily = vendor,
             manufacturer = manufacturer,
             checkedAtEpochMs = survivalSnapshot.checkedAtEpochMs,
+            overlayAutoReturnAllowed = survivalSnapshot.overlayAutoReturnAllowed,
+            backgroundPopupAllowed = survivalSnapshot.backgroundPopupAllowed,
         )
     }
 }

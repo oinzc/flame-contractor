@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlarmManager
+import android.app.AppOpsManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
@@ -13,6 +14,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -95,6 +97,7 @@ data class RomSurvivalSnapshot(
     val exactAlarmAllowed: Boolean,
     val autostartGuidanceConfirmed: Boolean,
     val overlayAutoReturnAllowed: Boolean = false,
+    val backgroundPopupAllowed: Boolean = true,
     val vendorFamily: OemVendorFamily = if (isXiaomiOrHyperOs) {
         OemVendorFamily.XIAOMI
     } else {
@@ -104,6 +107,9 @@ data class RomSurvivalSnapshot(
     val urgentAlertsChannelEnabled: Boolean = true,
     val items: List<SurvivalCheckItem>,
 ) {
+    val autoReturnFullyAllowed: Boolean
+        get() = overlayAutoReturnAllowed && backgroundPopupAllowed
+
     val passedCount: Int
         get() = items.count { it.passed }
 
@@ -124,6 +130,7 @@ object RomSurvivalChecker {
 
     private const val PREFS_NAME = "flame_rom_survival_prefs"
     private const val KEY_AUTOSTART_CONFIRMED = "autostart_confirmed"
+    private const val MIUI_OP_BACKGROUND_START_ACTIVITY = 10021
 
     private val XIAOMI_TOKENS = setOf("xiaomi", "redmi", "poco", "blackshark")
     private val HUAWEI_HONOR_TOKENS = setOf("huawei", "honor")
@@ -186,6 +193,11 @@ object RomSurvivalChecker {
         val batteryIgnored = isIgnoringBatteryOptimizations(appContext)
         val exactAlarmAllowed = canScheduleExactAlarms(appContext)
         val vendor = detectVendorFamily()
+        val backgroundPopupAllowed = if (vendor == OemVendorFamily.XIAOMI) {
+            isXiaomiBackgroundPopupAllowed(appContext) ?: true
+        } else {
+            true
+        }
         val manufacturerLabel = Build.MANUFACTURER?.takeIf { it.isNotBlank() } ?: "Android"
         val userConfirmedAutostart = isAutostartGuidanceConfirmed(appContext)
         val autostartEffective = if (vendor.requiresManualAutostartConfirmation) {
@@ -209,6 +221,7 @@ object RomSurvivalChecker {
             dailySummaryChannelEnabled = dailyEnabled,
             urgentAlertsChannelEnabled = urgentEnabled,
             overlayAutoReturnAllowed = overlayAllowed,
+            backgroundPopupAllowed = backgroundPopupAllowed,
             vendorFamily = vendor,
         )
     }
@@ -225,6 +238,7 @@ object RomSurvivalChecker {
         dailySummaryChannelEnabled: Boolean = true,
         urgentAlertsChannelEnabled: Boolean = true,
         overlayAutoReturnAllowed: Boolean = false,
+        backgroundPopupAllowed: Boolean = true,
         vendorFamily: OemVendorFamily = if (isXiaomiOrHyperOs) {
             OemVendorFamily.XIAOMI
         } else {
@@ -232,15 +246,19 @@ object RomSurvivalChecker {
         },
     ): RomSurvivalSnapshot {
         val oemMeta = resolveOemBackgroundGuidance(vendorFamily, manufacturer)
+        val autoReturnReady = overlayAutoReturnAllowed && backgroundPopupAllowed
         val overlayDetail = when {
-            overlayAutoReturnAllowed && vendorFamily.hasExtraBackgroundPopupSwitch ->
-                "已允许「显示在其他应用上层」，抖音点击「确认登录」后可自动跳回本应用；${vendorFamily.displayName}建议同时确认「后台弹出界面」已开启。"
+            autoReturnReady && vendorFamily.hasExtraBackgroundPopupSwitch ->
+                "已同时允许「显示在其他应用上层」与「后台弹出界面」，在抖音点击「确认登录」后即可自动跳回本应用。"
+
+            overlayAutoReturnAllowed && !backgroundPopupAllowed ->
+                "悬浮窗已开启，但${vendorFamily.displayName}尚未放行「后台弹出界面」，确认登录后仍会被系统拦截。请立即点击开启「后台弹出界面」。"
 
             overlayAutoReturnAllowed ->
                 "已允许「显示在其他应用上层」，在抖音点击「确认登录」后可自动跳回本应用，无需手动切换。"
 
             vendorFamily.hasExtraBackgroundPopupSwitch ->
-                "Android 10+ 限制后台自动切回前台。请开启「显示在其他应用上层」，并在${vendorFamily.displayName}权限页同时允许「后台弹出界面」，抖音点完确认即可自动跳回。"
+                "Android 10+ 限制后台自动切回前台。请先开启「显示在其他应用上层」，再在${vendorFamily.displayName}「其他权限」中允许「后台弹出界面」，两项全开后抖音确认登录即可自动跳回。"
 
             else ->
                 "Android 10+ 默认阻止后台应用自动回到前台。开启「显示在其他应用上层」后，在抖音点完「确认登录」即可自动跳回本应用。"
@@ -262,13 +280,21 @@ object RomSurvivalChecker {
             SurvivalCheckItem(
                 id = SurvivalCheckId.OVERLAY_AUTO_RETURN,
                 title = "显示在其他应用上层（自动跳回）",
-                passed = overlayAutoReturnAllowed,
+                passed = autoReturnReady,
                 advisoryOnly = true,
-                statusLabel = if (overlayAutoReturnAllowed) "已开启" else "待开启",
+                statusLabel = when {
+                    autoReturnReady -> "已开启"
+                    overlayAutoReturnAllowed && !backgroundPopupAllowed -> "还差后台弹出"
+                    else -> "待开启"
+                },
                 detail = overlayDetail,
-                actionLabel = if (overlayAutoReturnAllowed) "查看权限" else "开启悬浮窗权限",
+                actionLabel = when {
+                    !overlayAutoReturnAllowed -> "开启悬浮窗权限"
+                    !backgroundPopupAllowed -> "开启后台弹出界面"
+                    else -> "查看权限"
+                },
                 secondaryActionLabel = if (vendorFamily.hasExtraBackgroundPopupSwitch) {
-                    "后台弹出界面"
+                    if (overlayAutoReturnAllowed && !backgroundPopupAllowed) "查看悬浮窗" else "后台弹出界面"
                 } else {
                     null
                 },
@@ -323,6 +349,7 @@ object RomSurvivalChecker {
             exactAlarmAllowed = exactAlarmAllowed,
             autostartGuidanceConfirmed = autostartGuidanceConfirmed,
             overlayAutoReturnAllowed = overlayAutoReturnAllowed,
+            backgroundPopupAllowed = backgroundPopupAllowed,
             vendorFamily = vendorFamily,
             dailySummaryChannelEnabled = dailySummaryChannelEnabled,
             urgentAlertsChannelEnabled = urgentAlertsChannelEnabled,
@@ -417,6 +444,29 @@ object RomSurvivalChecker {
         } catch (_: Throwable) {
             false
         }
+    }
+
+    /**
+     * 读取小米 / HyperOS 私有权限 `OP_BACKGROUND_START_ACTIVITY (10021)`（「后台弹出界面」）。
+     * 在不支持该 Op 码的机型上返回 `null`，调用方保守放行不阻塞非小米设备。
+     */
+    fun isXiaomiBackgroundPopupAllowed(context: Context): Boolean? {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return null
+        return runCatching {
+            val method = AppOpsManager::class.java.getMethod(
+                "checkOpNoThrow",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            val mode = method.invoke(
+                appOps,
+                MIUI_OP_BACKGROUND_START_ACTIVITY,
+                Process.myUid(),
+                context.packageName,
+            ) as? Int ?: return null
+            mode == AppOpsManager.MODE_ALLOWED
+        }.getOrNull()
     }
 
     fun isNotificationChannelEnabled(context: Context, channelId: String): Boolean {

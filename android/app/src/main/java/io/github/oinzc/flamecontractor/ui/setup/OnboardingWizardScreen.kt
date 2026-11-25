@@ -361,6 +361,17 @@ fun OnboardingWizardScreen(
         }
     }
 
+    val openBackgroundPopupPermission: () -> Unit = {
+        haptics.performFlameLightTick()
+        if (!RomSurvivalChecker.openBackgroundPopupSettings(context)) {
+            Toast.makeText(
+                context,
+                "未能打开「后台弹出界面」权限页，请在应用权限管理中开启",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
     val openOemAutostartSettings: () -> Unit = {
         haptics.performFlameLightTick()
         hasOpenedOemSettings = true
@@ -564,20 +575,25 @@ fun OnboardingWizardScreen(
 
                             OnboardingStep.AUTO_RETURN -> {
                                 val item = readiness.itemById(SetupItemId.AUTO_RETURN_OVERLAY)
+                                val needsBgPopupOnly = readiness.overlayAutoReturnAllowed && !readiness.backgroundPopupAllowed
                                 SingleItemStepBody(
                                     item = item,
-                                    onPrimaryAction = requestOverlayPermission,
+                                    onPrimaryAction = if (needsBgPopupOnly) {
+                                        openBackgroundPopupPermission
+                                    } else {
+                                        requestOverlayPermission
+                                    },
                                     onSecondaryAction = item.secondaryActionLabel?.let {
-                                        {
-                                            haptics.performFlameLightTick()
-                                            if (!RomSurvivalChecker.openBackgroundPopupSettings(context)) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "未能打开「后台弹出界面」权限页，请在应用权限管理中开启",
-                                                    Toast.LENGTH_SHORT,
-                                                ).show()
-                                            }
+                                        if (needsBgPopupOnly) {
+                                            requestOverlayPermission
+                                        } else {
+                                            openBackgroundPopupPermission
                                         }
+                                    },
+                                    nativePopupHint = if (needsBgPopupOnly) {
+                                        "悬浮窗已开启！${readiness.vendorFamily.displayName}还需在「其他权限」里打开「后台弹出界面」，开启返回后本步自动亮绿勾。"
+                                    } else {
+                                        null
                                     },
                                 )
                             }
@@ -774,11 +790,21 @@ fun OnboardingWizardScreen(
                                         requestNotifications,
                                     )
 
-                                    OnboardingStep.AUTO_RETURN -> Triple(
-                                        "前往开启悬浮窗权限",
-                                        true,
-                                        requestOverlayPermission,
-                                    )
+                                    OnboardingStep.AUTO_RETURN -> {
+                                        if (!readiness.overlayAutoReturnAllowed) {
+                                            Triple(
+                                                "前往开启悬浮窗权限",
+                                                true,
+                                                requestOverlayPermission,
+                                            )
+                                        } else {
+                                            Triple(
+                                                "开启「后台弹出界面」",
+                                                true,
+                                                openBackgroundPopupPermission,
+                                            )
+                                        }
+                                    }
 
                                     OnboardingStep.BATTERY_AND_ALARM -> {
                                         val batteryDone = readiness.itemById(SetupItemId.BATTERY_OPTIMIZATION).completed

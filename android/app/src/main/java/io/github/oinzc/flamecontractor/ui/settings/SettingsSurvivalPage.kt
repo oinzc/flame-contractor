@@ -101,10 +101,16 @@ internal fun SettingsSurvivalPage(
     val systemCompleted = systemItems.count { it.completed }
     val workflowCompleted = workflowItems.count { it.completed }
 
+    val needsBgPopupOnly = readiness.overlayAutoReturnAllowed && !readiness.backgroundPopupAllowed
+
     val triggerPrimaryAction: (SetupItemId) -> Unit = { id ->
         when (id) {
             SetupItemId.NOTIFICATIONS -> onOpenSurvivalAction(SurvivalCheckId.NOTIFICATIONS)
-            SetupItemId.AUTO_RETURN_OVERLAY -> onOpenSurvivalAction(SurvivalCheckId.OVERLAY_AUTO_RETURN)
+            SetupItemId.AUTO_RETURN_OVERLAY -> if (needsBgPopupOnly) {
+                onOpenBackgroundPopupSettings()
+            } else {
+                onOpenSurvivalAction(SurvivalCheckId.OVERLAY_AUTO_RETURN)
+            }
             SetupItemId.BATTERY_OPTIMIZATION -> onOpenSurvivalAction(SurvivalCheckId.BATTERY_OPTIMIZATION)
             SetupItemId.EXACT_ALARM -> onOpenSurvivalAction(SurvivalCheckId.EXACT_ALARM)
             SetupItemId.OEM_BACKGROUND_AUTOSTART -> onOpenSurvivalAction(SurvivalCheckId.OEM_BACKGROUND_AUTOSTART)
@@ -115,7 +121,11 @@ internal fun SettingsSurvivalPage(
 
     val triggerSecondaryAction: (SetupItemId) -> (() -> Unit)? = { id ->
         when (id) {
-            SetupItemId.AUTO_RETURN_OVERLAY -> onOpenBackgroundPopupSettings
+            SetupItemId.AUTO_RETURN_OVERLAY -> if (needsBgPopupOnly) {
+                { onOpenSurvivalAction(SurvivalCheckId.OVERLAY_AUTO_RETURN) }
+            } else {
+                onOpenBackgroundPopupSettings
+            }
             SetupItemId.OEM_BACKGROUND_AUTOSTART -> onOpenOemPowerSettings
             else -> null
         }

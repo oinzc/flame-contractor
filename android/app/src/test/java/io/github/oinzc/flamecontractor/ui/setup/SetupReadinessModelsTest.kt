@@ -259,6 +259,52 @@ class SetupReadinessModelsTest {
         assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(allCoreReady).isEmpty())
     }
 
+    @Test
+    fun xiaomiRequiresBothOverlayAndBackgroundPopupBeforeUnlockingNextStep() {
+        val overlayOnly = SetupReadinessBuilder.build(
+            survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+                checkedAtEpochMs = 4_000L,
+                isXiaomiOrHyperOs = true,
+                manufacturer = "Xiaomi",
+                notificationsGranted = true,
+                batteryOptimizationIgnored = true,
+                exactAlarmAllowed = true,
+                autostartGuidanceConfirmed = true,
+                overlayAutoReturnAllowed = true,
+                backgroundPopupAllowed = false,
+                vendorFamily = OemVendorFamily.XIAOMI,
+            ),
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        val autoReturnItem = overlayOnly.itemById(SetupItemId.AUTO_RETURN_OVERLAY)
+        assertFalse(autoReturnItem.completed)
+        assertEquals("还差后台弹出", autoReturnItem.statusLabel)
+        assertEquals("开启后台弹出界面", autoReturnItem.primaryActionLabel)
+        assertEquals("查看悬浮窗权限", autoReturnItem.secondaryActionLabel)
+        assertEquals(1, OnboardingGatePolicy.maxUnlockedStepIndex(overlayOnly))
+        assertFalse(OnboardingGatePolicy.canSelectStep(2, overlayOnly))
+
+        val bothReady = SetupReadinessBuilder.build(
+            survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+                checkedAtEpochMs = 5_000L,
+                isXiaomiOrHyperOs = true,
+                manufacturer = "Xiaomi",
+                notificationsGranted = true,
+                batteryOptimizationIgnored = true,
+                exactAlarmAllowed = true,
+                autostartGuidanceConfirmed = true,
+                overlayAutoReturnAllowed = true,
+                backgroundPopupAllowed = true,
+                vendorFamily = OemVendorFamily.XIAOMI,
+            ),
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        assertTrue(bothReady.itemById(SetupItemId.AUTO_RETURN_OVERLAY).completed)
+        assertEquals(OnboardingStep.entries.lastIndex, OnboardingGatePolicy.maxUnlockedStepIndex(bothReady))
+    }
+
     private class InMemorySharedPreferences : SharedPreferences {
         private val data = linkedMapOf<String, Any?>()
 
