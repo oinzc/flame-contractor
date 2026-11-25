@@ -277,6 +277,7 @@ object DouyinJsScripts {
             """
                 var QR_CODE_PATHS = ['/passport/web/get_qrcode'];
                 var QR_STATUS_PATHS = ['/passport/web/check_qrconnect'];
+                var __flameLastQrPollAt = 0;
                 function emitQrCodePayload(rawText) {
                   try {
                     if (typeof rawText !== 'string' || !rawText) return;
@@ -289,6 +290,11 @@ object DouyinJsScripts {
                 function emitQrStatusPayload(rawText) {
                   try {
                     if (typeof rawText !== 'string' || !rawText) return;
+                    if (rawText.indexOf('confirmed') === -1 && rawText.indexOf('expired') === -1) {
+                      __flameLastQrPollAt = Date.now();
+                    } else {
+                      __flameLastQrPollAt = 0;
+                    }
                     var bridge = getBridge();
                     if (bridge && typeof bridge.onQrStatusPayload === 'function') {
                       bridge.onQrStatusPayload(rawText);
@@ -315,6 +321,42 @@ object DouyinJsScripts {
                     get: function () { return 'visible'; },
                     configurable: true
                   });
+                  Document.prototype.hasFocus = function () { return true; };
+                } catch (_) {}
+                try {
+                  if (!window.__flameKeepAliveGuardsInstalled) {
+                    window.__flameKeepAliveGuardsInstalled = true;
+                    window.__flameKeepAliveActive = false;
+                    var suppressBgEvent = function (ev) {
+                      if (window.__flameKeepAliveActive && ev && typeof ev.stopImmediatePropagation === 'function') {
+                        ev.stopImmediatePropagation();
+                      }
+                    };
+                    document.addEventListener('visibilitychange', suppressBgEvent, true);
+                    window.addEventListener('blur', suppressBgEvent, true);
+                    window.addEventListener('pagehide', suppressBgEvent, true);
+
+                    var origSetTimeout = window.setTimeout;
+                    if (typeof origSetTimeout === 'function') {
+                      window.setTimeout = function (fn, delay) {
+                        var nextDelay = delay;
+                        try {
+                          if (window.__flameKeepAliveActive &&
+                              typeof __flameLastQrPollAt === 'number' &&
+                              __flameLastQrPollAt > 0 &&
+                              (Date.now() - __flameLastQrPollAt) <= 220 &&
+                              typeof delay === 'number' &&
+                              delay >= 1100 &&
+                              delay <= 12000) {
+                            nextDelay = 850;
+                          }
+                        } catch (_) {}
+                        var args = Array.prototype.slice.call(arguments);
+                        args[1] = nextDelay;
+                        return origSetTimeout.apply(this, args);
+                      };
+                    }
+                  }
                 } catch (_) {}
             """.trimIndent()
         } else {

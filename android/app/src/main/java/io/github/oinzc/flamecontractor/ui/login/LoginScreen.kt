@@ -59,6 +59,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -79,6 +80,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -118,6 +120,7 @@ data class LoginScreenState(
     val qrBitmap: ImageBitmap? = null,
     val validatedIndexUrl: String? = null,
     val remainingSeconds: Int = 0,
+    val loadProgressPercent: Int = 0,
     val installedVariant: DouyinClientVariant? = null,
     val isRefreshingQr: Boolean = false,
     val refreshSpinCount: Int = 0,
@@ -804,7 +807,11 @@ private fun QrCodeStageBox(
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = if (state.stage == QrVisualStage.CONNECTING) {
-                        "正在连接抖音安全通行证…"
+                        if (state.loadProgressPercent in 1..99) {
+                            "正在连接抖音安全通行证… ${state.loadProgressPercent}%"
+                        } else {
+                            "正在连接抖音安全通行证…"
+                        }
                     } else {
                         "正在生成专属授权码…"
                     },
@@ -813,9 +820,22 @@ private fun QrCodeStageBox(
                     color = palette.ink,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                if (state.loadProgressPercent in 1..99 && state.stage == QrVisualStage.CONNECTING) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { (state.loadProgressPercent / 100f).coerceIn(0.05f, 1f) },
+                        modifier = Modifier
+                            .width(128.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = palette.monoCtaContainer,
+                        trackColor = palette.hairline,
+                        strokeCap = StrokeCap.Round,
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "首次加载安全脚本约需 5–10 秒，请勿重复刷新",
+                    text = "首次建立独立沙盒环境约需 3–6 秒，请勿重复刷新",
                     style = MaterialTheme.typography.labelSmall,
                     color = palette.inkTertiary,
                     textAlign = TextAlign.Center,

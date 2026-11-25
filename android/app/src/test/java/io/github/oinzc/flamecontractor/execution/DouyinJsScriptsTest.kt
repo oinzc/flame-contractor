@@ -38,6 +38,21 @@ class DouyinJsScriptsTest {
     }
 
     @Test
+    fun loginCaptureScriptIncludesFocusGuardAndQrPollAccelerationOnlyWhenCaptureEnabled() {
+        val loginJs = DouyinJsScripts.buildLoginCaptureDocumentStartJs()
+        val normalJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+
+        assertTrue(loginJs.contains("Document.prototype.hasFocus"))
+        assertTrue(loginJs.contains("__flameKeepAliveActive"))
+        assertTrue(loginJs.contains("visibilitychange"))
+        assertTrue(loginJs.contains("__flameLastQrPollAt"))
+        assertTrue(loginJs.contains("nextDelay = 850"))
+
+        assertFalse(normalJs.contains("__flameKeepAliveActive"))
+        assertFalse(normalJs.contains("__flameLastQrPollAt"))
+    }
+
+    @Test
     fun textScriptsContainZeroWidthStripRegexAndExecCommand() {
         val bundle = SelectorBundle.defaults()
         val insertScript = DouyinJsScripts.buildInsertTextExecCommandJs(

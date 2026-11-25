@@ -8,6 +8,8 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_STICKER_TEMPLATE_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
@@ -1035,6 +1037,111 @@ class ScanReconcileViewModelTest {
             advanceUntilIdle()
             assertEquals(listOf(acct2), gateway.singleSendAccountIds)
             assertEquals(listOf(acct2), gateway.manualScanAccountIds)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun scanImportAndManualCreateDefaultToDailyStreakTemplateAndRespectExplicitOverride() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository().apply {
+                // 模拟真实种子顺序：3 个表情模板创建早于「每日续火」文本模板
+                templatesState.value = listOf(
+                    MessageTemplateEntity(
+                        id = DEFAULT_STICKER_TEMPLATE_ID,
+                        name = "比心",
+                        type = TemplateType.STICKER,
+                        stickerName = "比心",
+                        stickerLabel = "比心",
+                        createdAt = 100L,
+                    ),
+                    MessageTemplateEntity(
+                        id = DEFAULT_TEXT_TEMPLATE_ID,
+                        name = "每日续火",
+                        type = TemplateType.TEXT,
+                        content = "每日续火打卡 🔥",
+                        createdAt = 200L,
+                    ),
+                )
+            }
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-default-tpl",
+                    scannedAtEpochMs = 1_000L,
+                    discoveredCount = 2,
+                    sparkCount = 2,
+                    candidates = listOf(
+                        candidate(name = "好友甲", sparkDays = 10, sparkLabel = "10天"),
+                        candidate(name = "好友乙", sparkDays = 8, sparkLabel = "8天"),
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            // 1. 扫描对账抽屉默认自动选中「每日续火」模板而非排在前面的表情模板
+            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, vm.uiState.value.reconcileState.defaultTemplateId)
+
+            // 手工新增弹窗同样默认绑定「每日续火」
+            vm.openCreateTargetDialog()
+            advanceUntilIdle()
+            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, vm.uiState.value.editorState?.templateId)
+            vm.dismissTargetEditor()
+
+            // 只勾选「好友甲」并导入，应自动绑定「每日续火」
+            val friendB = vm.uiState.value.reconcileState.allCandidates.first { it.candidate.displayName == "好友乙" }.candidate
+            vm.toggleCandidateSelection(friendB)
+            advanceUntilIdle()
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+
+            val importedA = repo.targetsState.value.first { it.nicknameSnapshot == "好友甲" }
+            assertEquals(DEFAULT_TEXT_TEMPLATE_ID, importedA.templateId)
+
+            // 2. 用户显式选择「暂不绑定模板」(null) 后，必须严格尊重用户选择
+            vm.onReconcileDefaultTemplateChanged(null)
+            vm.toggleCandidateSelection(friendB)
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.reconcileState.defaultTemplateId)
+
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+            val importedB = repo.targetsState.value.first { it.nicknameSnapshot == "好友乙" }
+            assertNull(importedB.templateId)
+
+            // 3. 多账号作用域模板 ID（acct2:default-text-daily）同样优先命中
+            val multiTemplates = listOf(
+                MessageTemplateEntity(
+                    id = "acct-2:$DEFAULT_STICKER_TEMPLATE_ID",
+                    accountId = "acct-2",
+                    name = "比心",
+                    type = TemplateType.STICKER,
+                ),
+                MessageTemplateEntity(
+                    id = "acct-2:$DEFAULT_TEXT_TEMPLATE_ID",
+                    accountId = "acct-2",
+                    name = "每日续火",
+                    type = TemplateType.TEXT,
+                    content = "打卡",
+                ),
+            )
+            assertEquals(
+                "acct-2:$DEFAULT_TEXT_TEMPLATE_ID",
+                TargetsViewModel.resolvePreferredDefaultTemplateId(multiTemplates),
+            )
         } finally {
             vmScope.cancel()
         }

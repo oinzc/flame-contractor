@@ -11,6 +11,7 @@ import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
+import io.github.oinzc.flamecontractor.data.db.DEFAULT_TEXT_TEMPLATE_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
@@ -394,6 +395,7 @@ private data class LocalUiControls(
     val filter: TargetFilter = TargetFilter.ALL,
     val reconcileSearchQuery: String = "",
     val reconcileDefaultTemplateId: String? = null,
+    val reconcileDefaultTemplateExplicitlySet: Boolean = false,
     val isReconcileSheetOpen: Boolean = false,
     val importing: Boolean = false,
     val reconcileErrorMessage: String? = null,
@@ -723,6 +725,12 @@ class TargetsViewModel(
             }
         }
 
+        val resolvedReconcileTemplateId = resolveEffectiveReconcileTemplateId(
+            templates = data.templates,
+            explicitlySet = controls.reconcileDefaultTemplateExplicitlySet,
+            explicitTemplateId = controls.reconcileDefaultTemplateId,
+        )
+
         val reconcileState = ScanReconcileState(
             snapshotKey = snapshotKey,
             scanRunId = snapshot?.scanRunId,
@@ -730,7 +738,7 @@ class TargetsViewModel(
             discoveredCount = snapshot?.discoveredCount ?: 0,
             sparkCount = snapshot?.sparkCount ?: 0,
             searchQuery = controls.reconcileSearchQuery,
-            defaultTemplateId = controls.reconcileDefaultTemplateId,
+            defaultTemplateId = resolvedReconcileTemplateId,
             allCandidates = candidateUis,
             filteredCandidates = filteredCandidates,
             selectedCount = candidateUis.count { it.selected },
@@ -817,7 +825,12 @@ class TargetsViewModel(
     }
 
     fun onReconcileDefaultTemplateChanged(templateId: String?) {
-        localControls.update { it.copy(reconcileDefaultTemplateId = templateId) }
+        localControls.update {
+            it.copy(
+                reconcileDefaultTemplateId = templateId,
+                reconcileDefaultTemplateExplicitlySet = true,
+            )
+        }
     }
 
     fun toggleCandidateSelection(candidate: ScannedChatCandidate) {
@@ -1156,7 +1169,7 @@ class TargetsViewModel(
     }
 
     fun openCreateTargetDialog() {
-        val defaultTemplateId = _uiState.value.templates.firstOrNull { it.enabled }?.id
+        val defaultTemplateId = resolvePreferredDefaultTemplateId(_uiState.value.templates)
         localControls.update {
             it.copy(
                 editorState = TargetEditorState(
@@ -1601,7 +1614,41 @@ class TargetsViewModel(
     }
 
     companion object {
+        private const val DEFAULT_DAILY_TEMPLATE_NAME = "每日续火"
         private val STRICT_HHMM_REGEX = Regex("""^\d{2}:\d{2}$""")
+
+        /**
+         * 为扫描导入与手工新增解析默认绑定的发送模板：
+         * 优先内置「每日续火」模板（含多账号作用域 ID 与同名备份模板），其次首个启用的文本模板，再其次首个启用模板。
+         */
+        fun resolvePreferredDefaultTemplateId(
+            templates: List<MessageTemplateEntity>,
+        ): String? {
+            val enabled = templates.filter { it.enabled }
+            if (enabled.isEmpty()) return null
+            return enabled.firstOrNull {
+                it.id == DEFAULT_TEXT_TEMPLATE_ID || it.id.endsWith(":$DEFAULT_TEXT_TEMPLATE_ID")
+            }?.id
+                ?: enabled.firstOrNull { it.name.trim() == DEFAULT_DAILY_TEMPLATE_NAME }?.id
+                ?: enabled.firstOrNull { it.type == TemplateType.TEXT }?.id
+                ?: enabled.firstOrNull()?.id
+        }
+
+        internal fun resolveEffectiveReconcileTemplateId(
+            templates: List<MessageTemplateEntity>,
+            explicitlySet: Boolean,
+            explicitTemplateId: String?,
+        ): String? {
+            if (!explicitlySet) {
+                return resolvePreferredDefaultTemplateId(templates)
+            }
+            if (explicitTemplateId == null) return null
+            return if (templates.any { it.id == explicitTemplateId }) {
+                explicitTemplateId
+            } else {
+                resolvePreferredDefaultTemplateId(templates)
+            }
+        }
 
         fun isValidHhmm(raw: String): Boolean {
             if (!STRICT_HHMM_REGEX.matches(raw)) return false

@@ -285,3 +285,149 @@ object LoginSessionReducer {
     fun safeReturnLoginMode(mode: LoginMode): LoginMode =
         if (mode == LoginMode.CLEAR_AND_RELOGIN) LoginMode.PRESERVE_SESSION else mode
 }
+
+enum class LoginSubresourceAction {
+    ALLOW,
+    BLOCK_EMPTY,
+    STUB_EMPTY_FEED,
+}
+
+/**
+ * 原生二维码登录阶段（未暴露底层网页且未触发安全验证）的轻量资源过滤器：
+ * 拦截未登录态下抖音网页在后台偷偷拉起的推荐视频流、音频处理脚本、特效视频、封面图与网页字体，
+ * 释放网络带宽与渲染 CPU 给通行证与二维码接口；绝不拦截脚本、样式、风控/验证码、IM 及登录接口。
+ */
+object LoginResourceFilter {
+
+    private val PROTECTED_KEYWORDS = listOf(
+        "passport",
+        "sso.",
+        "/sso/",
+        "qrcode",
+        "qrconnect",
+        "captcha",
+        "verify",
+        "bdturing",
+        "mssdk",
+        "webmssdk",
+        "bdms",
+        "uc-secure",
+        "ucenter",
+        "ttwid",
+        "login",
+        "/im/",
+        "imapi",
+        "conversation",
+        "message",
+    )
+
+    private val EMPTY_FEED_PATHS = listOf(
+        "/aweme/v1/web/tab/feed",
+        "/aweme/v1/web/channel/feed",
+        "/aweme/v1/web/aweme/post",
+        "/aweme/v1/web/discover",
+        "/aweme/v1/web/hot/search/list",
+    )
+
+    private val SKIPPED_HOST_SUFFIXES = listOf(
+        "douyinvod.com",
+        "bytevcloudapi.com",
+        "ixigua.com",
+        "byteeffecttos.com",
+        "toutiaovod.com",
+        "vlabvod.com",
+        "douyinpic.com",
+    )
+
+    private val SKIPPED_URL_SUBSTRINGS = listOf(
+        "mime_type=video",
+        "mime_type=audio",
+        "/video/tos/",
+        "/aweme/v1/play",
+        "mammon-worklet-processor",
+    )
+
+    private val SKIPPED_EXTENSIONS = listOf(
+        ".mp4",
+        ".m4s",
+        ".m3u8",
+        ".webm",
+        ".flv",
+        ".mp3",
+        ".aac",
+        ".ogg",
+        ".wav",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".webp",
+        ".heic",
+        ".avif",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+    )
+
+    fun classifySubresource(
+        rawUrl: String?,
+        isForMainFrame: Boolean,
+        hasRangeHeader: Boolean = false,
+    ): LoginSubresourceAction {
+        if (isForMainFrame) return LoginSubresourceAction.ALLOW
+        val trimmed = rawUrl?.trim().orEmpty()
+        if (trimmed.isEmpty()) return LoginSubresourceAction.ALLOW
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+            return LoginSubresourceAction.ALLOW
+        }
+
+        val uri = try {
+            URI(trimmed)
+        } catch (_: Throwable) {
+            return LoginSubresourceAction.ALLOW
+        }
+        val host = uri.host?.lowercase(Locale.ROOT)?.trimEnd('.').orEmpty()
+        val path = uri.rawPath?.lowercase(Locale.ROOT).orEmpty()
+        val query = uri.rawQuery?.lowercase(Locale.ROOT).orEmpty()
+        if (host.isEmpty()) return LoginSubresourceAction.ALLOW
+
+        if (PROTECTED_KEYWORDS.any { keyword -> host.contains(keyword) || path.contains(keyword) }) {
+            return LoginSubresourceAction.ALLOW
+        }
+
+        if (EMPTY_FEED_PATHS.any { feedPath -> path.contains(feedPath) }) {
+            return LoginSubresourceAction.STUB_EMPTY_FEED
+        }
+
+        if (hasRangeHeader) {
+            return LoginSubresourceAction.BLOCK_EMPTY
+        }
+
+        if (SKIPPED_HOST_SUFFIXES.any { suffix -> host == suffix || host.endsWith(".$suffix") }) {
+            return LoginSubresourceAction.BLOCK_EMPTY
+        }
+
+        val pathAndQuery = if (query.isEmpty()) path else "$path?$query"
+        if (SKIPPED_URL_SUBSTRINGS.any { token -> pathAndQuery.contains(token) }) {
+            return LoginSubresourceAction.BLOCK_EMPTY
+        }
+
+        if (SKIPPED_EXTENSIONS.any { ext -> path.endsWith(ext) }) {
+            return LoginSubresourceAction.BLOCK_EMPTY
+        }
+
+        return LoginSubresourceAction.ALLOW
+    }
+
+    fun shouldSkipDuringNativeQr(
+        rawUrl: String?,
+        isForMainFrame: Boolean,
+        hasRangeHeader: Boolean = false,
+    ): Boolean = classifySubresource(
+        rawUrl = rawUrl,
+        isForMainFrame = isForMainFrame,
+        hasRangeHeader = hasRangeHeader,
+    ) != LoginSubresourceAction.ALLOW
+}

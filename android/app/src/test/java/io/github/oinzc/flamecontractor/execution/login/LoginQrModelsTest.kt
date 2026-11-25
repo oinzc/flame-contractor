@@ -395,4 +395,64 @@ class LoginQrModelsTest {
         guard.onStartDispatchFailed()
         assertEquals(KeepAliveStopAction.NO_OP, guard.onRequestStop())
     }
+
+    @Test
+    fun loginResourceFilterSkipsOnlyHeavyMediaAndFontsWhileProtectingAuthAndCaptcha() {
+        // 1. 推荐视频流接口返回空列表占位，防止后台播放推荐视频与音频解码
+        assertEquals(
+            LoginSubresourceAction.STUB_EMPTY_FEED,
+            LoginResourceFilter.classifySubresource(
+                "https://www.douyin.com/aweme/v1/web/tab/feed/?device_platform=webapp",
+                isForMainFrame = false,
+            ),
+        )
+        assertEquals(
+            LoginSubresourceAction.STUB_EMPTY_FEED,
+            LoginResourceFilter.classifySubresource(
+                "https://www.douyin.com/aweme/v1/web/channel/feed/?count=10",
+                isForMainFrame = false,
+            ),
+        )
+
+        // 2. 跳过重型音视频流、Range 媒体分片、音频工作线程、特效 CDN、封面图与字体
+        assertEquals(
+            LoginSubresourceAction.BLOCK_EMPTY,
+            LoginResourceFilter.classifySubresource("https://v3-web.douyinvod.com/abc/video.mp4", isForMainFrame = false),
+        )
+        assertEquals(
+            LoginSubresourceAction.BLOCK_EMPTY,
+            LoginResourceFilter.classifySubresource("https://lf6-effectcdn-tos.byteeffecttos.com/obj/ies.fe.effect/a.mp4", isForMainFrame = false),
+        )
+        assertEquals(
+            LoginSubresourceAction.BLOCK_EMPTY,
+            LoginResourceFilter.classifySubresource("https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/mammon-worklet-processor.min.js", isForMainFrame = false),
+        )
+        assertEquals(
+            LoginSubresourceAction.BLOCK_EMPTY,
+            LoginResourceFilter.classifySubresource("https://v26-web.example.com/video/tos/cn/stream?mime_type=video_mp4", isForMainFrame = false),
+        )
+        assertEquals(
+            LoginSubresourceAction.BLOCK_EMPTY,
+            LoginResourceFilter.classifySubresource("https://cdn.example.com/stream/opaque", isForMainFrame = false, hasRangeHeader = true),
+        )
+        assertTrue(LoginResourceFilter.shouldSkipDuringNativeQr("https://cdn.example.com/assets/font.woff2?v=1", isForMainFrame = false))
+        assertTrue(LoginResourceFilter.shouldSkipDuringNativeQr("https://p3-pc.douyinpic.com/img/avatar.webp", isForMainFrame = false))
+
+        // 3. 绝不拦截主文档、核心脚本(含 byteimg 上的 bdms)、样式、登录接口、IM、风控与验证码资源
+        assertEquals(
+            LoginSubresourceAction.ALLOW,
+            LoginResourceFilter.classifySubresource("https://www.douyin.com/chat", isForMainFrame = true),
+        )
+        assertEquals(
+            LoginSubresourceAction.ALLOW,
+            LoginResourceFilter.classifySubresource("https://p-pc-weboff.byteimg.com/tos-cn-i-9r5gewecjs/bdms_1.0.1.19_fix.js", isForMainFrame = false),
+        )
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://sso.douyin.com/passport/web/get_qrcode/", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://sso.douyin.com/passport/web/check_qrconnect/", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://verify.snssdk.com/captcha/font.woff2", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://rmc.bytedance.com/bdturing/challenge.mp4", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://www.douyin.com/aweme/v1/web/im/user/info/", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://lf-cdn-tos.bytescm.com/obj/static/app.js", isForMainFrame = false))
+        assertFalse(LoginResourceFilter.shouldSkipDuringNativeQr("https://lf-cdn-tos.bytescm.com/obj/static/style.css", isForMainFrame = false))
+    }
 }

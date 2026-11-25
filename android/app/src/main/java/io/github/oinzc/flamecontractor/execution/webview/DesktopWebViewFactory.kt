@@ -15,6 +15,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.github.oinzc.flamecontractor.core.account.WebViewProfileRegistry
+import java.io.ByteArrayInputStream
 
 data class WebViewConfigResult(
     val activeUa: String,
@@ -51,6 +52,8 @@ object DesktopWebViewFactory {
         onReceivedHttpError: ((Int, String) -> Unit)? = null,
         profileName: String = WebViewProfileRegistry.DEFAULT_PROFILE_NAME,
         webChromeClient: WebChromeClient? = null,
+        shouldBlockSubresource: ((WebResourceRequest) -> Boolean)? = null,
+        interceptSubresource: ((WebResourceRequest) -> WebResourceResponse?)? = null,
     ): WebViewConfigResult {
         val resolvedProfileName = profileName.trim().ifEmpty { WebViewProfileRegistry.DEFAULT_PROFILE_NAME }
         if (resolvedProfileName != WebViewProfileRegistry.DEFAULT_PROFILE_NAME &&
@@ -67,6 +70,7 @@ object DesktopWebViewFactory {
             userAgentString = activeUa
             javaScriptEnabled = true
             domStorageEnabled = true
+            cacheMode = WebSettings.LOAD_DEFAULT
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = true
@@ -94,6 +98,26 @@ object DesktopWebViewFactory {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): WebResourceResponse? {
+                if (request != null) {
+                    interceptSubresource?.invoke(request)?.let { return it }
+                    if (shouldBlockSubresource?.invoke(request) == true) {
+                        return WebResourceResponse(
+                            "text/plain",
+                            "utf-8",
+                            204,
+                            "No Content",
+                            emptyMap(),
+                            ByteArrayInputStream(ByteArray(0)),
+                        )
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?,

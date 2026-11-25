@@ -44,13 +44,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.NotificationsActive
-import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Security
@@ -111,7 +111,7 @@ private enum class OnboardingStep(
     AUTO_RETURN(
         shortTitle = "自动跳回",
         headline = "抖音点确认后自动跳回",
-        icon = Icons.Outlined.OpenInNew,
+        icon = Icons.AutoMirrored.Outlined.OpenInNew,
     ),
     BATTERY_AND_ALARM(
         shortTitle = "省电与闹钟",

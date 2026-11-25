@@ -3,6 +3,8 @@ package io.github.oinzc.flamecontractor.ui.shell
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.os.Looper
+import android.webkit.WebSettings
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -84,6 +86,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         val container = (application as FlameApplication).container
+
+        // 首帧空闲后轻量预热 Chromium WebView 提供程序，减少首次进入扫码登录页的引擎冷启动耗时
+        window.decorView.post {
+            Looper.myQueue().addIdleHandler {
+                runCatching { WebSettings.getDefaultUserAgent(applicationContext) }
+                false
+            }
+        }
 
         setContent {
             val themePreference by container.themePreferencesStore.preference.collectAsState()

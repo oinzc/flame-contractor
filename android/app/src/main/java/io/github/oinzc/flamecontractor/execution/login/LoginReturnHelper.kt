@@ -41,33 +41,40 @@ class LoginReturnHelper(context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    @SuppressLint("MissingPermission")
-    fun bringAppToFrontAndNotify(
+    fun bringAppToFront(
         event: LoginReturnEvent,
         accountId: String,
         loginMode: LoginMode,
-    ): LoginReturnDispatchResult {
+    ): Boolean {
         val targetIntent = buildReturnIntent(
             event = event,
             accountId = accountId,
             loginMode = loginMode,
         )
-
-        // 第一层：尽力直接把本应用拉回前台（支持后台弹出权限或 Android 8-9 时无缝自动跳回）
-        val activityAttempted = runCatching {
+        val attempted = runCatching {
             appContext.startActivity(targetIntent)
             true
         }.getOrDefault(false)
+        Log.i(TAG, "RETURN_FRONT_ATTEMPT event=${event.name} activityAttempted=$attempted")
+        return attempted
+    }
 
-        // 第二层：同步推送高优顶部悬浮横幅兜底（未开后台弹出权限时，在抖音顶部滑出横幅一点即回）
+    @SuppressLint("MissingPermission")
+    fun postReturnNotification(
+        event: LoginReturnEvent,
+        accountId: String,
+        loginMode: LoginMode,
+    ): Boolean {
+        val targetIntent = buildReturnIntent(
+            event = event,
+            accountId = accountId,
+            loginMode = loginMode,
+        )
         ensureChannel()
         val notifManager = NotificationManagerCompat.from(appContext)
         if (!hasNotificationPermission() || !notifManager.areNotificationsEnabled()) {
-            Log.i(TAG, "RETURN_DISPATCH event=${event.name} activityAttempted=$activityAttempted notifPosted=false")
-            return LoginReturnDispatchResult(
-                activityStartAttempted = activityAttempted,
-                notificationPosted = false,
-            )
+            Log.i(TAG, "RETURN_NOTIFY event=${event.name} notifPosted=false")
+            return false
         }
 
         val pendingIntent = PendingIntent.getActivity(
@@ -98,7 +105,26 @@ class LoginReturnHelper(context: Context) {
             )
             true
         }.getOrDefault(false)
+        Log.i(TAG, "RETURN_NOTIFY event=${event.name} notifPosted=$notifPosted")
+        return notifPosted
+    }
 
+    @SuppressLint("MissingPermission")
+    fun bringAppToFrontAndNotify(
+        event: LoginReturnEvent,
+        accountId: String,
+        loginMode: LoginMode,
+    ): LoginReturnDispatchResult {
+        val activityAttempted = bringAppToFront(
+            event = event,
+            accountId = accountId,
+            loginMode = loginMode,
+        )
+        val notifPosted = postReturnNotification(
+            event = event,
+            accountId = accountId,
+            loginMode = loginMode,
+        )
         Log.i(TAG, "RETURN_DISPATCH event=${event.name} activityAttempted=$activityAttempted notifPosted=$notifPosted")
         return LoginReturnDispatchResult(
             activityStartAttempted = activityAttempted,

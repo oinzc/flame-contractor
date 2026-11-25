@@ -12,6 +12,9 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
 import androidx.activity.SystemBarStyle
@@ -45,9 +48,11 @@ import io.github.oinzc.flamecontractor.execution.login.LoginDisplayMode
 import io.github.oinzc.flamecontractor.execution.login.LoginKeepAliveService
 import io.github.oinzc.flamecontractor.execution.login.LoginQrAlbumSaver
 import io.github.oinzc.flamecontractor.execution.login.LoginQrParser
+import io.github.oinzc.flamecontractor.execution.login.LoginResourceFilter
 import io.github.oinzc.flamecontractor.execution.login.LoginReturnEvent
 import io.github.oinzc.flamecontractor.execution.login.LoginReturnHelper
 import io.github.oinzc.flamecontractor.execution.login.LoginSessionReducer
+import io.github.oinzc.flamecontractor.execution.login.LoginSubresourceAction
 import io.github.oinzc.flamecontractor.execution.login.QrConnectStatus
 import io.github.oinzc.flamecontractor.execution.login.QrVisualStage
 import io.github.oinzc.flamecontractor.execution.webview.DesktopWebViewFactory
@@ -56,6 +61,8 @@ import io.github.oinzc.flamecontractor.ui.login.AccountSwitchPromptState
 import io.github.oinzc.flamecontractor.ui.login.LoginScreen
 import io.github.oinzc.flamecontractor.ui.login.LoginScreenState
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -79,12 +86,24 @@ internal class KeepAliveLoginWebView(context: Context) : WebView(context) {
 
     private var keepAliveInBackground: Boolean = false
     private var lastRealWindowVisibility: Int = View.VISIBLE
+    private var lastRealWindowFocus: Boolean = true
 
     fun setKeepAliveInBackground(enabled: Boolean) {
         if (keepAliveInBackground == enabled) return
         keepAliveInBackground = enabled
-        if (!enabled && lastRealWindowVisibility != View.VISIBLE) {
-            super.onWindowVisibilityChanged(lastRealWindowVisibility)
+        runCatching {
+            setRendererPriorityPolicy(
+                RENDERER_PRIORITY_IMPORTANT,
+                /* waivedWhenNotVisible = */ !enabled,
+            )
+        }
+        if (!enabled) {
+            if (lastRealWindowVisibility != View.VISIBLE) {
+                super.onWindowVisibilityChanged(lastRealWindowVisibility)
+            }
+            if (!lastRealWindowFocus) {
+                super.onWindowFocusChanged(false)
+            }
         }
     }
 
@@ -98,6 +117,15 @@ internal class KeepAliveLoginWebView(context: Context) : WebView(context) {
             return
         }
         super.onWindowVisibilityChanged(visibility)
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        lastRealWindowFocus = hasWindowFocus
+        if (keepAliveInBackground && !hasWindowFocus) {
+            super.onWindowFocusChanged(true)
+            return
+        }
+        super.onWindowFocusChanged(hasWindowFocus)
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
@@ -136,11 +164,17 @@ class LoginWebViewActivity : AppCompatActivity() {
     private var tickerJob: Job? = null
     private var refreshWatchdogJob: Job? = null
     private var backgroundKeepAliveJob: Job? = null
+    private var pendingFallbackNotifyJob: Job? = null
 
     private var initialAccountStatus: AccountStatus = AccountStatus.PENDING_LOGIN
     private var handlingLoginSuccess = false
     private var identityHydrationRetries = 0
     private var inspectedHealthyOnce = false
+
+    @Volatile
+    private var allowSubresourceFilter: Boolean = true
+    private val blockedSubresourceCount = AtomicInteger(0)
+    private val stubbedFeedCount = AtomicInteger(0)
 
     private var loadStartedAtEpochMs: Long = 0L
     private var qrExpireAtEpochMs: Long = 0L
@@ -190,6 +224,7 @@ class LoginWebViewActivity : AppCompatActivity() {
         returnHelper = LoginReturnHelper(appCtx).also { it.ensureChannel() }
 
         val initialDisplay = LoginSessionReducer.initialDisplayMode(loginMode)
+        allowSubresourceFilter = initialDisplay == LoginDisplayMode.NATIVE_QR
         screenState = LoginScreenState(
             loginMode = loginMode,
             displayMode = initialDisplay,
@@ -202,6 +237,12 @@ class LoginWebViewActivity : AppCompatActivity() {
             webView = webView,
             blockDeepLinks = true,
             onPageFinished = {
+                val elapsed = if (loadStartedAtEpochMs > 0L) {
+                    System.currentTimeMillis() - loadStartedAtEpochMs
+                } else {
+                    -1L
+                }
+                Log.i(TAG, "PAGE_FINISHED elapsedMs=$elapsed hasQr=${screenState.qrBitmap != null}")
                 if (screenState.qrBitmap == null &&
                     screenState.stage == QrVisualStage.CONNECTING
                 ) {
@@ -221,7 +262,17 @@ class LoginWebViewActivity : AppCompatActivity() {
             },
             documentStartScript = DouyinJsScripts.buildLoginCaptureDocumentStartJs(),
             profileName = profileName,
+            webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    super.onProgressChanged(view, newProgress)
+                    if (screenState.qrBitmap == null && newProgress != screenState.loadProgressPercent) {
+                        screenState = screenState.copy(loadProgressPercent = newProgress.coerceIn(0, 100))
+                    }
+                }
+            },
+            interceptSubresource = ::interceptNativeQrSubresource,
         )
+        webView.settings.blockNetworkImage = allowSubresourceFilter
         webView.addJavascriptInterface(FlameLoginJsBridge(), DouyinJsScripts.DEFAULT_BRIDGE_NAME)
 
         val themeStore = (application as? FlameApplication)?.container?.themePreferencesStore
@@ -272,6 +323,8 @@ class LoginWebViewActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isActivityResumed = true
+        pendingFallbackNotifyJob?.cancel()
+        pendingFallbackNotifyJob = null
         notifiedBackgroundQrConfirmed = false
         notifiedBackgroundVerification = false
         disarmBackgroundKeepAlive()
@@ -328,14 +381,21 @@ class LoginWebViewActivity : AppCompatActivity() {
 
     private fun armBackgroundKeepAlive() {
         backgroundKeepAliveJob?.cancel()
+        fastPollUntilEpochMs = System.currentTimeMillis() + BG_KEEP_ALIVE_TIMEOUT_MS
         if (::webView.isInitialized) {
             webView.setKeepAliveInBackground(true)
+            runCatching {
+                webView.evaluateJavascript("window.__flameKeepAliveActive=true;", null)
+            }
         }
         Log.i(TAG, "BG_KEEP_ALIVE_ARMED")
         backgroundKeepAliveJob = lifecycleScope.launch {
             delay(BG_KEEP_ALIVE_TIMEOUT_MS)
             if (::webView.isInitialized && !isActivityResumed) {
                 webView.setKeepAliveInBackground(false)
+                runCatching {
+                    webView.evaluateJavascript("window.__flameKeepAliveActive=false;", null)
+                }
                 Log.i(TAG, "BG_KEEP_ALIVE_TIMEOUT_DISARMED")
             }
         }
@@ -346,6 +406,9 @@ class LoginWebViewActivity : AppCompatActivity() {
         backgroundKeepAliveJob = null
         if (::webView.isInitialized) {
             webView.setKeepAliveInBackground(false)
+            runCatching {
+                webView.evaluateJavascript("window.__flameKeepAliveActive=false;", null)
+            }
         }
     }
 
@@ -365,6 +428,8 @@ class LoginWebViewActivity : AppCompatActivity() {
         tickerJob = null
         refreshWatchdogJob?.cancel()
         refreshWatchdogJob = null
+        pendingFallbackNotifyJob?.cancel()
+        pendingFallbackNotifyJob = null
         disarmBackgroundKeepAlive()
 
         LoginKeepAliveService.stop(this)
@@ -390,15 +455,19 @@ class LoginWebViewActivity : AppCompatActivity() {
     }
 
     private fun bootstrapLoginSession() {
+        // 并发读取账号基础信息，不阻塞 WebView 立刻发起首帧网络加载
         lifecycleScope.launch {
             val acc = withContext(Dispatchers.IO) {
                 database.accountDao().getAccount(accountId)
             }
+            if (!isActive || isFinishing || isDestroyed) return@launch
             initialAccountStatus = acc?.status ?: AccountStatus.PENDING_LOGIN
             if (acc != null && acc.displayName.isNotBlank()) {
                 screenState = screenState.copy(accountDisplayName = acc.displayName)
             }
+        }
 
+        lifecycleScope.launch {
             var token: ExecutionMutex.SessionToken? = ExecutionMutex.tryAcquireSession(MUTEX_OWNER)
             while (token == null && isActive) {
                 screenState = screenState.copy(statusHint = "等待后台续火或扫描任务释放环境…")
@@ -410,7 +479,8 @@ class LoginWebViewActivity : AppCompatActivity() {
             val chatUrl = selectorStore.current().chatUrl
             if (loginMode == LoginMode.CLEAR_AND_RELOGIN) {
                 screenState = screenState.copy(statusHint = "正在清理旧登录态并请求新授权码…")
-                clearCookiesAndWebStorage {
+                // 保留静态 JS/CSS 磁盘缓存，仅清理 Cookie 与站点存储，避免每次重登重新拉取数 MB 脚本
+                clearCookiesAndWebStorage(clearDiskCache = false) {
                     if (!isFinishing && !isDestroyed) {
                         beginChatLoad(chatUrl)
                         startPollingLoop()
@@ -429,16 +499,87 @@ class LoginWebViewActivity : AppCompatActivity() {
         qrExpireAtEpochMs = 0L
         currentQrBase64 = null
         notifiedBackgroundQrConfirmed = false
+        blockedSubresourceCount.set(0)
+        stubbedFeedCount.set(0)
+        syncSubresourceFilterFlag(screenState.displayMode, screenState.verificationRequired)
+        Log.i(TAG, "LOAD_BEGIN mode=$loginMode filter=$allowSubresourceFilter")
         screenState = screenState.copy(
             stage = QrVisualStage.CONNECTING,
             qrBitmap = null,
             validatedIndexUrl = null,
             remainingSeconds = 0,
+            loadProgressPercent = 5,
             isRefreshingQr = false,
             jumpedToDouyin = false,
             statusHint = modeHintText(loginMode),
         )
         webView.loadUrl(chatUrl)
+    }
+
+    private fun syncSubresourceFilterFlag(
+        displayMode: LoginDisplayMode,
+        verificationRequired: Boolean,
+    ) {
+        val enabled = displayMode == LoginDisplayMode.NATIVE_QR && !verificationRequired
+        allowSubresourceFilter = enabled
+        if (::webView.isInitialized) {
+            runCatching {
+                webView.settings.blockNetworkImage = enabled
+            }
+        }
+    }
+
+    private fun interceptNativeQrSubresource(request: WebResourceRequest): WebResourceResponse? {
+        if (!allowSubresourceFilter) return null
+        val headers = request.requestHeaders
+        val hasRange = headers?.keys?.any { it.equals("Range", ignoreCase = true) } == true
+        val action = LoginResourceFilter.classifySubresource(
+            rawUrl = request.url?.toString(),
+            isForMainFrame = request.isForMainFrame,
+            hasRangeHeader = hasRange,
+        )
+        if (action == LoginSubresourceAction.ALLOW) return null
+
+        val origin = headers?.entries
+            ?.firstOrNull { it.key.equals("Origin", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+        val responseHeaders = buildMap {
+            put("Access-Control-Allow-Origin", origin ?: "*")
+            if (origin != null) {
+                put("Access-Control-Allow-Credentials", "true")
+            }
+            put("Cache-Control", "no-store")
+        }
+
+        return when (action) {
+            LoginSubresourceAction.STUB_EMPTY_FEED -> {
+                stubbedFeedCount.incrementAndGet()
+                val body = """{"status_code":0,"aweme_list":[],"has_more":0}""".toByteArray(Charsets.UTF_8)
+                WebResourceResponse(
+                    "application/json",
+                    "utf-8",
+                    200,
+                    "OK",
+                    responseHeaders,
+                    ByteArrayInputStream(body),
+                )
+            }
+
+            LoginSubresourceAction.BLOCK_EMPTY -> {
+                blockedSubresourceCount.incrementAndGet()
+                WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    204,
+                    "No Content",
+                    responseHeaders,
+                    ByteArrayInputStream(ByteArray(0)),
+                )
+            }
+
+            LoginSubresourceAction.ALLOW -> null
+        }
     }
 
     private fun startCountdownTicker() {
@@ -513,10 +654,12 @@ class LoginWebViewActivity : AppCompatActivity() {
         } else {
             LoginDisplayMode.NATIVE_QR
         }
+        syncSubresourceFilterFlag(next, screenState.verificationRequired)
         screenState = screenState.copy(displayMode = next)
     }
 
     private fun handleOpenSmsWebLogin() {
+        syncSubresourceFilterFlag(LoginDisplayMode.WEB_FALLBACK, screenState.verificationRequired)
         screenState = screenState.copy(
             displayMode = LoginDisplayMode.WEB_FALLBACK,
             statusHint = "请在下方弹窗选择「验证码登录」输入手机号完成登录",
@@ -566,7 +709,7 @@ class LoginWebViewActivity : AppCompatActivity() {
     private fun handleClearCacheAndReload() {
         if (screenState.accountSwitchPrompt != null || loginMode == LoginMode.INSPECT_OR_VERIFY) return
         screenState = screenState.copy(statusHint = "正在清理缓存并重新获取授权码…")
-        clearCookiesAndWebStorage {
+        clearCookiesAndWebStorage(clearDiskCache = true) {
             if (!isFinishing && !isDestroyed) {
                 beginChatLoad(selectorStore.current().chatUrl)
             }
@@ -705,6 +848,15 @@ class LoginWebViewActivity : AppCompatActivity() {
         val remSec = ((expireAtEpochMs - System.currentTimeMillis()) / 1_000L)
             .coerceAtLeast(0L)
             .toInt()
+        val elapsedMs = if (loadStartedAtEpochMs > 0L) {
+            System.currentTimeMillis() - loadStartedAtEpochMs
+        } else {
+            -1L
+        }
+        Log.i(
+            TAG,
+            "QR_READY source=${if (fromAuthoritativeNetwork) "net" else "dom"} elapsedMs=$elapsedMs hasIndexUrl=${nextIndexUrl != null} blocked=${blockedSubresourceCount.get()} stubbedFeeds=${stubbedFeedCount.get()}",
+        )
         refreshWatchdogJob?.cancel()
         screenState = screenState.copy(
             stage = QrVisualStage.READY,
@@ -726,6 +878,7 @@ class LoginWebViewActivity : AppCompatActivity() {
         val verificationRequired = probe.boolOrDefault("verificationRequired", false)
         if (verificationRequired) {
             if (!screenState.verificationRequired || screenState.displayMode != LoginDisplayMode.WEB_FALLBACK) {
+                syncSubresourceFilterFlag(LoginDisplayMode.WEB_FALLBACK, verificationRequired = true)
                 screenState = screenState.copy(
                     verificationRequired = true,
                     displayMode = LoginDisplayMode.WEB_FALLBACK,
@@ -745,6 +898,7 @@ class LoginWebViewActivity : AppCompatActivity() {
             return
         } else if (screenState.verificationRequired) {
             notifiedBackgroundVerification = false
+            syncSubresourceFilterFlag(screenState.displayMode, verificationRequired = false)
             screenState = screenState.copy(verificationRequired = false)
         }
 
@@ -1054,7 +1208,10 @@ class LoginWebViewActivity : AppCompatActivity() {
         albumSaver.cleanupAll()
     }
 
-    private fun clearCookiesAndWebStorage(onCleared: () -> Unit) {
+    private fun clearCookiesAndWebStorage(
+        clearDiskCache: Boolean,
+        onCleared: () -> Unit,
+    ) {
         lifecycleScope.launch {
             val accountCount = withContext(Dispatchers.IO) {
                 try {
@@ -1079,7 +1236,9 @@ class LoginWebViewActivity : AppCompatActivity() {
                         }
                     }
                     try {
-                        webView.clearCache(true)
+                        if (clearDiskCache) {
+                            webView.clearCache(true)
+                        }
                         webView.clearFormData()
                         webView.clearHistory()
                     } catch (_: Throwable) {
@@ -1140,6 +1299,7 @@ class LoginWebViewActivity : AppCompatActivity() {
                 when (status) {
                     QrConnectStatus.NEW -> Unit
                     QrConnectStatus.SCANNED -> {
+                        Log.i(TAG, "QR_STATUS_SCANNED resumed=$isActivityResumed")
                         if (screenState.qrBitmap != null && screenState.stage != QrVisualStage.CONFIRMED) {
                             screenState = screenState.copy(stage = QrVisualStage.SCANNED)
                         }
@@ -1153,11 +1313,24 @@ class LoginWebViewActivity : AppCompatActivity() {
                             !notifiedBackgroundQrConfirmed
                         ) {
                             notifiedBackgroundQrConfirmed = true
-                            returnHelper.bringAppToFrontAndNotify(
+                            // 立刻直拉前台；仅当 550ms 后仍未回到前台（未授予悬浮窗或被厂商拦截）时再发横幅兜底，
+                            // 避免自动回跳成功时出现多余震动与横幅闪烁。
+                            returnHelper.bringAppToFront(
                                 event = LoginReturnEvent.QR_CONFIRMED,
                                 accountId = accountId,
                                 loginMode = loginMode,
                             )
+                            pendingFallbackNotifyJob?.cancel()
+                            pendingFallbackNotifyJob = lifecycleScope.launch {
+                                delay(FALLBACK_NOTIFY_GRACE_MS)
+                                if (!isActivityResumed && !isFinishing && !isDestroyed) {
+                                    returnHelper.postReturnNotification(
+                                        event = LoginReturnEvent.QR_CONFIRMED,
+                                        accountId = accountId,
+                                        loginMode = loginMode,
+                                    )
+                                }
+                            }
                         }
                         triggerSingleLoginProbe(userInitiated = false)
                     }
@@ -1193,9 +1366,10 @@ class LoginWebViewActivity : AppCompatActivity() {
         const val EXTRA_ACCOUNT_ID = "extra_account_id"
         private const val MUTEX_OWNER = "login_webview"
         private const val POLL_INTERVAL_MS = 1_500L
-        private const val FAST_POLL_INTERVAL_MS = 800L
+        private const val FAST_POLL_INTERVAL_MS = 500L
         private const val FAST_RESUME_WINDOW_MS = 6_000L
         private const val CONFIRM_POLL_WINDOW_MS = 12_000L
+        private const val FALLBACK_NOTIFY_GRACE_MS = 550L
         private const val FAST_REFRESH_WAIT_MS = 3_500L
         private const val BG_KEEP_ALIVE_TIMEOUT_MS = 180_000L
         private const val EVALUATE_JS_TIMEOUT_MS = 4_000L
