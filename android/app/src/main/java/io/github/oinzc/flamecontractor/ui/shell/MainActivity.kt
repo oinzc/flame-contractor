@@ -289,6 +289,13 @@ class MainActivity : AppCompatActivity() {
                     isFullscreenEditorOpen = false
                     navState = navState.openSettings(section)
                 }
+                val openFeedbackDirect: () -> Unit = {
+                    isFullscreenEditorOpen = false
+                    navState = navState.openSettings(
+                        section = SettingsSection.ABOUT,
+                        returnToTabOnBack = true,
+                    )
+                }
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     AdaptiveNavShell(
@@ -303,6 +310,7 @@ class MainActivity : AppCompatActivity() {
                         totalAccountCount = accounts.size.coerceAtLeast(1),
                         otherAccountAlertBadge = hasOtherAccountAlert,
                         onOpenAccountSwitcher = { showAccountManagerSheet = true },
+                        onOpenFeedback = openFeedbackDirect,
                         onOpenSettings = { openSettings(null) },
                         todayContent = {
                             TodayRoute(
@@ -312,6 +320,7 @@ class MainActivity : AppCompatActivity() {
                                     navState = navState.selectTab(targetTab)
                                 },
                                 onOpenSettings = openSettings,
+                                onOpenFeedback = openFeedbackDirect,
                                 onOpenAccountSwitcher = { showAccountManagerSheet = true },
                                 otherAccountAlertBadge = hasOtherAccountAlert,
                                 setupReadiness = if (activeEnabledTargetCount >= 0) setupReadiness else null,
@@ -330,6 +339,7 @@ class MainActivity : AppCompatActivity() {
                                     navState = navState.selectTab(MainTab.TODAY)
                                 },
                                 onOpenSettings = openSettings,
+                                onOpenFeedback = openFeedbackDirect,
                                 accountId = activeAccountId,
                                 imageStore = container.templateImageStore,
                             )
@@ -338,6 +348,7 @@ class MainActivity : AppCompatActivity() {
                             TemplatesRoute(
                                 database = container.database,
                                 onOpenSettings = openSettings,
+                                onOpenFeedback = openFeedbackDirect,
                                 onEditorVisibleChanged = { visible -> isFullscreenEditorOpen = visible },
                                 accountId = activeAccountId,
                                 imageStore = container.templateImageStore,
@@ -351,6 +362,7 @@ class MainActivity : AppCompatActivity() {
                                     navState = navState.selectTab(MainTab.TODAY)
                                 },
                                 onOpenSettings = openSettings,
+                                onOpenFeedback = openFeedbackDirect,
                                 accountId = activeAccountId,
                             )
                         },

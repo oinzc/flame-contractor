@@ -45,6 +45,27 @@ class MainNavigationStateTest {
     }
 
     @Test
+    fun `direct feedback entry returns straight to originating main tab on back`() {
+        val directFeedback = MainNavState(MainTab.TARGETS)
+            .openSettings(section = SettingsSection.ABOUT, returnToTabOnBack = true)
+        assertTrue(directFeedback.isSettingsOpen)
+        assertEquals(SettingsSection.ABOUT, directFeedback.activeSettingsSection)
+        assertTrue(directFeedback.returnToTabOnBack)
+
+        val (returned, consumed) = directFeedback.navigateBack()
+        assertTrue(consumed)
+        assertEquals(
+            MainNavState(
+                selectedTab = MainTab.TARGETS,
+                isSettingsOpen = false,
+                activeSettingsSection = null,
+                returnToTabOnBack = false,
+            ),
+            returned,
+        )
+    }
+
+    @Test
     fun `reopening settings starts at hub unless section specified`() {
         val opened = MainNavState(MainTab.TARGETS)
             .openSettings(SettingsSection.SCHEDULE)

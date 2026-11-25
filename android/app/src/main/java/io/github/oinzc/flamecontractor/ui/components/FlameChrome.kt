@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +50,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -280,6 +283,84 @@ fun FlameIconButton(
                     .background(semantics.danger)
                     .border(1.5.dp, palette.surface, CircleShape),
             )
+        }
+    }
+}
+
+/**
+ * 顶部栏全局 1 步直达「问题反馈」快捷入口：
+ * - 常规态采用克制的轻量胶囊（微暖火光描边 + 图标 +「反馈」标签），与设置齿轮清晰区分又不抢主操作风头；
+ * - 窄屏多按钮场景支持 [compact] 圆形图标态，避免挤压页面标题与主操作胶囊。
+ */
+@Composable
+fun FlameFeedbackTopButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+
+    if (compact) {
+        Surface(
+            onClick = {
+                haptics.performFlameLightTick()
+                onClick()
+            },
+            interactionSource = interactionSource,
+            modifier = modifier
+                .flamePressScale(interactionSource = interactionSource)
+                .size(38.dp),
+            shape = CircleShape,
+            color = palette.emberContainer,
+            contentColor = palette.ember,
+            border = BorderStroke(1.dp, palette.emberBorder),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.Feedback,
+                    contentDescription = "问题反馈",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    } else {
+        Surface(
+            onClick = {
+                haptics.performFlameLightTick()
+                onClick()
+            },
+            interactionSource = interactionSource,
+            modifier = modifier
+                .flamePressScale(interactionSource = interactionSource)
+                .heightIn(min = 38.dp)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = "问题反馈"
+                },
+            shape = RoundedCornerShape(999.dp),
+            color = palette.emberContainer,
+            contentColor = palette.ember,
+            border = BorderStroke(1.dp, palette.emberBorder),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Feedback,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                )
+                Text(
+                    text = "反馈",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
         }
     }
 }

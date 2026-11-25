@@ -1,6 +1,8 @@
 package io.github.oinzc.flamecontractor.core.support
 
 import java.io.IOException
+import java.util.Base64
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,13 @@ enum class FeedbackKind(
     ),
 }
 
+data class FeedbackImageAttachment(
+    val name: String,
+    val mimeType: String,
+    val dataBase64: String,
+    val sizeBytes: Int,
+)
+
 data class FeedbackSubmissionRequest(
     val kind: FeedbackKind,
     val title: String,
@@ -42,6 +51,7 @@ data class FeedbackSubmissionRequest(
     val environment: String,
     val includeEnv: Boolean,
     val client: String = "android",
+    val images: List<FeedbackImageAttachment> = emptyList(),
 )
 
 sealed class FeedbackSubmitResult {
@@ -49,6 +59,7 @@ sealed class FeedbackSubmitResult {
         val issueNumber: Int?,
         val issueUrl: String?,
         val message: String,
+        val imageCount: Int = 0,
     ) : FeedbackSubmitResult()
 
     data class Failure(
@@ -79,6 +90,7 @@ class FeedbackSubmitter(
             title = input.title,
             content = input.content,
             contact = input.contact,
+            images = input.images,
         )
         if (validationError != null) {
             return FeedbackSubmitResult.Failure(validationError, retryable = false)
@@ -107,9 +119,9 @@ class FeedbackSubmitter(
             }
         } catch (ce: CancellationException) {
             throw ce
-        } catch (ioe: IOException) {
+        } catch (_: IOException) {
             FeedbackSubmitResult.Failure(
-                message = "网络连接失败，请检查网络后重试（已为你保留填写内容）",
+                message = "网络连接失败，请检查网络后重试（已为你保留填写内容与截图）",
                 retryable = true,
             )
         } catch (_: Throwable) {
@@ -125,7 +137,15 @@ class FeedbackSubmitter(
         const val MAX_CONTENT_LEN: Int = 2000
         const val MAX_TITLE_LEN: Int = 100
         const val MAX_CONTACT_LEN: Int = 100
-        private const val TIMEOUT_SEC: Long = 15L
+        const val MAX_IMAGE_COUNT: Int = 3
+        const val MAX_IMAGE_BYTES: Int = 800 * 1024
+        val ALLOWED_IMAGE_MIMES: Set<String> = setOf(
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        )
+        internal const val TIMEOUT_SEC: Long = 30L
+        private const val MAX_IMAGE_BASE64_CHARS: Int = ((MAX_IMAGE_BYTES + 2) / 3) * 4
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
@@ -147,6 +167,7 @@ class FeedbackSubmitter(
             title: String,
             content: String,
             contact: String,
+            images: List<FeedbackImageAttachment> = emptyList(),
         ): String? {
             val cleanContent = content.trim()
             if (cleanContent.length < MIN_CONTENT_LEN) {
@@ -161,6 +182,49 @@ class FeedbackSubmitter(
             if (contact.trim().length > MAX_CONTACT_LEN) {
                 return "联系方式请控制在 $MAX_CONTACT_LEN 字以内"
             }
+            validateImages(images)?.let { return it }
+            return null
+        }
+
+        fun validateImages(images: List<FeedbackImageAttachment>): String? {
+            if (images.size > MAX_IMAGE_COUNT) {
+                return "最多只能上传 $MAX_IMAGE_COUNT 张截图"
+            }
+            val maxKb = MAX_IMAGE_BYTES / 1024
+            images.forEachIndexed { index, img ->
+                val label = "第 ${index + 1} 张截图"
+                val mime = img.mimeType.trim().lowercase(Locale.ROOT)
+                if (mime !in ALLOWED_IMAGE_MIMES) {
+                    return "$label 格式不支持，仅支持 JPG、PNG 或 WebP 图片"
+                }
+                if (img.sizeBytes <= 0) {
+                    return "$label 内容为空，请重新选择"
+                }
+                if (img.sizeBytes > MAX_IMAGE_BYTES) {
+                    return "$label 超过 $maxKb KB 上限，请换一张较小的图片"
+                }
+                val rawBase64 = img.dataBase64.trim()
+                if (rawBase64.isEmpty()) {
+                    return "$label 数据为空，请重新选择"
+                }
+                if (rawBase64.startsWith("data:", ignoreCase = true)) {
+                    return "$label 编码格式无效，请重新选择"
+                }
+                if (rawBase64.length > MAX_IMAGE_BASE64_CHARS) {
+                    return "$label 超过 $maxKb KB 上限，请换一张较小的图片"
+                }
+                val decoded = try {
+                    Base64.getDecoder().decode(rawBase64)
+                } catch (_: IllegalArgumentException) {
+                    return "$label 编码数据损坏，请移除后重新选择"
+                }
+                if (decoded.isEmpty()) {
+                    return "$label 内容为空，请重新选择"
+                }
+                if (decoded.size > MAX_IMAGE_BYTES) {
+                    return "$label 超过 $maxKb KB 上限，请换一张较小的图片"
+                }
+            }
             return null
         }
 
@@ -168,6 +232,10 @@ class FeedbackSubmitter(
             appendLine("【${input.kind.label}】${input.title.trim().ifEmpty { "应用内反馈" }}")
             appendLine()
             appendLine(input.content.trim())
+            if (input.images.isNotEmpty()) {
+                appendLine()
+                appendLine("（本地已选择 ${input.images.size} 张截图，复制文本不含图片，请手动补充截图）")
+            }
             if (input.includeEnv && input.environment.isNotBlank()) {
                 appendLine()
                 appendLine("--- 运行环境（已脱敏）---")
@@ -190,6 +258,21 @@ class FeedbackSubmitter(
             append("\"environment\":"); appendJsonString(if (input.includeEnv) input.environment.trim() else ""); append(',')
             append("\"includeEnv\":"); append(if (input.includeEnv) "true" else "false"); append(',')
             append("\"website\":\"\"")
+            if (input.images.isNotEmpty()) {
+                append(",\"images\":[")
+                input.images.forEachIndexed { index, img ->
+                    if (index > 0) append(',')
+                    val mime = img.mimeType.trim().lowercase(Locale.ROOT)
+                    val ext = extensionForMime(mime)
+                    val safeName = img.name.trim().take(80).ifEmpty { "screenshot_${index + 1}.$ext" }
+                    append('{')
+                    append("\"name\":"); appendJsonString(safeName); append(',')
+                    append("\"mimeType\":"); appendJsonString(mime); append(',')
+                    append("\"dataBase64\":"); appendJsonString(img.dataBase64.trim())
+                    append('}')
+                }
+                append(']')
+            }
             append('}')
         }
 
@@ -202,24 +285,34 @@ class FeedbackSubmitter(
             val error = extractJsonString(bodyStr, "error")
             val issueNumber = extractJsonInt(bodyStr, "issueNumber")
             val issueUrl = extractJsonString(bodyStr, "issueUrl")
+            val imageCount = (extractJsonInt(bodyStr, "imageCount") ?: 0).coerceAtLeast(0)
 
             if (isSuccessful) {
                 val okMessage = message?.takeIf { it.isNotBlank() }
-                    ?: if (issueNumber != null) {
-                        "反馈已提交（#$issueNumber），感谢你的帮助！"
-                    } else {
-                        "反馈已提交成功，感谢你的帮助！"
+                    ?: when {
+                        issueNumber != null && imageCount > 0 ->
+                            "反馈已提交（#$issueNumber，含 $imageCount 张截图），感谢你的帮助！"
+
+                        issueNumber != null ->
+                            "反馈已提交（#$issueNumber），感谢你的帮助！"
+
+                        imageCount > 0 ->
+                            "反馈已提交成功（含 $imageCount 张截图），感谢你的帮助！"
+
+                        else ->
+                            "反馈已提交成功，感谢你的帮助！"
                     }
                 return FeedbackSubmitResult.Success(
                     issueNumber = issueNumber,
                     issueUrl = issueUrl,
                     message = okMessage,
+                    imageCount = imageCount,
                 )
             }
 
             val errMessage = error?.takeIf { it.isNotBlank() } ?: when (statusCode) {
-                400 -> "提交内容格式不符合要求，请检查后重试"
-                413 -> "提交内容过长，请精简后重试"
+                400 -> "提交内容或截图格式不符合要求，请检查后重试"
+                413 -> "提交内容或截图体积过大，请减少截图或精简内容后重试"
                 429 -> "提交过于频繁，请稍后再试"
                 503 -> "反馈服务暂未就绪，请稍后再试"
                 else -> "提交失败（HTTP $statusCode），请稍后重试"
@@ -228,6 +321,12 @@ class FeedbackSubmitter(
                 message = errMessage,
                 retryable = statusCode >= 500 || statusCode == 429,
             )
+        }
+
+        private fun extensionForMime(mimeType: String): String = when (mimeType) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
         }
 
         private fun StringBuilder.appendJsonString(value: String) {

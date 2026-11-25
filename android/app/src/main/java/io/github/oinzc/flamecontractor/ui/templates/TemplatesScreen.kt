@@ -82,6 +82,7 @@ import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
@@ -102,6 +103,7 @@ import kotlinx.coroutines.launch
 fun TemplatesRoute(
     database: FlameDatabase,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     onEditorVisibleChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
@@ -225,6 +227,7 @@ fun TemplatesRoute(
             onToggleTemplateEnabled = viewModel::toggleTemplateEnabled,
             onRequestDelete = viewModel::requestDeleteTemplate,
             onOpenSettings = { onOpenSettings(null) },
+            onOpenFeedback = onOpenFeedback,
             modifier = modifier,
         )
     }
@@ -255,6 +258,7 @@ fun TemplatesScreen(
     onToggleTemplateEnabled: (MessageTemplateEntity, Boolean) -> Unit,
     onRequestDelete: (MessageTemplateEntity) -> Unit,
     onOpenSettings: () -> Unit = {},
+    onOpenFeedback: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
 ) {
@@ -292,6 +296,9 @@ fun TemplatesScreen(
                         leadingIcon = Icons.Default.Add,
                         primary = true,
                         onClick = { showCreateTypeSheet = true },
+                    )
+                    FlameFeedbackTopButton(
+                        onClick = onOpenFeedback,
                     )
                     FlameIconButton(
                         icon = Icons.Outlined.Settings,

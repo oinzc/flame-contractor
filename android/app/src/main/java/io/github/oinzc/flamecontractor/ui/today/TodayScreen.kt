@@ -119,6 +119,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
@@ -154,6 +155,7 @@ fun TodayRoute(
     container: AppContainer,
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
     setupReadiness: SetupReadinessSnapshot? = null,
@@ -235,6 +237,7 @@ fun TodayRoute(
         onToggleJobExpanded = viewModel::toggleJobExpanded,
         onOpenTab = onOpenTab,
         onOpenSettings = onOpenSettings,
+        onOpenFeedback = onOpenFeedback,
         onOpenAccountSwitcher = onOpenAccountSwitcher,
         otherAccountAlertBadge = otherAccountAlertBadge,
         setupReadiness = setupReadiness,
@@ -272,6 +275,7 @@ fun TodayScreen(
     onToggleJobExpanded: (String) -> Unit,
     onOpenTab: (MainTab) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     onOpenAccountSwitcher: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
     setupReadiness: SetupReadinessSnapshot? = null,
@@ -297,6 +301,7 @@ fun TodayScreen(
             .background(palette.canvas),
     ) {
         val isWideScreen = maxWidth >= 600.dp
+        val compactFeedbackButton = maxWidth < 370.dp
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -309,6 +314,10 @@ fun TodayScreen(
                         account = state.account,
                         otherAccountAlertBadge = otherAccountAlertBadge,
                         onClick = onOpenAccountSwitcher,
+                    )
+                    FlameFeedbackTopButton(
+                        onClick = onOpenFeedback,
+                        compact = compactFeedbackButton,
                     )
                     FlameIconButton(
                         icon = Icons.Outlined.Settings,

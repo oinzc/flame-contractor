@@ -49,31 +49,48 @@ enum class SettingsSection(val title: String) {
     SURVIVAL("初始化与权限清单"),
     BACKUP("备份与跨机迁移"),
     DIAGNOSTICS("网页诊断与定位器维护"),
-    ABOUT("关于与问题反馈"),
+    ABOUT("问题反馈与建议"),
 }
 
 data class MainNavState(
     val selectedTab: MainTab = MainTab.TODAY,
     val isSettingsOpen: Boolean = false,
     val activeSettingsSection: SettingsSection? = null,
+    val returnToTabOnBack: Boolean = false,
 ) {
     fun selectTab(tab: MainTab): MainNavState = copy(
         selectedTab = tab,
         isSettingsOpen = false,
         activeSettingsSection = null,
+        returnToTabOnBack = false,
     )
 
-    fun openSettings(section: SettingsSection? = null): MainNavState = copy(
+    fun openSettings(
+        section: SettingsSection? = null,
+        returnToTabOnBack: Boolean = false,
+    ): MainNavState = copy(
         isSettingsOpen = true,
         activeSettingsSection = section,
+        returnToTabOnBack = section != null && returnToTabOnBack,
     )
 
     fun navigateBack(): Pair<MainNavState, Boolean> = when {
+        isSettingsOpen && activeSettingsSection != null && returnToTabOnBack ->
+            copy(
+                isSettingsOpen = false,
+                activeSettingsSection = null,
+                returnToTabOnBack = false,
+            ) to true
+
         isSettingsOpen && activeSettingsSection != null ->
-            copy(activeSettingsSection = null) to true
+            copy(activeSettingsSection = null, returnToTabOnBack = false) to true
 
         isSettingsOpen ->
-            copy(isSettingsOpen = false, activeSettingsSection = null) to true
+            copy(
+                isSettingsOpen = false,
+                activeSettingsSection = null,
+                returnToTabOnBack = false,
+            ) to true
 
         else -> this to false
     }
@@ -126,20 +143,24 @@ val MainNavStateSaver: Saver<MainNavState, Any> = listSaver(
             state.selectedTab.name,
             state.isSettingsOpen,
             state.activeSettingsSection?.name.orEmpty(),
+            state.returnToTabOnBack,
         )
     },
     restore = { saved ->
         val tabName = saved.getOrNull(0) as? String
         val isOpen = saved.getOrNull(1) as? Boolean ?: false
         val sectionName = (saved.getOrNull(2) as? String)?.takeIf { it.isNotBlank() }
+        val section = if (isOpen) {
+            SettingsSection.entries.firstOrNull { it.name == sectionName }
+        } else {
+            null
+        }
+        val directReturn = (saved.getOrNull(3) as? Boolean ?: false) && section != null
         MainNavState(
             selectedTab = MainTab.entries.firstOrNull { it.name == tabName } ?: MainTab.TODAY,
             isSettingsOpen = isOpen,
-            activeSettingsSection = if (isOpen) {
-                SettingsSection.entries.firstOrNull { it.name == sectionName }
-            } else {
-                null
-            },
+            activeSettingsSection = section,
+            returnToTabOnBack = directReturn,
         )
     },
 )

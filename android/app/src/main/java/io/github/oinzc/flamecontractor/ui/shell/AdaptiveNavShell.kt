@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwitchAccount
 import androidx.compose.material3.Icon
@@ -89,6 +90,7 @@ fun AdaptiveNavShell(
     totalAccountCount: Int = 1,
     otherAccountAlertBadge: Boolean = false,
     onOpenAccountSwitcher: (() -> Unit)? = null,
+    onOpenFeedback: (() -> Unit)? = null,
     onOpenSettings: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     todayContent: @Composable () -> Unit,
@@ -154,6 +156,7 @@ fun AdaptiveNavShell(
                         totalAccountCount = totalAccountCount,
                         otherAccountAlertBadge = otherAccountAlertBadge,
                         onOpenAccountSwitcher = onOpenAccountSwitcher,
+                        onOpenFeedback = onOpenFeedback,
                         onOpenSettings = onOpenSettings,
                     )
                     VerticalDivider(thickness = 1.dp, color = palette.hairline)
@@ -311,10 +314,12 @@ private fun FlameWideNavigationRail(
     totalAccountCount: Int,
     otherAccountAlertBadge: Boolean,
     onOpenAccountSwitcher: (() -> Unit)?,
+    onOpenFeedback: (() -> Unit)?,
     onOpenSettings: (() -> Unit)?,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val haptics = LocalHapticFeedback.current
     val statusStyle = accountStatusStyle(currentAccount?.status ?: AccountStatus.PENDING_LOGIN)
 
     NavigationRail(
@@ -420,31 +425,61 @@ private fun FlameWideNavigationRail(
             )
         }
 
-        if (onOpenSettings != null) {
+        if (onOpenFeedback != null || onOpenSettings != null) {
             Spacer(modifier = Modifier.weight(1f))
-            NavigationRailItem(
-                selected = false,
-                onClick = onOpenSettings,
-                icon = {
-                    Icon(
-                        imageVector = Icons.Outlined.Settings,
-                        contentDescription = "设置与维护",
-                        modifier = Modifier.size(21.dp),
-                    )
-                },
-                label = {
-                    Text(
-                        text = "设置",
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                },
-                alwaysShowLabel = true,
-                colors = NavigationRailItemDefaults.colors(
-                    unselectedIconColor = palette.inkSecondary,
-                    unselectedTextColor = palette.inkSecondary,
-                ),
-            )
+            if (onOpenFeedback != null) {
+                NavigationRailItem(
+                    selected = false,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onOpenFeedback()
+                    },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Feedback,
+                            contentDescription = "问题反馈",
+                            modifier = Modifier.size(21.dp),
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "反馈",
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    },
+                    alwaysShowLabel = true,
+                    colors = NavigationRailItemDefaults.colors(
+                        unselectedIconColor = palette.ember,
+                        unselectedTextColor = palette.inkSecondary,
+                    ),
+                )
+            }
+            if (onOpenSettings != null) {
+                NavigationRailItem(
+                    selected = false,
+                    onClick = onOpenSettings,
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            modifier = Modifier.size(21.dp),
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "设置",
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    },
+                    alwaysShowLabel = true,
+                    colors = NavigationRailItemDefaults.colors(
+                        unselectedIconColor = palette.inkSecondary,
+                        unselectedTextColor = palette.inkSecondary,
+                    ),
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
         }
     }

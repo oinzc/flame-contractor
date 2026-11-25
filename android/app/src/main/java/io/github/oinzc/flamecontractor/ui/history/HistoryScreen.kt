@@ -107,6 +107,7 @@ import io.github.oinzc.flamecontractor.ui.components.DiagnosticScreenshotCard
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
@@ -147,6 +148,7 @@ fun HistoryRoute(
     database: FlameDatabase,
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     diagnosticScreenshotStore: DiagnosticScreenshotStore? = null,
@@ -232,6 +234,7 @@ fun HistoryRoute(
         onDismissJobDetail = viewModel::dismissJobDetail,
         onNavigateToTodayReview = onNavigateToTodayReview,
         onOpenSettings = { onOpenSettings(null) },
+        onOpenFeedback = onOpenFeedback,
         resolveAttemptScreenshotFile = { attemptId ->
             resolvedScreenshotStore.resolveAttemptFile(attemptId)
         },
@@ -257,6 +260,7 @@ fun HistoryScreen(
     onDismissJobDetail: () -> Unit,
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: () -> Unit = {},
+    onOpenFeedback: () -> Unit = {},
     resolveAttemptScreenshotFile: (String) -> File? = { null },
     resolveJobScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
@@ -331,6 +335,9 @@ fun HistoryScreen(
                         leadingIcon = if (isExportingCsv) null else Icons.Outlined.FileDownload,
                         enabled = !isExportingCsv,
                         onClick = onExportCsvClick,
+                    )
+                    FlameFeedbackTopButton(
+                        onClick = onOpenFeedback,
                     )
                     FlameIconButton(
                         icon = Icons.Outlined.Settings,

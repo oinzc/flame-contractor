@@ -92,6 +92,7 @@ import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
@@ -120,6 +121,7 @@ fun TargetsRoute(
     scheduleCoordinator: ScheduleCoordinator,
     onNavigateToTodayReview: () -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     imageStore: TemplateImageStorage? = null,
@@ -172,6 +174,7 @@ fun TargetsRoute(
         onRepairIdentity = viewModel::requestIdentityRepair,
         onRequestDelete = viewModel::requestDeleteTarget,
         onOpenSettings = onOpenSettings,
+        onOpenFeedback = onOpenFeedback,
         modifier = modifier,
     )
 
@@ -276,6 +279,7 @@ fun TargetsScreen(
     onRepairIdentity: (ContractTargetEntity) -> Unit,
     onRequestDelete: (ContractTargetEntity) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
+    onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
@@ -299,6 +303,7 @@ fun TargetsScreen(
             .background(palette.canvas),
     ) {
         val isWideScreen = maxWidth >= 600.dp
+        val compactFeedbackButton = maxWidth < 430.dp
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -329,6 +334,10 @@ fun TargetsScreen(
                         leadingIcon = Icons.Default.Add,
                         primary = true,
                         onClick = onOpenCreateTarget,
+                    )
+                    FlameFeedbackTopButton(
+                        onClick = onOpenFeedback,
+                        compact = compactFeedbackButton,
                     )
                     FlameIconButton(
                         icon = Icons.Outlined.Settings,

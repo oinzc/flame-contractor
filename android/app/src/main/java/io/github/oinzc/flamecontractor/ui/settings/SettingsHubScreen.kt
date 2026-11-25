@@ -1,9 +1,15 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -19,12 +25,14 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.BuildConfig
@@ -32,6 +40,7 @@ import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
+import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
@@ -164,6 +173,14 @@ internal fun SettingsHubScreen(
                     },
                 )
             }
+
+            // 快捷醒目入口：问题反馈与建议（紧跟上手清单，首屏可见）
+            ProminentFeedbackHubCard(
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onSelectSection(SettingsSection.ABOUT)
+                },
+            )
 
             // 1. 个性化
             val appearanceSummary = "${themeModeLabel(themePreference.mode)} · 桌面状态小组件"
@@ -327,26 +344,9 @@ internal fun SettingsHubScreen(
                 )
             }
 
-            // 4. 关于、问题反馈与开源源码
+            // 4. 关于与开源源码
             val versionTag = ProjectLinks.formatVersionLabel(BuildConfig.VERSION_NAME, versionCode = 0)
-            FlameGroupedSection(title = "关于与反馈") {
-                FlameListRow(
-                    title = "问题反馈与建议",
-                    subtitle = "应用内直接填写提交，免跳转免代理，也可一键复制环境信息",
-                    leading = {
-                        FlameRowAvatar(tone = FlameTone.EMBER) {
-                            Icon(
-                                imageVector = Icons.Outlined.Feedback,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    },
-                    trailing = { HubChevron() },
-                    showDivider = true,
-                    onClick = { onSelectSection(SettingsSection.ABOUT) },
-                )
-
+            FlameGroupedSection(title = "关于与开源") {
                 FlameListRow(
                     title = "GitHub 项目源码",
                     subtitle = "${ProjectLinks.REPO_DISPLAY_PATH} · $versionTag",
@@ -365,6 +365,77 @@ internal fun SettingsHubScreen(
                         haptics.performFlameLightTick()
                         openExternalUrlOrCopyToast(context, ProjectLinks.REPO_URL)
                     },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProminentFeedbackHubCard(
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    FlameCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 18.dp,
+        containerColor = palette.surface,
+        borderColor = palette.emberBorder,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 13.dp),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FlameRowAvatar(tone = FlameTone.EMBER) {
+                Icon(
+                    imageVector = Icons.Outlined.Feedback,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "问题反馈与建议",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    FlameMiniTag(text = "可传截图", tone = FlameTone.EMBER)
+                }
+                Text(
+                    text = "支持传截图 · 无需翻墙 · 遇到问题或有优化建议随时告诉我",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = palette.emberContainer,
+                contentColor = palette.ember,
+                border = BorderStroke(1.dp, palette.emberBorder),
+            ) {
+                Text(
+                    text = "去反馈",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                 )
             }
         }

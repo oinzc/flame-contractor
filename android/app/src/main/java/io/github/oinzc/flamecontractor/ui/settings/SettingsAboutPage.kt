@@ -1,5 +1,6 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -7,6 +8,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -15,8 +19,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -26,19 +32,27 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.Button
@@ -64,13 +78,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.BuildConfig
+import io.github.oinzc.flamecontractor.core.support.EncodedFeedbackImage
+import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoder
+import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoderUtils
 import io.github.oinzc.flamecontractor.core.support.FeedbackKind
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmissionRequest
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitResult
@@ -89,7 +117,15 @@ import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private data class FeedbackImageUiItem(
+    val encoded: EncodedFeedbackImage,
+    val thumbnail: ImageBitmap?,
+)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -142,6 +178,9 @@ internal fun SettingsAboutPage(
     var contentInput by rememberSaveable { mutableStateOf("") }
     var contactInput by rememberSaveable { mutableStateOf("") }
     var includeEnv by rememberSaveable { mutableStateOf(true) }
+    var attachedImages by remember { mutableStateOf<List<FeedbackImageUiItem>>(emptyList()) }
+    var encodingImages by remember { mutableStateOf(false) }
+    var imageError by remember { mutableStateOf<String?>(null) }
     var submitting by remember { mutableStateOf(false) }
     var submitResult by remember { mutableStateOf<FeedbackSubmitResult?>(null) }
 
@@ -154,6 +193,7 @@ internal fun SettingsAboutPage(
         environment = envSummary,
         includeEnv = includeEnv,
         client = "android",
+        images = attachedImages.map { it.encoded.attachment },
     )
 
     fun showNotice(message: String) {
@@ -174,13 +214,136 @@ internal fun SettingsAboutPage(
         }
     }
 
+    fun handlePickedUris(uris: List<Uri>) {
+        if (uris.isEmpty() || submitting || encodingImages) return
+        val remainingSlots = (FeedbackSubmitter.MAX_IMAGE_COUNT - attachedImages.size).coerceAtLeast(0)
+        if (remainingSlots <= 0) {
+            imageError = "最多只能上传 ${FeedbackSubmitter.MAX_IMAGE_COUNT} 张截图"
+            return
+        }
+        val overflowCount = (uris.size - remainingSlots).coerceAtLeast(0)
+        val toProcess = uris.take(remainingSlots)
+        val startIndex = attachedImages.size
+
+        encodingImages = true
+        imageError = null
+        coroutineScope.launch {
+            val added = mutableListOf<FeedbackImageUiItem>()
+            val failures = mutableListOf<String>()
+            try {
+                toProcess.forEachIndexed { offset, uri ->
+                    try {
+                        val uiItem = withContext(Dispatchers.IO) {
+                            val encoded = FeedbackImageEncoder.encodeFromUri(
+                                context = context,
+                                uri = uri,
+                                indexHint = startIndex + added.size + 1,
+                            )
+                            val thumb = FeedbackImageEncoder.decodePreviewThumbnail(
+                                previewBytes = encoded.previewBytes,
+                                maxEdgePx = 320,
+                            )?.asImageBitmap()
+                            FeedbackImageUiItem(encoded = encoded, thumbnail = thumb)
+                        }
+                        added += uiItem
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (err: Throwable) {
+                        val reason = err.message?.takeIf { it.isNotBlank() } ?: "图片处理失败，请换一张重试"
+                        failures += if (toProcess.size == 1) reason else "第 ${offset + 1} 张：$reason"
+                    }
+                }
+            } finally {
+                encodingImages = false
+            }
+
+            if (added.isNotEmpty()) {
+                attachedImages = (attachedImages + added).take(FeedbackSubmitter.MAX_IMAGE_COUNT)
+                if (submitResult is FeedbackSubmitResult.Failure) {
+                    submitResult = null
+                }
+            }
+            imageError = when {
+                failures.isNotEmpty() -> failures.joinToString("；")
+                overflowCount > 0 -> "最多支持 ${FeedbackSubmitter.MAX_IMAGE_COUNT} 张截图，已保留前 ${toProcess.size} 张"
+                else -> null
+            }
+        }
+    }
+
+    val pickMultiple3Launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(FeedbackSubmitter.MAX_IMAGE_COUNT),
+    ) { uris ->
+        handlePickedUris(uris)
+    }
+
+    val pickMultiple2Launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(2),
+    ) { uris ->
+        handlePickedUris(uris)
+    }
+
+    val pickSingleVisualMediaLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            handlePickedUris(listOf(uri))
+        }
+    }
+
+    val fallbackMultiContentsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        handlePickedUris(uris)
+    }
+
+    fun launchImagePicker() {
+        if (submitting || encodingImages) return
+        val remaining = FeedbackSubmitter.MAX_IMAGE_COUNT - attachedImages.size
+        if (remaining <= 0) {
+            imageError = "最多只能上传 ${FeedbackSubmitter.MAX_IMAGE_COUNT} 张截图"
+            return
+        }
+        haptics.performFlameLightTick()
+        imageError = null
+        val photoPickerAvailable = runCatching {
+            ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)
+        }.getOrDefault(false)
+        val visualMediaRequest = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        val launchedPhotoPicker = if (photoPickerAvailable) {
+            runCatching {
+                when {
+                    remaining >= FeedbackSubmitter.MAX_IMAGE_COUNT ->
+                        pickMultiple3Launcher.launch(visualMediaRequest)
+
+                    remaining == 2 ->
+                        pickMultiple2Launcher.launch(visualMediaRequest)
+
+                    else ->
+                        pickSingleVisualMediaLauncher.launch(visualMediaRequest)
+                }
+                true
+            }.getOrDefault(false)
+        } else {
+            false
+        }
+        if (!launchedPhotoPicker) {
+            try {
+                fallbackMultiContentsLauncher.launch("image/*")
+            } catch (_: ActivityNotFoundException) {
+                imageError = "当前系统未找到可用的图片选择器"
+            }
+        }
+    }
+
     fun handleDirectSubmit() {
-        if (submitting) return
+        if (submitting || encodingImages) return
         val req = buildCurrentRequest()
         val validationError = FeedbackSubmitter.validateInput(
             title = req.title,
             content = req.content,
             contact = req.contact,
+            images = req.images,
         )
         if (validationError != null) {
             submitResult = FeedbackSubmitResult.Failure(validationError, retryable = false)
@@ -196,6 +359,8 @@ internal fun SettingsAboutPage(
             if (result is FeedbackSubmitResult.Success) {
                 titleInput = ""
                 contentInput = ""
+                attachedImages = emptyList()
+                imageError = null
                 showNotice(result.message)
             }
         }
@@ -208,23 +373,64 @@ internal fun SettingsAboutPage(
         modifier = modifier,
     ) { innerPadding ->
         SettingsPageScrollColumn(contentPadding = innerPadding) {
-            // 1. 应用内直接反馈表单（免魔法、免跳转、自动建 GitHub Issue）
-            FlameGroupedSection(title = "应用内直接反馈（免跳转）") {
+            // 1. 问题反馈与建议（应用内直提 + 截图上传）
+            FlameCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 20.dp,
+                containerColor = palette.surface,
+                borderColor = palette.hairline,
+                contentPadding = PaddingValues(15.dp),
+            ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(
-                        text = if (relayConfigured) {
-                            "直接写下问题或想法并点击提交，无需代理、无需登录 GitHub，内容将自动汇总给作者跟进改进。"
-                        } else {
-                            "当前构建尚未绑定直连中转地址（发版配置 FLAME_FEEDBACK_ENDPOINT 后即可一键免魔法直提）；你现在可直接填写并一键复制完整脱敏反馈。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.inkSecondary,
-                    )
+                    // 顶部直观引导头
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(11.dp),
+                    ) {
+                        FlameRowAvatar(tone = FlameTone.EMBER) {
+                            Icon(
+                                imageVector = Icons.Outlined.Feedback,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = "问题反馈与建议",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = palette.ink,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                FlameMiniTag(
+                                    text = if (relayConfigured) "支持截图 · 免登录" else "脱敏复制",
+                                    tone = FlameTone.EMBER,
+                                )
+                            }
+                            Text(
+                                text = if (relayConfigured) {
+                                    "遇到问题或有好点子？附上截图直接告诉我，无需代理、无需登录 GitHub。"
+                                } else {
+                                    "遇到问题或有好点子？可直接填写并附上截图，一键复制完整脱敏反馈前往 GitHub 提交。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkSecondary,
+                            )
+                        }
+                    }
 
                     // 反馈类型分段选择
                     FlowRow(
@@ -322,6 +528,26 @@ internal fun SettingsAboutPage(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
+                    // 补充截图（可选，最多 3 张）
+                    FeedbackScreenshotPickerSection(
+                        images = attachedImages,
+                        isEncoding = encodingImages,
+                        enabled = !submitting,
+                        errorMessage = imageError,
+                        reducedMotion = reducedMotion,
+                        onAddClick = { launchImagePicker() },
+                        onRemoveImage = { targetId ->
+                            if (!submitting) {
+                                haptics.performFlameLightTick()
+                                attachedImages = attachedImages.filterNot { it.encoded.id == targetId }
+                                imageError = null
+                                if (submitResult is FeedbackSubmitResult.Failure) {
+                                    submitResult = null
+                                }
+                            }
+                        },
+                    )
+
                     // 联系方式（可选）
                     OutlinedTextField(
                         value = contactInput,
@@ -409,7 +635,9 @@ internal fun SettingsAboutPage(
                     ) {
                         if (relayConfigured) {
                             val submitInteraction = remember { MutableInteractionSource() }
-                            val canSubmit = !submitting && contentInput.trim().length >= FeedbackSubmitter.MIN_CONTENT_LEN
+                            val canSubmit = !submitting &&
+                                !encodingImages &&
+                                contentInput.trim().length >= FeedbackSubmitter.MIN_CONTENT_LEN
                             Button(
                                 onClick = { handleDirectSubmit() },
                                 enabled = canSubmit,
@@ -439,7 +667,12 @@ internal fun SettingsAboutPage(
                                     )
                                 }
                                 Text(
-                                    text = if (submitting) "提交中…" else "直接提交反馈",
+                                    text = when {
+                                        submitting && attachedImages.isNotEmpty() -> "上传并提交中…"
+                                        submitting -> "提交中…"
+                                        attachedImages.isNotEmpty() -> "直接提交（含 ${attachedImages.size} 图）"
+                                        else -> "直接提交反馈"
+                                    },
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(start = 6.dp),
@@ -447,6 +680,7 @@ internal fun SettingsAboutPage(
                             }
                         } else {
                             val copyFeedbackInteraction = remember { MutableInteractionSource() }
+                            val canCopy = contentInput.trim().isNotEmpty() && !encodingImages
                             Button(
                                 onClick = {
                                     haptics.performFlameLightTick()
@@ -454,11 +688,11 @@ internal fun SettingsAboutPage(
                                     copyPlainText(context, label = "flame_feedback_draft", text = text)
                                     showNotice("已复制完整脱敏反馈内容")
                                 },
-                                enabled = contentInput.trim().isNotEmpty(),
+                                enabled = canCopy,
                                 interactionSource = copyFeedbackInteraction,
                                 modifier = Modifier.flamePressScale(
                                     interactionSource = copyFeedbackInteraction,
-                                    enabled = contentInput.trim().isNotEmpty(),
+                                    enabled = canCopy,
                                 ),
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
@@ -501,13 +735,19 @@ internal fun SettingsAboutPage(
                             }
                         }
 
-                        if ((titleInput.isNotEmpty() || contentInput.isNotEmpty() || contactInput.isNotEmpty()) && !submitting) {
+                        val hasDraft = titleInput.isNotEmpty() ||
+                            contentInput.isNotEmpty() ||
+                            contactInput.isNotEmpty() ||
+                            attachedImages.isNotEmpty()
+                        if (hasDraft && !submitting && !encodingImages) {
                             TextButton(
                                 onClick = {
                                     haptics.performFlameLightTick()
                                     titleInput = ""
                                     contentInput = ""
                                     contactInput = ""
+                                    attachedImages = emptyList()
+                                    imageError = null
                                     submitResult = null
                                 },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
@@ -733,11 +973,303 @@ internal fun SettingsAboutPage(
                             .size(17.dp),
                     )
                     Text(
-                        text = "隐私提示：反馈将同步到项目公开 Issue 便于追踪修复，请勿填写好友昵称、抖音号 ID、Cookie 或 Bark 推送地址。",
+                        text = "隐私提示：反馈与截图将同步到项目公开 Issue 便于追踪修复，请勿包含好友昵称、手机号、微信号、Cookie 或 Bark 推送地址。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkSecondary,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeedbackScreenshotPickerSection(
+    images: List<FeedbackImageUiItem>,
+    isEncoding: Boolean,
+    enabled: Boolean,
+    errorMessage: String?,
+    reducedMotion: Boolean,
+    onAddClick: () -> Unit,
+    onRemoveImage: (String) -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val remaining = (FeedbackSubmitter.MAX_IMAGE_COUNT - images.size).coerceAtLeast(0)
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "补充截图（可选，最多 ${FeedbackSubmitter.MAX_IMAGE_COUNT} 张）",
+                style = MaterialTheme.typography.titleSmall,
+                color = palette.ink,
+            )
+            Text(
+                text = "${images.size} / ${FeedbackSubmitter.MAX_IMAGE_COUNT}",
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.inkTertiary,
+            )
+        }
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            itemsIndexed(
+                items = images,
+                key = { _, item -> item.encoded.id },
+            ) { index, item ->
+                FeedbackScreenshotThumbCard(
+                    item = item,
+                    index = index,
+                    canRemove = enabled && !isEncoding,
+                    onRemove = { onRemoveImage(item.encoded.id) },
+                )
+            }
+
+            if (remaining > 0) {
+                item(key = "add_screenshot_tile") {
+                    FeedbackAddScreenshotTile(
+                        remaining = remaining,
+                        isEncoding = isEncoding,
+                        enabled = enabled && !isEncoding,
+                        onClick = onAddClick,
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = !errorMessage.isNullOrBlank(),
+            enter = if (reducedMotion) {
+                fadeIn(tween(0))
+            } else {
+                fadeIn(tween(160, easing = FlameMotionSpec.easeOut)) +
+                    expandVertically(tween(180, easing = FlameMotionSpec.easeOut))
+            },
+            exit = if (reducedMotion) {
+                fadeOut(tween(0))
+            } else {
+                fadeOut(tween(130, easing = FlameMotionSpec.easeOut)) +
+                    shrinkVertically(tween(160, easing = FlameMotionSpec.easeOut))
+            },
+        ) {
+            errorMessage?.takeIf { it.isNotBlank() }?.let { msg ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = semantics.dangerContainer,
+                    border = BorderStroke(1.dp, semantics.dangerBorder),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ErrorOutline,
+                            contentDescription = null,
+                            tint = semantics.onDangerContainer,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = semantics.onDangerContainer,
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "截图将随公开 GitHub Issue 展示（自动剥离 EXIF 定位信息），请先遮挡手机号、微信号或聊天隐私。",
+            style = MaterialTheme.typography.labelSmall,
+            color = palette.inkTertiary,
+        )
+    }
+}
+
+@Composable
+private fun FeedbackScreenshotThumbCard(
+    item: FeedbackImageUiItem,
+    index: Int,
+    canRemove: Boolean,
+    onRemove: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val sizeLabel = remember(item.encoded.attachment.sizeBytes) {
+        FeedbackImageEncoderUtils.formatByteSize(item.encoded.attachment.sizeBytes)
+    }
+    val shape = RoundedCornerShape(14.dp)
+
+    Box(
+        modifier = Modifier
+            .size(96.dp)
+            .clip(shape)
+            .background(palette.surfaceSubtle)
+            .border(1.dp, palette.hairlineStrong, shape),
+    ) {
+        val thumb = item.thumbnail
+        if (thumb != null) {
+            Image(
+                bitmap = thumb,
+                contentDescription = "已选反馈截图 ${index + 1}",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Image,
+                    contentDescription = "已选反馈截图 ${index + 1}",
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        // 左下角压缩后体积标签
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(5.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color.Black.copy(alpha = 0.66f))
+                .padding(horizontal = 5.dp, vertical = 2.dp),
+        ) {
+            Text(
+                text = sizeLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+
+        // 右上角删除按钮
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.7f))
+                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                .clickable(
+                    enabled = canRemove,
+                    role = Role.Button,
+                    onClick = onRemove,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Close,
+                contentDescription = "移除第 ${index + 1} 张截图",
+                tint = Color.White,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FeedbackAddScreenshotTile(
+    remaining: Int,
+    isEncoding: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val interactionSource = remember { MutableInteractionSource() }
+    val dashColor = palette.hairlineStrong
+    val shape = RoundedCornerShape(14.dp)
+
+    Box(
+        modifier = Modifier
+            .size(96.dp)
+            .flamePressScale(interactionSource = interactionSource, enabled = enabled)
+            .clip(shape)
+            .background(palette.surfaceSubtle)
+            .drawBehind {
+                val strokeWidth = 1.dp.toPx()
+                val radiusPx = 14.dp.toPx()
+                drawRoundRect(
+                    color = dashColor,
+                    cornerRadius = CornerRadius(radiusPx, radiusPx),
+                    style = Stroke(
+                        width = strokeWidth,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f),
+                    ),
+                )
+            }
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = if (isEncoding) "正在压缩处理截图" else "添加截图，还可添加 $remaining 张"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isEncoding) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = palette.inkSecondary,
+                )
+                Text(
+                    text = "压缩中…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                )
+            }
+        } else {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(horizontal = 6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.AddPhotoAlternate,
+                    contentDescription = null,
+                    tint = palette.inkSecondary,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = "添加截图",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                )
+                Text(
+                    text = "剩 $remaining 张",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                )
             }
         }
     }
