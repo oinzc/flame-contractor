@@ -17,8 +17,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -148,7 +146,27 @@ internal data class SimpleProgressDotStripModel(
     val overflowCount: Int,
 )
 
-internal const val SIMPLE_MAX_VISIBLE_DOTS = 18
+internal const val SIMPLE_MAX_SINGLE_ROW_DOTS = 12
+internal const val SIMPLE_MAX_VISIBLE_DOTS = 24
+
+internal fun layoutSimpleProgressDotRows(
+    dots: List<SimpleProgressDotKind>,
+    maxPerRow: Int = SIMPLE_MAX_SINGLE_ROW_DOTS,
+): List<List<SimpleProgressDotKind>> {
+    if (dots.isEmpty() || maxPerRow <= 0) return emptyList()
+    if (dots.size <= maxPerRow) return listOf(dots)
+    val rowCount = (dots.size + maxPerRow - 1) / maxPerRow
+    val baseSize = dots.size / rowCount
+    val remainder = dots.size % rowCount
+    val rows = ArrayList<List<SimpleProgressDotKind>>(rowCount)
+    var cursor = 0
+    for (rowIdx in 0 until rowCount) {
+        val count = baseSize + if (rowIdx < remainder) 1 else 0
+        rows.add(dots.subList(cursor, cursor + count))
+        cursor += count
+    }
+    return rows
+}
 
 internal fun buildSimpleProgressDots(
     totalCount: Int,
@@ -768,7 +786,6 @@ private fun SimpleTodayTopBar(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SimpleHeroEditorialSection(
     state: TodayUiState,
@@ -1214,7 +1231,6 @@ private fun SimpleStatusEyebrowPill(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SimpleProgressDotStrip(
     model: SimpleProgressDotStripModel,
@@ -1224,10 +1240,13 @@ private fun SimpleProgressDotStrip(
     val semantics = FlameThemeTokens.semanticColors
     val haptics = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
+    val rows = remember(model.dots) { layoutSimpleProgressDotRows(model.dots) }
+    val isMultiRow = rows.size > 1
+    val dotSize = if (isMultiRow) 8.dp else 9.dp
+    val dotGap = 7.dp
 
-    FlowRow(
+    Column(
         modifier = Modifier
-            .widthIn(max = 264.dp)
             .flamePressScale(interactionSource = interaction)
             .clip(RoundedCornerShape(16.dp))
             .clickable(
@@ -1240,28 +1259,35 @@ private fun SimpleProgressDotStrip(
                 },
             )
             .semantics { contentDescription = "查看续火好友列表" }
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(dotGap),
     ) {
-        model.dots.forEach { kind ->
-            val dotColor = when (kind) {
-                SimpleProgressDotKind.DONE_EMBER -> palette.ember
-                SimpleProgressDotKind.DONE_HEALTHY -> semantics.healthy
-                SimpleProgressDotKind.UNKNOWN_DANGER -> semantics.danger
-                SimpleProgressDotKind.PENDING -> palette.hairlineStrong
+        rows.forEach { rowDots ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(dotGap, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                rowDots.forEach { kind ->
+                    val dotColor = when (kind) {
+                        SimpleProgressDotKind.DONE_EMBER -> palette.ember
+                        SimpleProgressDotKind.DONE_HEALTHY -> semantics.healthy
+                        SimpleProgressDotKind.UNKNOWN_DANGER -> semantics.danger
+                        SimpleProgressDotKind.PENDING -> palette.hairlineStrong
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(dotSize)
+                            .clip(CircleShape)
+                            .background(dotColor),
+                    )
+                }
             }
-            Box(
-                modifier = Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(dotColor),
-            )
         }
         if (model.overflowCount > 0) {
             Text(
-                text = "+${model.overflowCount}",
-                style = MaterialTheme.typography.labelSmall,
+                text = "+${model.overflowCount} 位好友",
+                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                 color = palette.inkTertiary,
                 fontWeight = FontWeight.Medium,
             )

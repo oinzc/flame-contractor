@@ -275,11 +275,33 @@ class SimpleTodayActionStateTest {
             withUnknown.dots,
         )
 
-        val overflowed = buildSimpleProgressDots(totalCount = 25, succeededCount = 10, unknownCount = 0, allCompleted = false)
+        val overflowed = buildSimpleProgressDots(totalCount = 30, succeededCount = 10, unknownCount = 0, allCompleted = false)
         assertEquals(SIMPLE_MAX_VISIBLE_DOTS, overflowed.dots.size)
-        assertEquals(25 - SIMPLE_MAX_VISIBLE_DOTS, overflowed.overflowCount)
+        assertEquals(30 - SIMPLE_MAX_VISIBLE_DOTS, overflowed.overflowCount)
         assertTrue(overflowed.dots.any { it == SimpleProgressDotKind.DONE_EMBER })
         assertTrue(overflowed.dots.any { it == SimpleProgressDotKind.PENDING })
+    }
+
+    @Test
+    fun `layoutSimpleProgressDotRows balances multi-row counts without orphan dots`() {
+        fun dotsOf(n: Int) = List(n) { SimpleProgressDotKind.DONE_HEALTHY }
+
+        assertTrue(layoutSimpleProgressDotRows(emptyList()).isEmpty())
+        assertEquals(listOf(1), layoutSimpleProgressDotRows(dotsOf(1)).map { it.size })
+        assertEquals(listOf(12), layoutSimpleProgressDotRows(dotsOf(12)).map { it.size })
+        assertEquals(listOf(7, 6), layoutSimpleProgressDotRows(dotsOf(13)).map { it.size })
+        assertEquals(listOf(8, 7), layoutSimpleProgressDotRows(dotsOf(15)).map { it.size })
+        assertEquals(listOf(8, 8), layoutSimpleProgressDotRows(dotsOf(16)).map { it.size })
+        assertEquals(listOf(9, 9), layoutSimpleProgressDotRows(dotsOf(18)).map { it.size })
+        assertEquals(listOf(12, 12), layoutSimpleProgressDotRows(dotsOf(24)).map { it.size })
+
+        // 1..24 任意数量都不得出现前后行相差超过 1 个点的孤行
+        for (n in 1..SIMPLE_MAX_VISIBLE_DOTS) {
+            val rows = layoutSimpleProgressDotRows(dotsOf(n))
+            assertEquals(n, rows.sumOf { it.size })
+            assertTrue(rows.all { it.size <= SIMPLE_MAX_SINGLE_ROW_DOTS })
+            assertTrue((rows.maxOf { it.size } - rows.minOf { it.size }) <= 1)
+        }
     }
 
     @Test
