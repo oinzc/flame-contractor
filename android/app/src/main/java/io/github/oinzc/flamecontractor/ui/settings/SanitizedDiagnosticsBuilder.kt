@@ -42,6 +42,10 @@ data class RawDiagnosticsContext(
     val runtimeLogLines: List<String> = emptyList(),
     val recentSkipSummary: String? = null,
     val unboundTemplateTargetCount: Int = 0,
+    val deviceManufacturer: String? = survivalSnapshot?.manufacturer,
+    val deviceBrand: String? = null,
+    val deviceModel: String? = null,
+    val romDisplay: String? = null,
 )
 
 data class SanitizedSurvivalSummary(
@@ -49,6 +53,8 @@ data class SanitizedSurvivalSummary(
     val batteryOptimizationIgnored: Boolean,
     val exactAlarmAllowed: Boolean,
     val autostartGuidanceConfirmed: Boolean,
+    val overlayAutoReturnAllowed: Boolean? = null,
+    val backgroundPopupAllowed: Boolean? = null,
 )
 
 data class SanitizedBarkSummary(
@@ -99,24 +105,33 @@ data class SanitizedDiagnosticsReport(
     val unboundTemplateTargetCount: Int = 0,
     val recentSkipSummary: String? = null,
     val runtimeLogLines: List<String> = emptyList(),
+    val deviceManufacturer: String = "unknown",
+    val deviceBrand: String = "unknown",
+    val deviceModel: String = "unknown",
+    val romDisplay: String = "unknown",
 )
 
 /**
  * 脱敏诊断报告构建器。
  *
  * 硬隐私白名单与双重脱敏防线：
- * - 严格仅输出版本、SDK、WebView 版本、12 位定位器摘要与覆写标志、账号状态枚举、
- *   4 项保活布尔值、脱敏 Bark 状态、目标/任务数量与近期尝试状态码/失败分类计数；
- * - 绝不读取或拼接 selfUid、douyinNickname、displayName、nicknameSnapshot、
+ * - 严格仅输出版本、SDK、非个人身份的硬件/系统兼容标识（厂商/品牌/型号/ROM 版本）、
+ *   WebView 版本、12 位定位器摘要与覆写标志、账号状态枚举、
+ *   保活状态布尔值、脱敏 Bark 状态、目标/任务数量与近期尝试状态码/失败分类计数；
+ * - 绝不读取或拼接 Build.SERIAL / ANDROID_ID / IMEI / MAC 等设备唯一追踪 ID，
+ *   也绝不读取 selfUid、douyinNickname、displayName、nicknameSnapshot、
  *   platformUserId、platformHandle、platformConversationId、summaryDetail、reconciliationJson、
  *   Cookie、消息正文或完整 Bark key；
  * - 即使误传含完整 Bark URL、Cookie、sec_uid、长数字 ID 或已知 PII 字符串，
- *   也在输出出口处额外经正则与词典强制脱敏。
+ *   也在字段入口与输出出口处额外经字符白名单、正则与词典强制脱敏。
  */
 object SanitizedDiagnosticsBuilder {
 
     private val ISO_FORMATTER: DateTimeFormatter = DateTimeFormatter.ISO_INSTANT
     private val SAFE_VERSION_REGEX = Regex("""^[A-Za-z0-9._+-]{1,48}$""")
+    private val SAFE_DEVICE_FIELD_REGEX = Regex("""^[A-Za-z0-9 ._\-/()]+$""")
+    private const val MAX_DEVICE_IDENT_LEN = 48
+    private const val MAX_ROM_DISPLAY_LEN = 64
     private val SAFE_DIGEST_REGEX = Regex("""^[0-9a-fA-F]{12}$""")
     private val SAFE_ERROR_CODE_REGEX = Regex("""^[A-Za-z0-9_.:-]{1,36}$""")
     private val SAFE_PROBE_KEY_REGEX = Regex("""^[A-Z0-9_]{1,40}$""")
@@ -142,6 +157,7 @@ object SanitizedDiagnosticsBuilder {
     private val SAFE_SCHEMA_IDENTIFIERS = setOf(
         "batteryOptimizationIgnored",
         "autostartGuidanceConfirmed",
+        "overlayAutoReturnAllowed",
         "todayJobStatusCounts",
         "recentAttemptStatusCounts",
         "recentAttemptFailureClassCounts",
@@ -161,6 +177,26 @@ object SanitizedDiagnosticsBuilder {
 
         val safeAppVersionName = sanitizeShortToken(input.appVersionName, fallback = "unknown", sensitiveTokens)
         val safeAndroidRelease = sanitizeShortToken(input.androidRelease, fallback = "unknown", sensitiveTokens)
+        val safeDeviceManufacturer = sanitizeDeviceField(
+            raw = input.deviceManufacturer,
+            maxLength = MAX_DEVICE_IDENT_LEN,
+            sensitiveTokens = sensitiveTokens,
+        )
+        val safeDeviceBrand = sanitizeDeviceField(
+            raw = input.deviceBrand,
+            maxLength = MAX_DEVICE_IDENT_LEN,
+            sensitiveTokens = sensitiveTokens,
+        )
+        val safeDeviceModel = sanitizeDeviceField(
+            raw = input.deviceModel,
+            maxLength = MAX_DEVICE_IDENT_LEN,
+            sensitiveTokens = sensitiveTokens,
+        )
+        val safeRomDisplay = sanitizeDeviceField(
+            raw = input.romDisplay,
+            maxLength = MAX_ROM_DISPLAY_LEN,
+            sensitiveTokens = sensitiveTokens,
+        )
         val safeWebViewVersion = sanitizeVersionString(input.webViewVersion, sensitiveTokens)
         val safeSelectorDigest = sanitizeDigest(input.selectorDigest, sensitiveTokens)
 
@@ -240,6 +276,8 @@ object SanitizedDiagnosticsBuilder {
             batteryOptimizationIgnored = input.batteryOptimizationIgnored,
             exactAlarmAllowed = input.exactAlarmAllowed,
             autostartGuidanceConfirmed = input.autostartGuidanceConfirmed,
+            overlayAutoReturnAllowed = input.survivalSnapshot?.overlayAutoReturnAllowed,
+            backgroundPopupAllowed = input.survivalSnapshot?.backgroundPopupAllowed,
         )
 
         val generatedAtIso = formatIso(input.generatedAtEpochMs)
@@ -250,6 +288,10 @@ object SanitizedDiagnosticsBuilder {
             appVersionCode = input.appVersionCode,
             androidSdkInt = input.androidSdkInt,
             androidRelease = safeAndroidRelease,
+            deviceManufacturer = safeDeviceManufacturer,
+            deviceBrand = safeDeviceBrand,
+            deviceModel = safeDeviceModel,
+            romDisplay = safeRomDisplay,
             webViewVersion = safeWebViewVersion,
             selectorDigest = safeSelectorDigest,
             hasSelectorOverrides = input.hasSelectorOverrides,
@@ -284,6 +326,10 @@ object SanitizedDiagnosticsBuilder {
             appVersionCode = input.appVersionCode,
             androidSdkInt = input.androidSdkInt,
             androidRelease = safeAndroidRelease,
+            deviceManufacturer = safeDeviceManufacturer,
+            deviceBrand = safeDeviceBrand,
+            deviceModel = safeDeviceModel,
+            romDisplay = safeRomDisplay,
             webViewVersion = safeWebViewVersion,
             selectorDigest = safeSelectorDigest,
             hasSelectorOverrides = input.hasSelectorOverrides,
@@ -349,6 +395,10 @@ object SanitizedDiagnosticsBuilder {
             unboundTemplateTargetCount = unboundTemplateTargetCount,
             recentSkipSummary = sanitizedSkipSummary,
             runtimeLogLines = sanitizedRuntimeLogLines,
+            deviceManufacturer = safeDeviceManufacturer,
+            deviceBrand = safeDeviceBrand,
+            deviceModel = safeDeviceModel,
+            romDisplay = safeRomDisplay,
         )
     }
 
@@ -530,6 +580,66 @@ object SanitizedDiagnosticsBuilder {
         return if (SAFE_VERSION_REGEX.matches(cleaned)) cleaned else fallback
     }
 
+    private fun sanitizeDeviceField(
+        raw: String?,
+        maxLength: Int,
+        sensitiveTokens: Set<String>,
+    ): String {
+        val normalized = raw
+            ?.replace(Regex("""[\r\n\t]+"""), " ")
+            ?.replace(Regex("""\s{2,}"""), " ")
+            ?.trim()
+            .orEmpty()
+        if (normalized.isEmpty()) return "unknown"
+        if (sensitiveTokens.any { normalized.contains(it) } ||
+            SENSITIVE_WORD_REGEX.containsMatchIn(normalized) ||
+            URL_WITH_PATH_REGEX.containsMatchIn(normalized) ||
+            DEVICE_KEY_KV_REGEX.containsMatchIn(normalized) ||
+            COOKIE_HEADER_REGEX.containsMatchIn(normalized) ||
+            CREDENTIAL_KV_REGEX.containsMatchIn(normalized) ||
+            DOUYIN_SEC_UID_REGEX.containsMatchIn(normalized) ||
+            LONG_DIGIT_ID_REGEX.containsMatchIn(normalized) ||
+            LONG_OPAQUE_TOKEN_REGEX.containsMatchIn(normalized) ||
+            TEMPLATE_IMAGE_PATH_REGEX.containsMatchIn(normalized)
+        ) {
+            return "unknown"
+        }
+        if (!SAFE_DEVICE_FIELD_REGEX.matches(normalized)) {
+            return "unknown"
+        }
+        val clamped = normalized.take(maxLength).trim()
+        if (clamped.isEmpty()) return "unknown"
+        val redacted = redactSensitiveText(clamped, sensitiveTokens).trim()
+        return if (redacted == clamped) clamped else "unknown"
+    }
+
+    private fun isKnownDeviceValue(value: String): Boolean =
+        value.isNotBlank() && !value.equals("unknown", ignoreCase = true)
+
+    private fun formatDeviceSummary(
+        manufacturer: String,
+        brand: String,
+        model: String,
+    ): String {
+        val m = manufacturer.takeIf(::isKnownDeviceValue)
+        val b = brand.takeIf(::isKnownDeviceValue)
+        val d = model.takeIf(::isKnownDeviceValue)
+        val vendorLabel = when {
+            m != null && b != null && m.equals(b, ignoreCase = true) -> m
+            m != null && b != null -> "$m / $b"
+            m != null -> m
+            b != null -> b
+            else -> null
+        }
+        return when {
+            vendorLabel != null && d != null && d.equals(vendorLabel, ignoreCase = true) -> vendorLabel
+            vendorLabel != null && d != null -> "$vendorLabel · $d"
+            vendorLabel != null -> vendorLabel
+            d != null -> d
+            else -> "unknown"
+        }
+    }
+
     private fun sanitizeDigest(raw: String?, sensitiveTokens: Set<String>): String {
         val cleaned = raw?.trim().orEmpty()
         if (SAFE_DIGEST_REGEX.matches(cleaned) && sensitiveTokens.none { cleaned.contains(it) }) {
@@ -617,6 +727,10 @@ object SanitizedDiagnosticsBuilder {
         appVersionCode: Long,
         androidSdkInt: Int,
         androidRelease: String,
+        deviceManufacturer: String,
+        deviceBrand: String,
+        deviceModel: String,
+        romDisplay: String,
         webViewVersion: String,
         selectorDigest: String,
         hasSelectorOverrides: Boolean,
@@ -648,6 +762,10 @@ object SanitizedDiagnosticsBuilder {
         appendLine("生成时间 (UTC): $generatedAtIso")
         appendLine("应用版本: $appVersionName ($appVersionCode)")
         appendLine("Android 系统: SDK $androidSdkInt (Android $androidRelease)")
+        appendLine("设备型号: ${formatDeviceSummary(deviceManufacturer, deviceBrand, deviceModel)}")
+        if (isKnownDeviceValue(romDisplay)) {
+            appendLine("系统 ROM: $romDisplay")
+        }
         appendLine("WebView 内核版本: $webViewVersion")
         appendLine("定位器摘要: $selectorDigest (本地覆写: ${if (hasSelectorOverrides) "是" else "否"})")
         appendLine()
@@ -665,6 +783,12 @@ object SanitizedDiagnosticsBuilder {
         appendLine("电池优化白名单: ${survival.batteryOptimizationIgnored}")
         appendLine("精确闹钟权限: ${survival.exactAlarmAllowed}")
         appendLine("自启动与后台确认: ${survival.autostartGuidanceConfirmed}")
+        if (survival.overlayAutoReturnAllowed != null) {
+            appendLine("悬浮窗自动跳回: ${survival.overlayAutoReturnAllowed}")
+        }
+        if (survival.backgroundPopupAllowed != null) {
+            appendLine("后台弹出界面: ${survival.backgroundPopupAllowed}")
+        }
         appendLine()
         appendLine("[Bark 推送（已脱敏）]")
         appendLine("已配置: ${bark.configured}${bark.maskedUrl?.let { " | 脱敏地址: $it" } ?: ""}")
@@ -717,6 +841,10 @@ object SanitizedDiagnosticsBuilder {
         appVersionCode: Long,
         androidSdkInt: Int,
         androidRelease: String,
+        deviceManufacturer: String,
+        deviceBrand: String,
+        deviceModel: String,
+        romDisplay: String,
         webViewVersion: String,
         selectorDigest: String,
         hasSelectorOverrides: Boolean,
@@ -751,6 +879,10 @@ object SanitizedDiagnosticsBuilder {
         appendNumberField(sb, 1, "appVersionCode", appVersionCode, comma = true)
         appendNumberField(sb, 1, "androidSdkInt", androidSdkInt, comma = true)
         appendField(sb, 1, "androidRelease", androidRelease, comma = true)
+        appendField(sb, 1, "deviceManufacturer", deviceManufacturer, comma = true)
+        appendField(sb, 1, "deviceBrand", deviceBrand, comma = true)
+        appendField(sb, 1, "deviceModel", deviceModel, comma = true)
+        appendField(sb, 1, "romDisplay", romDisplay, comma = true)
         appendField(sb, 1, "webViewVersion", webViewVersion, comma = true)
         appendField(sb, 1, "selectorDigest", selectorDigest, comma = true)
         appendBoolField(sb, 1, "hasSelectorOverrides", hasSelectorOverrides, comma = true)
@@ -768,7 +900,20 @@ object SanitizedDiagnosticsBuilder {
         appendBoolField(sb, 2, "notificationsGranted", survival.notificationsGranted, comma = true)
         appendBoolField(sb, 2, "batteryOptimizationIgnored", survival.batteryOptimizationIgnored, comma = true)
         appendBoolField(sb, 2, "exactAlarmAllowed", survival.exactAlarmAllowed, comma = true)
-        appendBoolField(sb, 2, "autostartGuidanceConfirmed", survival.autostartGuidanceConfirmed, comma = false)
+        val hasExtraSurvival = survival.overlayAutoReturnAllowed != null || survival.backgroundPopupAllowed != null
+        appendBoolField(sb, 2, "autostartGuidanceConfirmed", survival.autostartGuidanceConfirmed, comma = hasExtraSurvival)
+        if (survival.overlayAutoReturnAllowed != null) {
+            appendBoolField(
+                sb,
+                2,
+                "overlayAutoReturnAllowed",
+                survival.overlayAutoReturnAllowed,
+                comma = survival.backgroundPopupAllowed != null,
+            )
+        }
+        if (survival.backgroundPopupAllowed != null) {
+            appendBoolField(sb, 2, "backgroundPopupAllowed", survival.backgroundPopupAllowed, comma = false)
+        }
         sb.append("  },\n")
 
         sb.append("  \"bark\": {\n")

@@ -54,5 +54,120 @@ class ProjectLinksTest {
         assertTrue(summary.contains("Xiaomi"))
         assertTrue(summary.contains("60dbb6a6f9e1"))
         assertTrue(summary.contains("3/4"))
+        assertTrue(summary.contains("品牌：Xiaomi"))
+    }
+
+    @Test
+    fun `env summary and bug report url include deduplicated device model when provided`() {
+        val sameBrandSummary = ProjectLinks.buildDesensitizedEnvSummary(
+            versionName = "0.6.2",
+            versionCode = 62,
+            androidRelease = "15",
+            apiLevel = 35,
+            manufacturer = "Xiaomi",
+            selectorDigest = "60dbb6a6f9e1",
+            survivalPassed = 4,
+            survivalTotal = 5,
+            deviceBrand = "xiaomi",
+            deviceModel = "23113RKC6C",
+        )
+        assertTrue(sameBrandSummary.contains("机型：Xiaomi 23113RKC6C"))
+        assertFalse(sameBrandSummary.contains("品牌："))
+
+        val subBrandSummary = ProjectLinks.buildDesensitizedEnvSummary(
+            versionName = "0.6.2",
+            versionCode = 62,
+            androidRelease = "15",
+            apiLevel = 35,
+            manufacturer = "Xiaomi",
+            selectorDigest = "60dbb6a6f9e1",
+            survivalPassed = 4,
+            survivalTotal = 5,
+            deviceBrand = "Redmi",
+            deviceModel = "23113RKC6C",
+        )
+        assertTrue(subBrandSummary.contains("机型：Xiaomi / Redmi 23113RKC6C"))
+
+        val prefixDedupSummary = ProjectLinks.buildDesensitizedEnvSummary(
+            versionName = "0.6.2",
+            versionCode = 62,
+            androidRelease = "15",
+            apiLevel = 35,
+            manufacturer = "Xiaomi",
+            selectorDigest = "60dbb6a6f9e1",
+            survivalPassed = 4,
+            survivalTotal = 5,
+            deviceBrand = "Redmi",
+            deviceModel = "Redmi K70 Pro",
+        )
+        assertTrue(prefixDedupSummary.contains("机型：Xiaomi / Redmi K70 Pro"))
+        assertFalse(prefixDedupSummary.contains("Redmi Redmi"))
+
+        val url = ProjectLinks.buildAndroidBugReportUrl(
+            versionName = "0.6.2",
+            versionCode = 62,
+            androidRelease = "15",
+            apiLevel = 35,
+            selectorDigest = "60dbb6a6f9e1",
+            deviceBrand = "Redmi",
+            deviceModel = "23113RKC6C",
+        )
+        assertTrue(url.contains("Redmi+23113RKC6C"))
+        assertTrue(url.contains("selector+60dbb6a6f9e1"))
+
+        val dedupUrl = ProjectLinks.buildAndroidBugReportUrl(
+            versionName = "0.6.2",
+            versionCode = 62,
+            androidRelease = "15",
+            apiLevel = 35,
+            selectorDigest = "60dbb6a6f9e1",
+            deviceBrand = "Redmi",
+            deviceModel = "Redmi K70 Pro",
+        )
+        assertTrue(dedupUrl.contains("Redmi+K70+Pro"))
+        assertFalse(dedupUrl.contains("Redmi+Redmi"))
+    }
+
+    @Test
+    fun `device model helpers reject injected tokens urls cookies and nicknames`() {
+        val maliciousInputs = listOf(
+            "https://api.day.app/MySecretBarkKey9988",
+            "Redmi token=abc12345",
+            "23113RKC6C cookie=sessionid_xyz",
+            "MS4wLjABAAAA_LeakSecUid_001",
+            "864201051234567",
+            "密友张三丰隐私昵称",
+            "SuperSecretOpaqueTokenValue987654",
+        )
+        for (bad in maliciousInputs) {
+            val summary = ProjectLinks.buildDesensitizedEnvSummary(
+                versionName = "0.6.2",
+                versionCode = 62,
+                androidRelease = "15",
+                apiLevel = 35,
+                manufacturer = "Xiaomi",
+                selectorDigest = "60dbb6a6f9e1",
+                survivalPassed = 4,
+                survivalTotal = 5,
+                deviceBrand = bad,
+                deviceModel = bad,
+            )
+            assertFalse("Summary leaked malicious value [$bad]: $summary", summary.contains(bad))
+            assertTrue("Expected fallback to brand line when model rejected", summary.contains("品牌：Xiaomi"))
+
+            val url = ProjectLinks.buildAndroidBugReportUrl(
+                versionName = "0.6.2",
+                versionCode = 62,
+                androidRelease = "15",
+                apiLevel = 35,
+                selectorDigest = "60dbb6a6f9e1",
+                deviceBrand = bad,
+                deviceModel = bad,
+            )
+            assertFalse("URL leaked malicious value [$bad]: $url", url.contains("MySecretBarkKey"))
+            assertFalse("URL leaked malicious value [$bad]: $url", url.contains("sessionid"))
+            assertFalse("URL leaked malicious value [$bad]: $url", url.contains("864201051234567"))
+            assertFalse("URL leaked malicious value [$bad]: $url", url.contains("MS4wLjAB"))
+        }
     }
 }

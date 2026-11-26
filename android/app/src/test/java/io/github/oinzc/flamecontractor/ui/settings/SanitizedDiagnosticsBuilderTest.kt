@@ -511,4 +511,176 @@ class SanitizedDiagnosticsBuilderTest {
             assertFalse(output.contains(leakSecUid))
         }
     }
+
+    @Test
+    fun includesDeviceModelRomDisplayWithVendorDeduplicationAndOverlaySurvival() {
+        val survivalSnapshot = RomSurvivalChecker.buildSnapshot(
+            checkedAtEpochMs = 1_763_740_500_000L,
+            isXiaomiOrHyperOs = true,
+            manufacturer = "Xiaomi",
+            notificationsGranted = true,
+            batteryOptimizationIgnored = true,
+            exactAlarmAllowed = true,
+            autostartGuidanceConfirmed = true,
+            overlayAutoReturnAllowed = true,
+            backgroundPopupAllowed = false,
+            vendorFamily = OemVendorFamily.XIAOMI,
+        )
+
+        val subBrandReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                webViewVersion = "135.0.0.0",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                survivalSnapshot = survivalSnapshot,
+                deviceManufacturer = "Xiaomi",
+                deviceBrand = "Redmi",
+                deviceModel = "23113RKC6C",
+                romDisplay = "OS2.0.105.0.VNCCNXM",
+            ),
+        )
+
+        assertEquals("Xiaomi", subBrandReport.deviceManufacturer)
+        assertEquals("Redmi", subBrandReport.deviceBrand)
+        assertEquals("23113RKC6C", subBrandReport.deviceModel)
+        assertEquals("OS2.0.105.0.VNCCNXM", subBrandReport.romDisplay)
+        assertEquals(true, subBrandReport.survival.overlayAutoReturnAllowed)
+        assertEquals(false, subBrandReport.survival.backgroundPopupAllowed)
+
+        assertTrue(subBrandReport.textReport.contains("Android 系统: SDK 35 (Android 15)\n设备型号: Xiaomi / Redmi · 23113RKC6C\n系统 ROM: OS2.0.105.0.VNCCNXM"))
+        assertTrue(subBrandReport.textReport.contains("悬浮窗自动跳回: true"))
+        assertTrue(subBrandReport.textReport.contains("后台弹出界面: false"))
+
+        val parsedJson = ExecJson.parseObject(subBrandReport.jsonReport)
+        assertEquals("Xiaomi", parsedJson["deviceManufacturer"])
+        assertEquals("Redmi", parsedJson["deviceBrand"])
+        assertEquals("23113RKC6C", parsedJson["deviceModel"])
+        assertEquals("OS2.0.105.0.VNCCNXM", parsedJson["romDisplay"])
+        @Suppress("UNCHECKED_CAST")
+        val survivalMap = parsedJson["survivalChecks"] as Map<String, Any?>
+        assertEquals(true, survivalMap["overlayAutoReturnAllowed"])
+        assertEquals(false, survivalMap["backgroundPopupAllowed"])
+        assertFalse("Schema keys must not be redacted", subBrandReport.jsonReport.contains("[REDACTED_TOKEN]"))
+
+        // manufacturer 与 brand 忽略大小写相同时自动去重，且无 ROM 时不输出系统 ROM 行
+        val sameBrandReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                deviceManufacturer = "Xiaomi",
+                deviceBrand = "xiaomi",
+                deviceModel = "24129PN74C",
+                romDisplay = null,
+            ),
+        )
+        assertTrue(sameBrandReport.textReport.contains("设备型号: Xiaomi · 24129PN74C"))
+        assertFalse(sameBrandReport.textReport.contains("Xiaomi / xiaomi"))
+        assertFalse(sameBrandReport.textReport.contains("系统 ROM:"))
+        assertEquals("unknown", sameBrandReport.romDisplay)
+
+        // 全未知时输出 unknown
+        val unknownDeviceReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+            ),
+        )
+        assertTrue(unknownDeviceReport.textReport.contains("设备型号: unknown"))
+        assertFalse(unknownDeviceReport.textReport.contains("系统 ROM:"))
+    }
+
+    @Test
+    fun rejectsMaliciousDeviceFieldsAndClampsOverlongSafeRomDisplay() {
+        val secretNickname = "张三丰测试密友"
+        val secretBarkUrl = "https://api.day.app/SecretBarkKey123456"
+        val secretCookie = "cookie=sessionid_abc987"
+        val secretToken = "token=BearerSecret9988"
+
+        val injectedReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                targets = listOf(
+                    ContractTargetEntity(
+                        id = "t-1",
+                        nicknameSnapshot = secretNickname,
+                    ),
+                ),
+                deviceManufacturer = "Xiaomi $secretToken",
+                deviceBrand = secretBarkUrl,
+                deviceModel = "23113RKC6C $secretCookie",
+                romDisplay = "HyperOS $secretNickname",
+            ),
+        )
+
+        assertEquals("unknown", injectedReport.deviceManufacturer)
+        assertEquals("unknown", injectedReport.deviceBrand)
+        assertEquals("unknown", injectedReport.deviceModel)
+        assertEquals("unknown", injectedReport.romDisplay)
+        for (output in listOf(injectedReport.textReport, injectedReport.jsonReport)) {
+            assertFalse(output.contains("SecretBarkKey123456"))
+            assertFalse(output.contains("sessionid_abc987"))
+            assertFalse(output.contains("BearerSecret9988"))
+            assertFalse(output.contains(secretNickname))
+        }
+
+        // 15 位数字 IMEI 或长高熵不透明串必须拦截
+        val imeiReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                deviceModel = "864201051234567",
+                romDisplay = "OpaqueTrackingTokenABCDEF123456789",
+            ),
+        )
+        assertEquals("unknown", imeiReport.deviceModel)
+        assertEquals("unknown", imeiReport.romDisplay)
+
+        // 合法字符集但超长的 ROM 展示名须安全钳制在 64 字符以内
+        val overlongSafeRom = "MagicOS 8.0.0.165(C00E165R4P1) release-keys build.2025.03.18.global.cn.extra"
+        val clampedReport = SanitizedDiagnosticsBuilder.build(
+            RawDiagnosticsContext(
+                generatedAtEpochMs = 1_763_740_500_000L,
+                appVersionName = "0.6.2",
+                appVersionCode = 62L,
+                androidSdkInt = 35,
+                androidRelease = "15",
+                selectorDigest = "60dbb6a6f9e1",
+                hasSelectorOverrides = false,
+                deviceManufacturer = "HONOR",
+                deviceBrand = "HONOR",
+                deviceModel = "BVL-AN16",
+                romDisplay = overlongSafeRom,
+            ),
+        )
+        assertTrue(clampedReport.romDisplay.length <= 64)
+        assertTrue(clampedReport.romDisplay.startsWith("MagicOS 8.0.0.165(C00E165R4P1)"))
+        assertTrue(clampedReport.textReport.contains("设备型号: HONOR · BVL-AN16"))
+        assertTrue(clampedReport.textReport.contains("系统 ROM: ${clampedReport.romDisplay}"))
+    }
 }

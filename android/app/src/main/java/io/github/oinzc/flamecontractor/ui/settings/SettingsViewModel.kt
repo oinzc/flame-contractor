@@ -1,5 +1,6 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -143,6 +144,10 @@ interface SettingsDiagnosticsEnvProvider {
     fun androidSdkInt(): Int
     fun androidRelease(): String
     fun webViewVersion(): String?
+    fun deviceManufacturer(): String = ""
+    fun deviceBrand(): String = ""
+    fun deviceModel(): String = ""
+    fun romDisplay(): String? = null
 }
 
 data class SettingsUiState(
@@ -1405,6 +1410,11 @@ class SettingsViewModel(
                 runtimeLogLines = runtimeLogLines,
                 recentSkipSummary = recentSkipSummary,
                 unboundTemplateTargetCount = unboundTemplateTargetCount,
+                deviceManufacturer = envProvider.deviceManufacturer().takeIf { it.isNotBlank() }
+                    ?: survival.manufacturer,
+                deviceBrand = envProvider.deviceBrand().takeIf { it.isNotBlank() },
+                deviceModel = envProvider.deviceModel().takeIf { it.isNotBlank() },
+                romDisplay = envProvider.romDisplay()?.takeIf { it.isNotBlank() },
             ),
         )
     }
@@ -1621,6 +1631,11 @@ class SettingsViewModel(
                     runtimeLogLines = runtimeLines,
                     recentSkipSummary = liveState.lastSkipSummary,
                     unboundTemplateTargetCount = unboundTemplateTargetCount,
+                    deviceManufacturer = envProvider.deviceManufacturer().takeIf { it.isNotBlank() }
+                        ?: survival.manufacturer,
+                    deviceBrand = envProvider.deviceBrand().takeIf { it.isNotBlank() },
+                    deviceModel = envProvider.deviceModel().takeIf { it.isNotBlank() },
+                    romDisplay = envProvider.romDisplay()?.takeIf { it.isNotBlank() },
                 ),
             ).textReport
         }
@@ -1871,4 +1886,106 @@ internal class AndroidDiagnosticsEnvProvider(
     } catch (_: Throwable) {
         null
     }
+
+    override fun deviceManufacturer(): String = Build.MANUFACTURER?.trim().orEmpty()
+
+    override fun deviceBrand(): String = Build.BRAND?.trim().orEmpty()
+
+    override fun deviceModel(): String = Build.MODEL?.trim().orEmpty()
+
+    override fun romDisplay(): String? = resolveRomDisplay(
+        propertyReader = ::readSystemPropertySafely,
+        fallbackDisplay = Build.DISPLAY,
+    )
+}
+
+@SuppressLint("PrivateApi")
+internal fun readSystemPropertySafely(key: String): String? = runCatching {
+    val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+    val getMethod = systemPropertiesClass.getMethod("get", String::class.java, String::class.java)
+    (getMethod.invoke(null, key, "") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+/**
+ * 仅读取公开的非个人身份 ROM 展示版本属性（HyperOS / MIUI / ColorOS / OriginOS / MagicOS / HarmonyOS / EMUI），
+ * 任何反射或权限异常均安全回退为 Build.DISPLAY 的短摘要；严禁读取任何设备序列号或唯一追踪 ID。
+ */
+internal fun resolveRomDisplay(
+    propertyReader: (String) -> String? = ::readSystemPropertySafely,
+    fallbackDisplay: String? = null,
+): String? {
+    fun readProp(key: String): String? = runCatching {
+        propertyReader(key)?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    val miOsName = readProp("ro.mi.os.version.name")
+    if (miOsName != null) {
+        val miOsIncremental = readProp("ro.mi.os.version.incremental")
+        return if (miOsIncremental != null && miOsIncremental.startsWith(miOsName, ignoreCase = true)) {
+            miOsIncremental.take(64)
+        } else {
+            miOsName.take(64)
+        }
+    }
+
+    val miuiName = readProp("ro.miui.ui.version.name")
+    if (miuiName != null) {
+        val formatted = if (miuiName.contains("MIUI", ignoreCase = true) || miuiName.startsWith("OS", ignoreCase = true)) {
+            miuiName
+        } else {
+            "MIUI $miuiName"
+        }
+        return formatted.take(64)
+    }
+
+    val oplusRom = readProp("ro.build.version.oplusrom")
+    if (oplusRom != null) {
+        val formatted = if (oplusRom.contains("ColorOS", ignoreCase = true) ||
+            oplusRom.contains("OxygenOS", ignoreCase = true) ||
+            oplusRom.contains("Oplus", ignoreCase = true) ||
+            oplusRom.contains("Realme", ignoreCase = true)
+        ) {
+            oplusRom
+        } else {
+            "ColorOS $oplusRom"
+        }
+        return formatted.take(64)
+    }
+
+    val vivoRom = readProp("ro.vivo.os.build.display.id")
+    if (vivoRom != null) {
+        return vivoRom.take(64)
+    }
+
+    val magicRom = readProp("ro.build.version.magic")
+    if (magicRom != null) {
+        val formatted = if (magicRom.contains("Magic", ignoreCase = true)) {
+            magicRom
+        } else {
+            "MagicOS $magicRom"
+        }
+        return formatted.take(64)
+    }
+
+    val harmonyRom = readProp("hw_sc.build.platform.version")
+    if (harmonyRom != null) {
+        val formatted = if (harmonyRom.contains("Harmony", ignoreCase = true)) {
+            harmonyRom
+        } else {
+            "HarmonyOS $harmonyRom"
+        }
+        return formatted.take(64)
+    }
+
+    val emuiRom = readProp("ro.build.version.emui")
+    if (emuiRom != null) {
+        return emuiRom.take(64)
+    }
+
+    return fallbackDisplay
+        ?.replace(Regex("""[\r\n\t]+"""), " ")
+        ?.replace(Regex("""\s{2,}"""), " ")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.take(64)
 }

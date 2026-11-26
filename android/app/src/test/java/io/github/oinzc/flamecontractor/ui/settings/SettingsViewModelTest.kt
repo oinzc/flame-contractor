@@ -1097,9 +1097,123 @@ class SettingsViewModelTest {
             assertTrue(report.textReport.contains("target_lookup_miss visibleRows=12 scrollSteps=4"))
             assertFalse(report.textReport.contains("未绑定好友甲"))
             assertFalse(report.textReport.contains("敏感别名"))
+            // 默认 FakeDiagnosticsEnvProvider 未覆写设备方法时，仍兼容并回退 survival.manufacturer
+            assertEquals("Xiaomi", report.deviceManufacturer)
+            assertEquals("unknown", report.deviceModel)
         } finally {
             vmScope.cancel()
         }
+    }
+
+    @Test
+    fun buildDiagnosticsReportIncludesDeviceModelRomDisplayAndRedactsInjection() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val envProvider = object : SettingsDiagnosticsEnvProvider {
+            override fun appVersionName(): String = "0.6.2"
+            override fun appVersionCode(): Long = 62L
+            override fun androidSdkInt(): Int = 35
+            override fun androidRelease(): String = "15"
+            override fun webViewVersion(): String = "135.0.0.0"
+            override fun deviceManufacturer(): String = "Xiaomi"
+            override fun deviceBrand(): String = "Redmi"
+            override fun deviceModel(): String = "23113RKC6C"
+            override fun romDisplay(): String = "OS2.0.105.0.VNCCNXM"
+        }
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = createViewModel(
+                vmScope = vmScope,
+                dispatcher = dispatcher,
+                envProvider = envProvider,
+            )
+            advanceUntilIdle()
+
+            val report = vm.buildDiagnosticsReport()
+            assertEquals("Xiaomi", report.deviceManufacturer)
+            assertEquals("Redmi", report.deviceBrand)
+            assertEquals("23113RKC6C", report.deviceModel)
+            assertEquals("OS2.0.105.0.VNCCNXM", report.romDisplay)
+            assertTrue(report.textReport.contains("设备型号: Xiaomi / Redmi · 23113RKC6C"))
+            assertTrue(report.textReport.contains("系统 ROM: OS2.0.105.0.VNCCNXM"))
+            val parsedJson = ExecJson.parseObject(report.jsonReport)
+            assertEquals("Xiaomi", parsedJson["deviceManufacturer"])
+            assertEquals("Redmi", parsedJson["deviceBrand"])
+            assertEquals("23113RKC6C", parsedJson["deviceModel"])
+            assertEquals("OS2.0.105.0.VNCCNXM", parsedJson["romDisplay"])
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
+    @Test
+    fun resolveRomDisplayProbesOemPropertiesAndFallsBackSafelyOnErrors() {
+        // 1. HyperOS 优先采用增量完整版本
+        assertEquals(
+            "OS2.0.105.0.VNCCNXM",
+            resolveRomDisplay(
+                propertyReader = { key ->
+                    when (key) {
+                        "ro.mi.os.version.name" -> "OS2.0"
+                        "ro.mi.os.version.incremental" -> "OS2.0.105.0.VNCCNXM"
+                        "ro.miui.ui.version.name" -> "V816"
+                        else -> null
+                    }
+                },
+                fallbackDisplay = "UKQ1.231003.002",
+            ),
+        )
+
+        // 2. 仅有 ro.mi.os.version.name 时直接返回
+        assertEquals(
+            "OS1.0.8.0.UMKCNXM",
+            resolveRomDisplay(
+                propertyReader = { key ->
+                    if (key == "ro.mi.os.version.name") "OS1.0.8.0.UMKCNXM" else null
+                },
+                fallbackDisplay = "UKQ1.231003.002",
+            ),
+        )
+
+        // 3. MIUI / ColorOS / OriginOS / MagicOS / HarmonyOS / EMUI
+        assertEquals(
+            "MIUI V140",
+            resolveRomDisplay(propertyReader = { if (it == "ro.miui.ui.version.name") "V140" else null }),
+        )
+        assertEquals(
+            "ColorOS V14.0.0",
+            resolveRomDisplay(propertyReader = { if (it == "ro.build.version.oplusrom") "V14.0.0" else null }),
+        )
+        assertEquals(
+            "OriginOS 4",
+            resolveRomDisplay(propertyReader = { if (it == "ro.vivo.os.build.display.id") "OriginOS 4" else null }),
+        )
+        assertEquals(
+            "MagicOS 8.0.0",
+            resolveRomDisplay(propertyReader = { if (it == "ro.build.version.magic") "8.0.0" else null }),
+        )
+        assertEquals(
+            "HarmonyOS 4.2.0",
+            resolveRomDisplay(propertyReader = { if (it == "hw_sc.build.platform.version") "4.2.0" else null }),
+        )
+        assertEquals(
+            "EmotionUI_14.0.0",
+            resolveRomDisplay(propertyReader = { if (it == "ro.build.version.emui") "EmotionUI_14.0.0" else null }),
+        )
+
+        // 4. 反射抛异常或全空时安全回退 Build.DISPLAY
+        assertEquals(
+            "AP3A.241105.008 release-keys",
+            resolveRomDisplay(
+                propertyReader = { throw SecurityException("SystemProperties blocked") },
+                fallbackDisplay = "AP3A.241105.008   release-keys",
+            ),
+        )
+        assertNull(
+            resolveRomDisplay(
+                propertyReader = { null },
+                fallbackDisplay = "   ",
+            ),
+        )
     }
 
     private fun createRealSelectorStore(subDir: String): SelectorBundleStore {
