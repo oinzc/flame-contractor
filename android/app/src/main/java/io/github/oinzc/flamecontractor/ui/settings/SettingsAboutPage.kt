@@ -76,6 +76,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -105,6 +106,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.BuildConfig
 import io.github.oinzc.flamecontractor.core.support.EncodedFeedbackImage
+import io.github.oinzc.flamecontractor.core.support.FeedbackDraftStore
 import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoder
 import io.github.oinzc.flamecontractor.core.support.FeedbackImageEncoderUtils
 import io.github.oinzc.flamecontractor.core.support.FeedbackKind
@@ -112,7 +114,9 @@ import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmissionRequest
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitResult
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitter
+import io.github.oinzc.flamecontractor.core.support.FeedbackTextDraft
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
+import io.github.oinzc.flamecontractor.core.support.mergeFeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
@@ -190,18 +194,22 @@ internal fun SettingsAboutPage(
         )
     }
 
-    var selectedKindName by rememberSaveable { mutableStateOf(FeedbackKind.BUG.name) }
+    val draftStore = remember(context) { FeedbackDraftStore.fromContext(context) }
+    val initialTextDraft = remember(draftStore) { draftStore.loadTextDraft() }
+
+    var selectedKindName by rememberSaveable { mutableStateOf(initialTextDraft.kind.name) }
     val selectedKind = FeedbackKind.entries.firstOrNull { it.name == selectedKindName } ?: FeedbackKind.BUG
-    var titleInput by rememberSaveable { mutableStateOf("") }
-    var contentInput by rememberSaveable { mutableStateOf("") }
-    var contactInput by rememberSaveable { mutableStateOf("") }
-    var includeEnv by rememberSaveable { mutableStateOf(true) }
-    var includeDiagnosticLog by rememberSaveable { mutableStateOf(true) }
+    var titleInput by rememberSaveable { mutableStateOf(initialTextDraft.title) }
+    var contentInput by rememberSaveable { mutableStateOf(initialTextDraft.content) }
+    var includeEnv by rememberSaveable { mutableStateOf(initialTextDraft.includeEnv) }
+    var includeDiagnosticLog by rememberSaveable { mutableStateOf(initialTextDraft.includeDiagnosticLog) }
+    var restoredDraftNoticeVisible by rememberSaveable { mutableStateOf(initialTextDraft.hasContent) }
     var lastConsumedDraftNonce by rememberSaveable { mutableStateOf(0L) }
     var diagnosticLogPreviewText by remember { mutableStateOf<String?>(null) }
     var showDiagnosticLogPreview by remember { mutableStateOf(false) }
     var loadingDiagnosticLog by remember { mutableStateOf(false) }
     var attachedImages by remember { mutableStateOf<List<FeedbackImageUiItem>>(emptyList()) }
+    var imageMutationVersion by remember { mutableIntStateOf(0) }
     var encodingImages by remember { mutableStateOf(false) }
     var imageError by remember { mutableStateOf<String?>(null) }
     var contentValidationError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -209,20 +217,69 @@ internal fun SettingsAboutPage(
     var submitResult by remember { mutableStateOf<FeedbackSubmitResult?>(null) }
     val contentFocusRequester = remember { FocusRequester() }
 
+    fun persistTextDraft(
+        kind: FeedbackKind = selectedKind,
+        title: String = titleInput,
+        content: String = contentInput,
+        env: Boolean = includeEnv,
+        diagnosticLog: Boolean = includeDiagnosticLog,
+    ) {
+        draftStore.saveTextDraft(
+            kind = kind,
+            title = title,
+            content = content,
+            includeEnv = env,
+            includeDiagnosticLog = diagnosticLog,
+        )
+    }
+
+    // 异步恢复缓存的反馈截图并解码缩略图（在 IO 线程执行，避免主线程卡顿）
+    LaunchedEffect(draftStore) {
+        val startVersion = imageMutationVersion
+        val restoredImages = withContext(Dispatchers.IO) {
+            draftStore.loadImagesAsync().map { encoded ->
+                val thumb = FeedbackImageEncoder.decodePreviewThumbnail(
+                    previewBytes = encoded.previewBytes,
+                    maxEdgePx = 320,
+                )?.asImageBitmap()
+                FeedbackImageUiItem(encoded = encoded, thumbnail = thumb)
+            }
+        }
+        if (imageMutationVersion == startVersion && restoredImages.isNotEmpty()) {
+            attachedImages = restoredImages
+            restoredDraftNoticeVisible = true
+        }
+    }
+
+    // 文字草稿已在首帧前同步恢复，此处按规则保护用户已有草稿不被 preFillDraft 静默覆盖
     LaunchedEffect(preFillDraft?.nonce) {
         val draft = preFillDraft ?: return@LaunchedEffect
         if (draft.nonce == lastConsumedDraftNonce) return@LaunchedEffect
         lastConsumedDraftNonce = draft.nonce
-        selectedKindName = draft.kind.name
-        if (titleInput.isBlank() && draft.title.isNotBlank()) {
-            titleInput = draft.title.trim().take(FeedbackSubmitter.MAX_TITLE_LEN)
-        }
-        if (contentInput.isBlank() && draft.content.isNotBlank()) {
-            contentInput = draft.content.trim().take(FeedbackSubmitter.MAX_CONTENT_LEN)
-            contentValidationError = null
-        }
-        if (draft.attachDiagnosticLog) {
-            includeDiagnosticLog = true
+        val current = FeedbackTextDraft(
+            kind = selectedKind,
+            title = titleInput,
+            content = contentInput,
+            includeEnv = includeEnv,
+            includeDiagnosticLog = includeDiagnosticLog,
+        )
+        val merged = mergeFeedbackPreFillDraft(current = current, preFill = draft)
+        if (merged != current) {
+            selectedKindName = merged.kind.name
+            titleInput = merged.title
+            contentInput = merged.content
+            includeEnv = merged.includeEnv
+            includeDiagnosticLog = merged.includeDiagnosticLog
+            if (merged.content.isNotBlank()) {
+                contentValidationError = null
+            }
+            persistTextDraft(
+                kind = merged.kind,
+                title = merged.title,
+                content = merged.content,
+                env = merged.includeEnv,
+                diagnosticLog = merged.includeDiagnosticLog,
+            )
         }
         onConsumePreFillDraft(draft.nonce)
     }
@@ -238,7 +295,7 @@ internal fun SettingsAboutPage(
         kind = selectedKind,
         title = titleInput,
         content = contentInput,
-        contact = contactInput,
+        contact = "",
         version = versionLabel,
         environment = envSummary,
         includeEnv = includeEnv,
@@ -354,7 +411,10 @@ internal fun SettingsAboutPage(
             }
 
             if (added.isNotEmpty()) {
-                attachedImages = (attachedImages + added).take(FeedbackSubmitter.MAX_IMAGE_COUNT)
+                val updatedImages = (attachedImages + added).take(FeedbackSubmitter.MAX_IMAGE_COUNT)
+                imageMutationVersion += 1
+                attachedImages = updatedImages
+                draftStore.saveImagesAsync(updatedImages.map { it.encoded })
                 if (submitResult is FeedbackSubmitResult.Failure) {
                     submitResult = null
                 }
@@ -492,11 +552,17 @@ internal fun SettingsAboutPage(
             submitting = false
             submitResult = result
             if (result is FeedbackSubmitResult.Success) {
+                selectedKindName = FeedbackKind.BUG.name
                 titleInput = ""
                 contentInput = ""
+                includeEnv = true
+                includeDiagnosticLog = true
+                imageMutationVersion += 1
                 attachedImages = emptyList()
                 imageError = null
                 contentValidationError = null
+                restoredDraftNoticeVisible = false
+                draftStore.clearDraftAsync()
                 showNotice(result.message)
             }
         }
@@ -568,6 +634,46 @@ internal fun SettingsAboutPage(
                         }
                     }
 
+                    // 温和提示已自动恢复上次未提交草稿
+                    val showRestoredDraftNotice = restoredDraftNoticeVisible && (
+                        titleInput.isNotBlank() ||
+                            contentInput.isNotBlank() ||
+                            attachedImages.isNotEmpty()
+                        )
+                    AnimatedVisibility(
+                        visible = showRestoredDraftNotice,
+                        enter = if (reducedMotion) {
+                            fadeIn(tween(0))
+                        } else {
+                            fadeIn(tween(160, easing = FlameMotionSpec.easeOut)) +
+                                expandVertically(tween(180, easing = FlameMotionSpec.easeOut))
+                        },
+                        exit = if (reducedMotion) {
+                            fadeOut(tween(0))
+                        } else {
+                            fadeOut(tween(130, easing = FlameMotionSpec.easeOut)) +
+                                shrinkVertically(tween(160, easing = FlameMotionSpec.easeOut))
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            FlameMiniTag(
+                                text = "已自动恢复草稿",
+                                tone = FlameTone.NEUTRAL,
+                            )
+                            Text(
+                                text = "已保留上次未提交的文字与截图",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
                     // 反馈类型分段选择
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
@@ -606,6 +712,7 @@ internal fun SettingsAboutPage(
                                     ) {
                                         haptics.performFlameLightTick()
                                         selectedKindName = kind.name
+                                        persistTextDraft(kind = kind)
                                         if (submitResult is FeedbackSubmitResult.Failure) {
                                             submitResult = null
                                         }
@@ -627,6 +734,7 @@ internal fun SettingsAboutPage(
                         onValueChange = { next ->
                             if (next.length <= FeedbackSubmitter.MAX_TITLE_LEN) {
                                 titleInput = next
+                                persistTextDraft(title = next)
                             }
                         },
                         enabled = !submitting,
@@ -645,6 +753,7 @@ internal fun SettingsAboutPage(
                         onValueChange = { next ->
                             if (next.length <= FeedbackSubmitter.MAX_CONTENT_LEN) {
                                 contentInput = next
+                                persistTextDraft(content = next)
                                 val nextTrimmedLen = next.trim().length
                                 if (nextTrimmedLen >= FeedbackSubmitter.MIN_CONTENT_LEN) {
                                     contentValidationError = null
@@ -712,7 +821,10 @@ internal fun SettingsAboutPage(
                         onRemoveImage = { targetId ->
                             if (!submitting) {
                                 haptics.performFlameLightTick()
-                                attachedImages = attachedImages.filterNot { it.encoded.id == targetId }
+                                val updatedImages = attachedImages.filterNot { it.encoded.id == targetId }
+                                imageMutationVersion += 1
+                                attachedImages = updatedImages
+                                draftStore.saveImagesAsync(updatedImages.map { it.encoded })
                                 imageError = null
                                 if (submitResult is FeedbackSubmitResult.Failure) {
                                     submitResult = null
@@ -721,27 +833,15 @@ internal fun SettingsAboutPage(
                         },
                     )
 
-                    // 联系方式（可选）
-                    OutlinedTextField(
-                        value = contactInput,
-                        onValueChange = { next ->
-                            if (next.length <= FeedbackSubmitter.MAX_CONTACT_LEN) {
-                                contactInput = next
-                            }
-                        },
-                        enabled = !submitting,
-                        singleLine = true,
-                        label = { Text("联系方式（可选）") },
-                        placeholder = { Text("邮箱或 GitHub ID；公开可见，介意可留空") },
-                        colors = settingsTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
                     // 脱敏环境信息开关
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !submitting) { includeEnv = !includeEnv },
+                            .clickable(enabled = !submitting) {
+                                val next = !includeEnv
+                                includeEnv = next
+                                persistTextDraft(env = next)
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
@@ -765,7 +865,10 @@ internal fun SettingsAboutPage(
                         Switch(
                             checked = includeEnv,
                             enabled = !submitting,
-                            onCheckedChange = { includeEnv = it },
+                            onCheckedChange = { next ->
+                                includeEnv = next
+                                persistTextDraft(env = next)
+                            },
                             colors = settingsSwitchColors(),
                         )
                     }
@@ -778,7 +881,11 @@ internal fun SettingsAboutPage(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = !submitting) { includeDiagnosticLog = !includeDiagnosticLog },
+                                .clickable(enabled = !submitting) {
+                                    val next = !includeDiagnosticLog
+                                    includeDiagnosticLog = next
+                                    persistTextDraft(diagnosticLog = next)
+                                },
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
@@ -802,7 +909,10 @@ internal fun SettingsAboutPage(
                             Switch(
                                 checked = includeDiagnosticLog,
                                 enabled = !submitting,
-                                onCheckedChange = { includeDiagnosticLog = it },
+                                onCheckedChange = { next ->
+                                    includeDiagnosticLog = next
+                                    persistTextDraft(diagnosticLog = next)
+                                },
                                 colors = settingsSwitchColors(),
                             )
                         }
@@ -858,6 +968,36 @@ internal fun SettingsAboutPage(
                                     modifier = Modifier.padding(start = 5.dp),
                                 )
                             }
+                        }
+                    }
+
+                    // 公开反馈隐私说明（方案 A：不采集联系方式）
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.surfaceSubtle,
+                        border = BorderStroke(1.dp, palette.hairline),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 11.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.VerifiedUser,
+                                contentDescription = null,
+                                tint = semantics.healthy,
+                                modifier = Modifier
+                                    .padding(top = 1.dp)
+                                    .size(16.dp),
+                            )
+                            Text(
+                                text = "反馈内容会公开显示在 GitHub Issues，请勿填写手机号、微信号或个人隐私；问题修复后会通过应用更新推送。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkSecondary,
+                            )
                         }
                     }
 
@@ -1029,19 +1169,23 @@ internal fun SettingsAboutPage(
 
                         val hasDraft = titleInput.isNotEmpty() ||
                             contentInput.isNotEmpty() ||
-                            contactInput.isNotEmpty() ||
                             attachedImages.isNotEmpty()
                         if (hasDraft && !submitting && !encodingImages) {
                             TextButton(
                                 onClick = {
                                     haptics.performFlameLightTick()
+                                    selectedKindName = FeedbackKind.BUG.name
                                     titleInput = ""
                                     contentInput = ""
-                                    contactInput = ""
+                                    includeEnv = true
+                                    includeDiagnosticLog = true
+                                    imageMutationVersion += 1
                                     attachedImages = emptyList()
                                     imageError = null
                                     contentValidationError = null
                                     submitResult = null
+                                    restoredDraftNoticeVisible = false
+                                    draftStore.clearDraftAsync()
                                 },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                             ) {
@@ -1134,7 +1278,7 @@ internal fun SettingsAboutPage(
                             .size(17.dp),
                     )
                     Text(
-                        text = "隐私提示：反馈与截图将同步到项目公开 Issue 便于追踪修复，请勿包含好友昵称、手机号、微信号、Cookie 或 Bark 推送地址。",
+                        text = "隐私提示：反馈与截图会公开显示在 GitHub Issues 便于追踪修复，请勿包含好友昵称、手机号、微信号、Cookie 或 Bark 推送地址；问题修复后会通过应用更新推送。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkSecondary,
                     )

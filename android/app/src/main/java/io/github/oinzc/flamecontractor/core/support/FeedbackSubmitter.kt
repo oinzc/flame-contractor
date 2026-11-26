@@ -46,7 +46,7 @@ data class FeedbackSubmissionRequest(
     val kind: FeedbackKind,
     val title: String,
     val content: String,
-    val contact: String,
+    val contact: String = "",
     val version: String,
     val environment: String,
     val includeEnv: Boolean,
@@ -178,7 +178,7 @@ class FeedbackSubmitter(
         fun validateInput(
             title: String,
             content: String,
-            contact: String,
+            contact: String = "",
             images: List<FeedbackImageAttachment> = emptyList(),
             diagnosticLog: String = "",
         ): String? {

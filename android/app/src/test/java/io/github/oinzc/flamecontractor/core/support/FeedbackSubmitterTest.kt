@@ -342,4 +342,22 @@ class FeedbackSubmitterTest {
         ) as FeedbackSubmitResult.Success
         assertFalse(parsedOmitted.hasDiagnosticLog)
     }
+
+    @Test
+    fun `contact defaults to empty string for Plan A privacy compatibility`() {
+        val req = FeedbackSubmissionRequest(
+            kind = FeedbackKind.BUG,
+            title = "默认联系方式为空",
+            content = "验证移除联系方式输入框后的协议兼容性",
+            version = "v0.6.2",
+            environment = "Android 15",
+            includeEnv = true,
+        )
+        assertEquals("", req.contact)
+        assertNull(FeedbackSubmitter.validateInput(title = req.title, content = req.content))
+        val encoded = FeedbackSubmitter.encodeRequestJson(req)
+        assertTrue(encoded.contains("\"contact\":\"\""))
+        val fallback = FeedbackSubmitter.buildClipboardFallbackText(req)
+        assertFalse(fallback.contains("联系方式："))
+    }
 }
