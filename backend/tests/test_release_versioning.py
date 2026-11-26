@@ -336,7 +336,23 @@ def test_real_repo_versions_and_release_workflows_are_consistent():
         if ":app:assembleRelease" in str(s.get("run", ""))
     )
     assert android_check_idx < android_build_idx
-    android_upload_run = str(android_steps[-1].get("run", ""))
+    android_upload_idx, android_upload_step = next(
+        (i, s)
+        for i, s in enumerate(android_steps)
+        if "gh release upload" in str(s.get("run", ""))
+    )
+    assert android_build_idx < android_upload_idx
+    android_upload_run = str(android_upload_step.get("run", ""))
     assert "gh release view" in android_upload_run
     assert "gh release create" in android_upload_run
     assert "gh release upload" in android_upload_run
+    assert "android_release_manifest.py" in android_upload_run
+
+    android_r2_idx, android_r2_step = next(
+        (i, s)
+        for i, s in enumerate(android_steps)
+        if "aws s3 cp" in str(s.get("run", ""))
+    )
+    assert android_upload_idx < android_r2_idx
+    android_r2_run = str(android_r2_step.get("run", ""))
+    assert "latest.json" in android_r2_run
