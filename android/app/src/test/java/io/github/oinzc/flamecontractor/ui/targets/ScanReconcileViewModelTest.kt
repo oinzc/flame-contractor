@@ -1350,6 +1350,97 @@ class ScanReconcileViewModelTest {
         assertEquals("官方火花", officialSparkKindFullLabel(null))
     }
 
+    @Test
+    fun importingUnknownConversationTypeKeepsNullTypeWhileBoundGroupPersistsGroupId() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository()
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            val boundGroup = candidate(
+                name = "保时捷车友会",
+                type = "group",
+                sparkDays = 60,
+                sparkKind = "normal",
+                convId = "7310000000000000888",
+                matchStatus = MatchStatus.BOUND,
+            )
+            val unknownSession = candidate(
+                name = "未识别会话甲",
+                type = "unknown",
+                sparkDays = 10,
+                sparkKind = "normal",
+                matchStatus = MatchStatus.NOT_OBSERVED,
+            )
+            val boundFriend = candidate(
+                name = "老友乙",
+                type = "friend",
+                sparkDays = 20,
+                sparkKind = "normal",
+                matchStatus = MatchStatus.BOUND,
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-group-unknown",
+                    scannedAtEpochMs = 5_000L,
+                    discoveredCount = 3,
+                    sparkCount = 3,
+                    candidates = listOf(boundGroup, unknownSession, boundFriend),
+                ),
+            )
+            advanceUntilIdle()
+
+            // 搜索「群聊」只命中群聊，搜索「好友」只命中已识别好友（不误命中 unknown）
+            vm.onReconcileSearchChanged("群聊")
+            advanceUntilIdle()
+            assertEquals(listOf("保时捷车友会"), vm.uiState.value.reconcileState.filteredCandidates.map { it.candidate.displayName })
+
+            vm.onReconcileSearchChanged("好友")
+            advanceUntilIdle()
+            assertEquals(listOf("老友乙"), vm.uiState.value.reconcileState.filteredCandidates.map { it.candidate.displayName })
+
+            vm.onReconcileSearchChanged("")
+            advanceUntilIdle()
+
+            // 手动勾选未识别会话，和默认预选的群聊/好友一起导入
+            val unknownCand = vm.uiState.value.reconcileState.allCandidates.first { it.candidate.displayName == "未识别会话甲" }.candidate
+            vm.toggleCandidateSelection(unknownCand)
+            advanceUntilIdle()
+
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+
+            val byName = repo.targetsState.value.associateBy { it.nicknameSnapshot }
+            val importedGroup = byName.getValue("保时捷车友会")
+            assertEquals("group", importedGroup.conversationType)
+            assertEquals("7310000000000000888", importedGroup.platformConversationId)
+            assertNull(importedGroup.platformUserId)
+
+            val importedUnknown = byName.getValue("未识别会话甲")
+            assertNull(importedUnknown.conversationType)
+            assertNull(importedUnknown.platformUserId)
+            assertNull(importedUnknown.platformConversationId)
+
+            val importedFriend = byName.getValue("老友乙")
+            assertEquals("friend", importedFriend.conversationType)
+            assertEquals("sec_老友乙", importedFriend.platformUserId)
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
     private class FakeTargetsImageStorage(
         private val existingPaths: MutableSet<String> = mutableSetOf(),
     ) : TemplateImageStorage {

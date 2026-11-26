@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
-import android.util.Base64
 import android.util.Log
 import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
@@ -206,18 +205,82 @@ class DouyinWebExecutor(
         }
     }
 
+    internal data class IdentityCaptureStats(
+        val users: Int,
+        val groups: Int,
+        val protoHits: Int,
+        val idbGroups: Int,
+        val domGroups: Int,
+    )
+
     internal class IdentityStore {
         private val lock = Any()
         private val usersById = LinkedHashMap<String, IdentityRecord>()
         private val groupsById = LinkedHashMap<String, ConversationRecord>()
+        private var protoHitsCount = 0
+        private var idbGroupsCount = 0
+        private var domGroupsCount = 0
 
         fun clear() = synchronized(lock) {
             usersById.clear()
             groupsById.clear()
+            protoHitsCount = 0
+            idbGroupsCount = 0
+            domGroupsCount = 0
+        }
+
+        fun stats(): IdentityCaptureStats = synchronized(lock) {
+            IdentityCaptureStats(
+                users = usersById.size,
+                groups = groupsById.size,
+                protoHits = protoHitsCount,
+                idbGroups = idbGroupsCount,
+                domGroups = domGroupsCount,
+            )
         }
 
         fun ingestIdentityJson(rawJson: String) {
-            val list = ExecJson.parseOrNull(rawJson) as? List<*> ?: return
+            val parsed = ExecJson.parseOrNull(rawJson) ?: return
+            when (parsed) {
+                is List<*> -> ingestUserList(parsed)
+                is Map<*, *> -> {
+                    (parsed["users"] as? List<*>)?.let { ingestUserList(it) }
+                    (parsed["groups"] as? List<*>)?.let { ingestGroupList(it, fromIndexedDb = true) }
+                }
+            }
+        }
+
+        fun ingestGroupRecordsJson(rawJson: String, fromIndexedDb: Boolean = false) {
+            val parsed = ExecJson.parseOrNull(rawJson) ?: return
+            when (parsed) {
+                is List<*> -> ingestGroupList(parsed, fromIndexedDb = fromIndexedDb)
+                is Map<*, *> -> (parsed["groups"] as? List<*>)?.let { ingestGroupList(it, fromIndexedDb = fromIndexedDb) }
+            }
+        }
+
+        fun ingestGroupRecord(
+            rawConversationId: String?,
+            rawTitle: String?,
+            fromIndexedDb: Boolean = false,
+            fromDom: Boolean = false,
+        ): Boolean {
+            val cleanId = normalizeGroupConversationId(rawConversationId) ?: return false
+            val cleanTitle = normalizeGroupTitle(rawTitle) ?: return false
+            synchronized(lock) {
+                val isNew = !groupsById.containsKey(cleanId)
+                groupsById[cleanId] = ConversationRecord(
+                    platformConversationId = cleanId,
+                    title = cleanTitle,
+                )
+                if (isNew) {
+                    if (fromIndexedDb) idbGroupsCount += 1
+                    if (fromDom) domGroupsCount += 1
+                }
+            }
+            return true
+        }
+
+        private fun ingestUserList(list: List<*>) {
             val incoming = ArrayList<IdentityRecord>(list.size)
             for (item in list) {
                 @Suppress("UNCHECKED_CAST")
@@ -273,17 +336,48 @@ class DouyinWebExecutor(
             }
         }
 
+        private fun ingestGroupList(list: List<*>, fromIndexedDb: Boolean) {
+            for (item in list) {
+                @Suppress("UNCHECKED_CAST")
+                val obj = item as? Map<String, Any?> ?: continue
+                val rawType = firstNonEmpty(
+                    obj.stringOrNull("conversation_type"),
+                    obj.stringOrNull("conversationType"),
+                )?.lowercase()
+                if (rawType != null && rawType != "group" && rawType != "2") {
+                    continue
+                }
+                val rawId = firstNonEmpty(
+                    obj.stringOrNull("platform_conversation_id"),
+                    obj.stringOrNull("platformConversationId"),
+                    obj.stringOrNull("conversation_short_id"),
+                    obj.stringOrNull("conversationShortId"),
+                    obj.stringOrNull("conversation_id"),
+                    obj.stringOrNull("conversationId"),
+                )
+                val rawTitle = firstNonEmpty(
+                    obj.stringOrNull("title"),
+                    obj.stringOrNull("name"),
+                )
+                ingestGroupRecord(
+                    rawConversationId = rawId,
+                    rawTitle = rawTitle,
+                    fromIndexedDb = fromIndexedDb,
+                )
+            }
+        }
+
         fun ingestProtoBase64(base64Str: String) {
             if (base64Str.isBlank()) return
             val bytes = try {
-                Base64.decode(base64Str, Base64.DEFAULT)
+                java.util.Base64.getMimeDecoder().decode(base64Str)
             } catch (_: IllegalArgumentException) {
                 return
             }
             if (bytes.isEmpty()) return
             val parsed = DouyinProtobufParser.parseGroupConversations(bytes)
-            if (parsed.isEmpty()) return
             synchronized(lock) {
+                protoHitsCount += 1
                 for (conv in parsed) {
                     groupsById[conv.platformConversationId] = conv
                 }
@@ -327,22 +421,65 @@ class DouyinWebExecutor(
             return ids
         }
 
+        private fun normalizeGroupConversationId(raw: String?): String? {
+            val trimmed = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            if (GROUP_ID_PURE_REGEX.matches(trimmed)) return trimmed
+            val colonMatch = GROUP_ID_COLON_REGEX.matchEntire(trimmed)
+            return colonMatch?.groupValues?.get(1)
+        }
+
+        private fun normalizeGroupTitle(raw: String?): String? {
+            val trimmed = raw?.trim { ch ->
+                ch.isWhitespace() || Character.isSpaceChar(ch) || ch == '\u0085'
+            } ?: return null
+            if (trimmed.isEmpty()) return null
+            if (trimmed.codePointCount(0, trimmed.length) > MAX_GROUP_TITLE_CODE_POINTS) return null
+            for (ch in trimmed) {
+                if (ch.code < 32 || Character.isISOControl(ch)) return null
+            }
+            return trimmed
+        }
+
         private fun firstNonEmpty(vararg values: String?): String? =
             values.firstOrNull { !it.isNullOrBlank() }?.trim()
+
+        companion object {
+            private val GROUP_ID_PURE_REGEX = Regex("""^\d{15,25}$""")
+            private val GROUP_ID_COLON_REGEX = Regex("""^\d{1,4}:2:(\d{15,25})$""")
+            private const val MAX_GROUP_TITLE_CODE_POINTS = 80
+        }
     }
 
     internal class FlameBridge(
         private val identityStore: IdentityStore,
         private val scope: CoroutineScope,
     ) {
+        private class ProtoTransferBuffer(val total: Int) {
+            val parts: Array<String?> = arrayOfNulls(total)
+            var receivedCount: Int = 0
+        }
+
         private val pendingAsyncCalls = ConcurrentHashMap<String, CompletableDeferred<String>>()
         private val pendingJobs = ConcurrentHashMap.newKeySet<Job>()
+        private val protoLock = Any()
+        private val protoTransfers = LinkedHashMap<String, ProtoTransferBuffer>()
 
         @JavascriptInterface
         fun onIdentityRecords(json: String) {
             val job = scope.launch(Dispatchers.Default) {
                 try {
                     identityStore.ingestIdentityJson(json)
+                } catch (_: Throwable) {
+                }
+            }
+            trackJob(job)
+        }
+
+        @JavascriptInterface
+        fun onGroupRecords(json: String) {
+            val job = scope.launch(Dispatchers.Default) {
+                try {
+                    identityStore.ingestGroupRecordsJson(json, fromIndexedDb = true)
                 } catch (_: Throwable) {
                 }
             }
@@ -358,6 +495,47 @@ class DouyinWebExecutor(
                 }
             }
             trackJob(job)
+        }
+
+        @JavascriptInterface
+        fun onInitProtoChunk(txId: String, index: Int, total: Int, chunk: String) {
+            if (txId.isBlank() || total !in 1..MAX_PROTO_TOTAL_CHUNKS || index !in 0 until total) {
+                return
+            }
+            if (chunk.length > MAX_PROTO_CHUNK_CHARS) {
+                return
+            }
+            val completedPayload: String? = synchronized(protoLock) {
+                var buf = protoTransfers[txId]
+                if (buf == null) {
+                    while (protoTransfers.size >= MAX_PROTO_TRANSFERS) {
+                        val oldestKey = protoTransfers.keys.firstOrNull() ?: break
+                        protoTransfers.remove(oldestKey)
+                    }
+                    buf = ProtoTransferBuffer(total)
+                    protoTransfers[txId] = buf
+                } else if (buf.total != total) {
+                    protoTransfers.remove(txId)
+                    return@synchronized null
+                }
+                if (buf.parts[index] == null) {
+                    buf.parts[index] = chunk
+                    buf.receivedCount += 1
+                }
+                if (buf.receivedCount == buf.total) {
+                    protoTransfers.remove(txId)
+                    buildString(buf.parts.sumOf { it?.length ?: 0 }) {
+                        for (part in buf.parts) {
+                            if (part != null) append(part)
+                        }
+                    }
+                } else {
+                    null
+                }
+            }
+            if (!completedPayload.isNullOrBlank()) {
+                onInitProtoBase64(completedPayload)
+            }
         }
 
         @JavascriptInterface
@@ -390,11 +568,20 @@ class DouyinWebExecutor(
                 deferred.cancel()
             }
             pendingAsyncCalls.clear()
+            synchronized(protoLock) {
+                protoTransfers.clear()
+            }
         }
 
         private fun trackJob(job: Job) {
             pendingJobs.add(job)
             job.invokeOnCompletion { pendingJobs.remove(job) }
+        }
+
+        companion object {
+            private const val MAX_PROTO_TRANSFERS = 16
+            private const val MAX_PROTO_TOTAL_CHUNKS = 128
+            private const val MAX_PROTO_CHUNK_CHARS = 200_000
         }
     }
 
@@ -1436,6 +1623,7 @@ class DouyinWebExecutor(
             val sparkLabel: String?,
             val sparkLitToday: Boolean?,
             val hasSparkInPreview: Boolean,
+            val domConversationType: String?,
         )
 
         val discovered = LinkedHashMap<String, RawScannedRow>()
@@ -1475,8 +1663,20 @@ class DouyinWebExecutor(
                         iconVariants.add(variant)
                     }
                 }
+                val domGroupId = row.stringOrNull("domGroupId")
+                val domGroupTitle = row.stringOrNull("domGroupTitle")
+                if (domGroupId != null && domGroupTitle != null) {
+                    session.identityStore.ingestGroupRecord(
+                        rawConversationId = domGroupId,
+                        rawTitle = domGroupTitle,
+                        fromDom = true,
+                    )
+                }
+                val domConversationType = row.stringOrNull("domConversationType")
+                    ?.takeIf { it == "group" || it == "friend" }
                 val title = row.stringOrNull("title") ?: continue
-                if (!discovered.containsKey(title)) {
+                val existingRow = discovered[title]
+                if (existingRow == null) {
                     val sparkDays = row.intOrNull("streakDays")
                     val sparkLabel = row.stringOrNull("streakLabel")
                     val sparkKind = row.stringOrNull("streakKind")
@@ -1497,7 +1697,10 @@ class DouyinWebExecutor(
                         sparkLabel = sparkLabel,
                         sparkLitToday = sparkLitToday,
                         hasSparkInPreview = row.boolOrDefault("hasSparkInPreview", false),
+                        domConversationType = domConversationType,
                     )
+                } else if (existingRow.domConversationType == null && domConversationType != null) {
+                    discovered[title] = existingRow.copy(domConversationType = domConversationType)
                 }
             }
 
@@ -1528,6 +1731,7 @@ class DouyinWebExecutor(
             val (convType, matchStatus, pUserId, pHandle, pConvId, matchDetail) = resolveCandidateIdentity(
                 userMatch = userMatch,
                 groupMatch = groupMatch,
+                domConversationType = row.domConversationType,
             )
 
             val activeMatch = matchExistingTarget(
@@ -1582,11 +1786,12 @@ class DouyinWebExecutor(
             candidates = sortedCandidates,
         )
         val variantsSummary = if (iconVariants.isEmpty()) "none" else iconVariants.joinToString(",")
+        val idStats = session.identityStore.stats()
         DiagnosticLogStore.recordGlobal(
             category = "SCAN",
             event = "scan_done",
             level = "INFO",
-            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount iconVariants=$variantsSummary",
+            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount users=${idStats.users} groups=${idStats.groups} protoHits=${idStats.protoHits} idbGroups=${idStats.idbGroups} domGroups=${idStats.domGroups} iconVariants=$variantsSummary",
             accountTag = accountTag,
         )
         return ScanExecutionResult.Success(
@@ -2058,7 +2263,15 @@ class DouyinWebExecutor(
 
                 expectedConversationId != null -> {
                     val lookupLabel = if (normalizedPrimary == normalizedTarget) targetName else (primary ?: "")
-                    val ids = session.identityStore.groupIdsForLabel(lookupLabel)
+                    var ids = session.identityStore.groupIdsForLabel(lookupLabel)
+                    if (ids.isEmpty() && !session.cachedIdentitiesLoaded) {
+                        loadIndexedDbIdentitiesOnce(session)
+                        ids = session.identityStore.groupIdsForLabel(lookupLabel)
+                    }
+                    if (ids.isEmpty()) {
+                        collectVisibleDomGroupIdentities(session, bundle)
+                        ids = session.identityStore.groupIdsForLabel(lookupLabel)
+                    }
                     if (ids == setOf(expectedConversationId)) {
                         return OpenConversationResult(
                             opened = true,
@@ -2081,8 +2294,15 @@ class DouyinWebExecutor(
                         if (!session.cachedIdentitiesLoaded) {
                             loadIndexedDbIdentitiesOnce(session)
                         }
-                        val userMatch = session.identityStore.matchUser(targetName)
-                        val groupMatch = session.identityStore.matchGroup(targetName)
+                        var userMatch = session.identityStore.matchUser(targetName)
+                        var groupMatch = session.identityStore.matchGroup(targetName)
+                        if (userMatch.status == MatchStatus.NOT_OBSERVED &&
+                            groupMatch.status == MatchStatus.NOT_OBSERVED
+                        ) {
+                            collectVisibleDomGroupIdentities(session, bundle)
+                            userMatch = session.identityStore.matchUser(targetName)
+                            groupMatch = session.identityStore.matchGroup(targetName)
+                        }
                         val isAmbiguous = userMatch.status == MatchStatus.AMBIGUOUS ||
                             groupMatch.status == MatchStatus.AMBIGUOUS ||
                             (userMatch.status == MatchStatus.BOUND && groupMatch.status == MatchStatus.BOUND)
@@ -2224,7 +2444,7 @@ class DouyinWebExecutor(
                 callId = callId,
             )
             evalJsRaw(session.webView, script)
-            val json = withTimeoutOrNull(3_000L) { deferred.await() }
+            val json = withTimeoutOrNull(4_500L) { deferred.await() }
             if (!json.isNullOrBlank()) {
                 session.identityStore.ingestIdentityJson(json)
             }
@@ -2233,6 +2453,28 @@ class DouyinWebExecutor(
         } catch (_: Throwable) {
         } finally {
             session.bridge.cancelAsyncCall(callId)
+        }
+    }
+
+    private suspend fun collectVisibleDomGroupIdentities(
+        session: SessionHandle,
+        bundle: SelectorBundle,
+    ) {
+        try {
+            val obj = evalObject(session.webView, DouyinJsScripts.buildCollectVisibleGroupIdentitiesJs(bundle))
+            val groups = obj?.get("groups") as? List<*> ?: return
+            for (raw in groups) {
+                @Suppress("UNCHECKED_CAST")
+                val entry = raw as? Map<String, Any?> ?: continue
+                session.identityStore.ingestGroupRecord(
+                    rawConversationId = entry.stringOrNull("platform_conversation_id"),
+                    rawTitle = entry.stringOrNull("title"),
+                    fromDom = true,
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
         }
     }
 
@@ -2312,7 +2554,7 @@ class DouyinWebExecutor(
         return ExecJson.unwrapEvaluateResult(raw) as? Map<String, Any?>
     }
 
-    private data class CandidateIdentityTuple(
+    internal data class CandidateIdentityTuple(
         val conversationType: String,
         val matchStatus: MatchStatus,
         val platformUserId: String?,
@@ -2320,70 +2562,6 @@ class DouyinWebExecutor(
         val platformConversationId: String?,
         val matchDetail: String?,
     )
-
-    private fun resolveCandidateIdentity(
-        userMatch: IdentityMatch,
-        groupMatch: ConversationMatch,
-    ): CandidateIdentityTuple {
-        if (groupMatch.status == MatchStatus.BOUND && userMatch.status == MatchStatus.BOUND) {
-            return CandidateIdentityTuple(
-                conversationType = "friend",
-                matchStatus = MatchStatus.AMBIGUOUS,
-                platformUserId = null,
-                platformHandle = null,
-                platformConversationId = null,
-                matchDetail = "同名同时命中好友与群聊，已阻止自动绑定",
-            )
-        }
-        if (groupMatch.status == MatchStatus.AMBIGUOUS) {
-            return CandidateIdentityTuple(
-                conversationType = "group",
-                matchStatus = MatchStatus.AMBIGUOUS,
-                platformUserId = null,
-                platformHandle = null,
-                platformConversationId = null,
-                matchDetail = groupMatch.detail,
-            )
-        }
-        if (groupMatch.status == MatchStatus.BOUND) {
-            return CandidateIdentityTuple(
-                conversationType = "group",
-                matchStatus = MatchStatus.BOUND,
-                platformUserId = null,
-                platformHandle = null,
-                platformConversationId = groupMatch.platformConversationId,
-                matchDetail = groupMatch.detail,
-            )
-        }
-        if (userMatch.status == MatchStatus.AMBIGUOUS) {
-            return CandidateIdentityTuple(
-                conversationType = "friend",
-                matchStatus = MatchStatus.AMBIGUOUS,
-                platformUserId = null,
-                platformHandle = null,
-                platformConversationId = null,
-                matchDetail = userMatch.detail,
-            )
-        }
-        if (userMatch.status == MatchStatus.BOUND) {
-            return CandidateIdentityTuple(
-                conversationType = "friend",
-                matchStatus = MatchStatus.BOUND,
-                platformUserId = userMatch.platformUserId,
-                platformHandle = userMatch.platformHandle,
-                platformConversationId = null,
-                matchDetail = userMatch.detail,
-            )
-        }
-        return CandidateIdentityTuple(
-            conversationType = "friend",
-            matchStatus = MatchStatus.NOT_OBSERVED,
-            platformUserId = null,
-            platformHandle = null,
-            platformConversationId = null,
-            matchDetail = userMatch.detail,
-        )
-    }
 
     private fun matchExistingTarget(
         displayName: String,
@@ -2406,11 +2584,15 @@ class DouyinWebExecutor(
         }
 
         val normalizedDisplay = IdentityDisambiguator.normalizeLabel(displayName)
+        val knownType = conversationType.takeIf { it == "friend" || it == "group" }
         for (target in targets) {
             if (IdentityDisambiguator.normalizeLabel(target.nicknameSnapshot) != normalizedDisplay) {
                 continue
             }
-            if (!target.conversationType.isNullOrBlank() && target.conversationType != conversationType) {
+            if (!target.conversationType.isNullOrBlank() &&
+                knownType != null &&
+                target.conversationType != knownType
+            ) {
                 continue
             }
             if (!target.platformUserId.isNullOrBlank() && platformUserId != null &&
@@ -2490,6 +2672,77 @@ class DouyinWebExecutor(
 
     companion object {
         private const val TAG = "FlameImageExec"
+
+        internal fun resolveCandidateIdentity(
+            userMatch: IdentityMatch,
+            groupMatch: ConversationMatch,
+            domConversationType: String? = null,
+        ): CandidateIdentityTuple {
+            val cleanDomType = domConversationType?.takeIf { it == "group" || it == "friend" }
+            if (groupMatch.status == MatchStatus.BOUND && userMatch.status == MatchStatus.BOUND) {
+                return CandidateIdentityTuple(
+                    conversationType = cleanDomType ?: "unknown",
+                    matchStatus = MatchStatus.AMBIGUOUS,
+                    platformUserId = null,
+                    platformHandle = null,
+                    platformConversationId = null,
+                    matchDetail = "同名同时命中好友与群聊，已阻止自动绑定",
+                )
+            }
+            if (groupMatch.status == MatchStatus.AMBIGUOUS) {
+                return CandidateIdentityTuple(
+                    conversationType = "group",
+                    matchStatus = MatchStatus.AMBIGUOUS,
+                    platformUserId = null,
+                    platformHandle = null,
+                    platformConversationId = null,
+                    matchDetail = groupMatch.detail,
+                )
+            }
+            if (groupMatch.status == MatchStatus.BOUND) {
+                return CandidateIdentityTuple(
+                    conversationType = "group",
+                    matchStatus = MatchStatus.BOUND,
+                    platformUserId = null,
+                    platformHandle = null,
+                    platformConversationId = groupMatch.platformConversationId,
+                    matchDetail = groupMatch.detail,
+                )
+            }
+            if (userMatch.status == MatchStatus.AMBIGUOUS) {
+                return CandidateIdentityTuple(
+                    conversationType = "friend",
+                    matchStatus = MatchStatus.AMBIGUOUS,
+                    platformUserId = null,
+                    platformHandle = null,
+                    platformConversationId = null,
+                    matchDetail = userMatch.detail,
+                )
+            }
+            if (userMatch.status == MatchStatus.BOUND) {
+                return CandidateIdentityTuple(
+                    conversationType = "friend",
+                    matchStatus = MatchStatus.BOUND,
+                    platformUserId = userMatch.platformUserId,
+                    platformHandle = userMatch.platformHandle,
+                    platformConversationId = null,
+                    matchDetail = userMatch.detail,
+                )
+            }
+            val fallbackDetail = when (cleanDomType) {
+                "group" -> "本次扫描未观察到该群聊的稳定会话 ID，可导入后补采身份"
+                "friend" -> userMatch.detail
+                else -> "本次扫描未观察到带此名称的好友或群聊稳定身份数据"
+            }
+            return CandidateIdentityTuple(
+                conversationType = cleanDomType ?: "unknown",
+                matchStatus = MatchStatus.NOT_OBSERVED,
+                platformUserId = null,
+                platformHandle = null,
+                platformConversationId = null,
+                matchDetail = fallbackDetail,
+            )
+        }
         private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
         private const val CONVERSATION_LIST_HYDRATION_DELAY_MS = 1_000L
         private const val SEARCH_RESULTS_TIMEOUT_MS = 12_000L

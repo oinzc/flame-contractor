@@ -749,6 +749,7 @@ class TargetsViewModel(
                     (c.sparkLitToday == false && (rq == "待续" || rq == "灰火")) ||
                     (c.sparkDays != null && "${c.sparkDays}天".contains(rq, ignoreCase = true)) ||
                     (c.conversationType == "group" && (rq == "群" || rq == "群聊")) ||
+                    (c.conversationType == "friend" && rq == "好友") ||
                     (ui.isAmbiguous && (rq == "冲突" || rq == "同名"))
             }
         }
@@ -937,8 +938,13 @@ class TargetsViewModel(
                         val pUserId = if (isBound) candidate.platformUserId?.trim()?.takeIf { it.isNotEmpty() } else null
                         val pHandle = if (isBound) candidate.platformHandle?.trim()?.takeIf { it.isNotEmpty() } else null
                         val pConvId = if (isBound) candidate.platformConversationId?.trim()?.takeIf { it.isNotEmpty() } else null
-                        val convType = candidate.conversationType.trim().takeIf { it.isNotEmpty() }
-                            ?: if (pConvId != null) "group" else "friend"
+                        val convType = candidate.conversationType.trim()
+                            .takeIf { it == "group" || it == "friend" }
+                            ?: when {
+                                pConvId != null -> "group"
+                                pUserId != null -> "friend"
+                                else -> null
+                            }
 
                         try {
                             val byUserId = pUserId?.let {

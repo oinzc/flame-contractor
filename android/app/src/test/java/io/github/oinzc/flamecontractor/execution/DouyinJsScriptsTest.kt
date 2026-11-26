@@ -1,7 +1,16 @@
 package io.github.oinzc.flamecontractor.execution
 
+import io.github.oinzc.flamecontractor.core.identity.ConversationMatch
+import io.github.oinzc.flamecontractor.core.identity.IdentityMatch
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundle
+import java.io.ByteArrayOutputStream
+import java.math.BigInteger
+import java.util.Base64
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -34,8 +43,178 @@ class DouyinJsScriptsTest {
 
         assertTrue(script.contains("stores.forEach"))
         assertTrue(script.contains("ev.target.result"))
+        assertTrue(script.contains("onGroupRecords"))
+        assertTrue(script.contains("inspectNodeForGroup"))
         assertFalse(script.contains("var allReq"))
         assertFalse(Regex("""for\s*\(\s*var\b""").containsMatchIn(script))
+    }
+
+    @Test
+    fun documentStartAndScanScriptsSupportChunkedProtoMultiEndpointsAndReactGroupFallback() {
+        val docStartJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+        assertTrue(docStartJs.contains("/v1/message/get_message_by_init"))
+        assertTrue(docStartJs.contains("/v1/conversation/get_info_list_v2"))
+        assertTrue(docStartJs.contains("/v1/conversation/get_user_conversation_list"))
+        assertTrue(docStartJs.contains("onInitProtoChunk"))
+        assertTrue(docStartJs.contains("PROTO_BRIDGE_CHUNK_SIZE"))
+        assertTrue(docStartJs.contains("ArrayBuffer.isView"))
+
+        val bundle = SelectorBundle.defaults()
+        val scanJs = DouyinJsScripts.buildScrollAndCollectChatsJs(bundle)
+        assertTrue(scanJs.contains("__flameInspectRowReactGroup"))
+        assertTrue(scanJs.contains("domConversationType"))
+        assertTrue(scanJs.contains("domGroupId"))
+        assertTrue(scanJs.contains("domGroupTitle"))
+
+        val visibleGroupJs = DouyinJsScripts.buildCollectVisibleGroupIdentitiesJs(bundle)
+        assertTrue(visibleGroupJs.contains("__flameInspectRowReactGroup"))
+        assertTrue(visibleGroupJs.contains("platform_conversation_id"))
+    }
+
+    @Test
+    fun flameBridgeChunkedProtoAndIndexedDbGroupIngestionValidateStrictlyAndDetectAmbiguity() = runTest {
+        val store = DouyinWebExecutor.IdentityStore()
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val bridge = DouyinWebExecutor.FlameBridge(store, bridgeScope)
+
+            // 1) 分片 protobuf（乱序到达）重组后准确解析群聊 ID
+            val protoPayload = buildTestGroupProto(
+                "7310000000000000101" to "测试群甲",
+                "7310000000000000102" to "测试群乙",
+            )
+            val b64 = Base64.getEncoder().encodeToString(protoPayload)
+            val mid = b64.length / 2
+            bridge.onInitProtoChunk("tx-1", 1, 2, b64.substring(mid))
+            bridge.onInitProtoChunk("tx-1", 0, 2, b64.substring(0, mid))
+            bridge.awaitPendingJobs(2_000L)
+
+            val matchA = store.matchGroup("测试群甲")
+            assertEquals(MatchStatus.BOUND, matchA.status)
+            assertEquals("7310000000000000101", matchA.platformConversationId)
+            assertEquals(setOf("7310000000000000102"), store.groupIdsForLabel("测试群乙"))
+
+            // 2) IndexedDB 结构化 { users, groups } 注入：接受有效群与 0:2:<id>，拒绝 0:1:<id> 单聊和短 ID
+            val idbJson = """
+                {
+                  "users": [
+                    {"sec_uid": "sec_friend_1", "nickname": "老友甲", "remark_name": "铁哥们"}
+                  ],
+                  "groups": [
+                    {"platform_conversation_id": "0:2:7310000000000000201", "title": "车友会", "conversation_type": "group"},
+                    {"platform_conversation_id": "0:1:7310000000000000202", "title": "伪装群聊", "conversation_type": "group"},
+                    {"platform_conversation_id": "12345", "title": "过短编号群", "conversation_type": "group"},
+                    {"platform_conversation_id": "7310000000000000203", "title": "车友会", "conversation_type": "friend"}
+                  ]
+                }
+            """.trimIndent()
+            store.ingestIdentityJson(idbJson)
+
+            assertEquals(MatchStatus.BOUND, store.matchUser("铁哥们").status)
+            val clubMatch = store.matchGroup("车友会")
+            assertEquals(MatchStatus.BOUND, clubMatch.status)
+            assertEquals("7310000000000000201", clubMatch.platformConversationId)
+            assertEquals(MatchStatus.NOT_OBSERVED, store.matchGroup("伪装群聊").status)
+            assertEquals(MatchStatus.NOT_OBSERVED, store.matchGroup("过短编号群").status)
+
+            // 3) DOM React 补充同名不同 ID 群聊时仍严格触发 AMBIGUOUS，绝不猜测绑定
+            assertTrue(store.ingestGroupRecord("7310000000000000299", "车友会", fromDom = true))
+            val ambigClub = store.matchGroup("车友会")
+            assertEquals(MatchStatus.AMBIGUOUS, ambigClub.status)
+            assertNull(ambigClub.platformConversationId)
+
+            val stats = store.stats()
+            assertEquals(1, stats.users)
+            assertEquals(4, stats.groups)
+            assertEquals(1, stats.protoHits)
+            assertEquals(1, stats.idbGroups)
+            assertEquals(1, stats.domGroups)
+        } finally {
+            bridgeScope.cancel()
+        }
+    }
+
+    @Test
+    fun resolveCandidateIdentityDoesNotMislabelUnobservedGroupAsFriend() {
+        val noUser = IdentityMatch(status = MatchStatus.NOT_OBSERVED, detail = "未观察到用户")
+        val noGroup = ConversationMatch(status = MatchStatus.NOT_OBSERVED, detail = "未观察到群")
+
+        // 双方均未观察到且无 DOM 线索 -> conversationType = "unknown"（不再错误标为 friend）
+        val unknown = DouyinWebExecutor.resolveCandidateIdentity(noUser, noGroup, domConversationType = null)
+        assertEquals("unknown", unknown.conversationType)
+        assertEquals(MatchStatus.NOT_OBSERVED, unknown.matchStatus)
+        assertNull(unknown.platformUserId)
+        assertNull(unknown.platformConversationId)
+
+        // DOM 明确观察到群聊但无稳定 ID -> conversationType = "group" + NOT_OBSERVED
+        val unobservedGroup = DouyinWebExecutor.resolveCandidateIdentity(noUser, noGroup, domConversationType = "group")
+        assertEquals("group", unobservedGroup.conversationType)
+        assertEquals(MatchStatus.NOT_OBSERVED, unobservedGroup.matchStatus)
+        assertTrue(unobservedGroup.matchDetail.orEmpty().contains("群聊"))
+
+        // 群聊唯一匹配 -> conversationType = "group" + BOUND
+        val boundGroup = DouyinWebExecutor.resolveCandidateIdentity(
+            noUser,
+            ConversationMatch(
+                status = MatchStatus.BOUND,
+                platformConversationId = "7310000000000000301",
+                conversationType = "group",
+                candidateCount = 1,
+                detail = "通过群会话 ID 唯一匹配群聊",
+            ),
+        )
+        assertEquals("group", boundGroup.conversationType)
+        assertEquals(MatchStatus.BOUND, boundGroup.matchStatus)
+        assertEquals("7310000000000000301", boundGroup.platformConversationId)
+
+        // 同名同时命中好友与群聊 -> AMBIGUOUS
+        val bothBound = DouyinWebExecutor.resolveCandidateIdentity(
+            IdentityMatch(status = MatchStatus.BOUND, platformUserId = "sec_u1", candidateCount = 1),
+            ConversationMatch(status = MatchStatus.BOUND, platformConversationId = "7310000000000000302", candidateCount = 1),
+        )
+        assertEquals(MatchStatus.AMBIGUOUS, bothBound.matchStatus)
+        assertEquals("unknown", bothBound.conversationType)
+        assertNull(bothBound.platformUserId)
+        assertNull(bothBound.platformConversationId)
+    }
+
+    private fun buildTestGroupProto(vararg groups: Pair<String, String>): ByteArray {
+        fun encodeVarint(v: BigInteger): ByteArray {
+            val out = ByteArrayOutputStream()
+            var rem = v
+            val mask = BigInteger.valueOf(0x7FL)
+            val threshold = BigInteger.valueOf(0x80L)
+            while (rem >= threshold) {
+                out.write(rem.and(mask).toInt() or 0x80)
+                rem = rem.shiftRight(7)
+            }
+            out.write(rem.toInt())
+            return out.toByteArray()
+        }
+        fun bytesField(fieldNo: Int, bytes: ByteArray): ByteArray {
+            val out = ByteArrayOutputStream()
+            out.write(encodeVarint(BigInteger.valueOf((fieldNo.toLong() shl 3) or 2L)))
+            out.write(encodeVarint(BigInteger.valueOf(bytes.size.toLong())))
+            out.write(bytes)
+            return out.toByteArray()
+        }
+        fun varintField(fieldNo: Int, value: BigInteger): ByteArray {
+            val out = ByteArrayOutputStream()
+            out.write(encodeVarint(BigInteger.valueOf(fieldNo.toLong() shl 3)))
+            out.write(encodeVarint(value))
+            return out.toByteArray()
+        }
+        val out = ByteArrayOutputStream()
+        for ((id, title) in groups) {
+            val rec = ByteArrayOutputStream().apply {
+                write(bytesField(1, id.toByteArray(Charsets.US_ASCII)))
+                write(varintField(2, BigInteger(id)))
+                write(varintField(3, BigInteger.TWO))
+                write(bytesField(5, title.toByteArray(Charsets.UTF_8)))
+            }.toByteArray()
+            out.write(bytesField(50, rec))
+        }
+        return out.toByteArray()
     }
 
     @Test

@@ -1008,7 +1008,13 @@ private fun TargetActionDetailSheet(
         else -> "未绑稳定身份"
     }
     val headerSubtitle = buildString {
-        append(if (target.conversationType == "group") "群聊" else "好友")
+        append(
+            when (target.conversationType) {
+                "group" -> "群聊"
+                "friend" -> "好友"
+                else -> "会话"
+            },
+        )
         if (!target.platformHandle.isNullOrBlank()) {
             append(" · @")
             append(target.platformHandle)

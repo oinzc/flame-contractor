@@ -433,7 +433,14 @@ object DouyinJsScripts {
                   '/aweme/v1/web/user/profile/scene'
                 ];
                 var PROTO_PATHS = [
-                  '/v1/message/get_message_by_init'
+                  '/v1/message/get_message_by_init',
+                  '/v2/message/get_by_user_init',
+                  '/v1/message/get_message_by_user',
+                  '/v1/conversation/get_info_v2',
+                  '/v1/conversation/get_info_list_v2',
+                  '/v2/conversation/get_info_list',
+                  '/v1/conversation/get_user_conversation_list',
+                  '/v1/conversation/get_info'
                 ];
                 $qrHookDecl
 
@@ -524,8 +531,14 @@ object DouyinJsScripts {
                 }
 
                 function arrayBufferToBase64Chunked(buffer) {
-                  if (!buffer || !buffer.byteLength) return '';
-                  var bytes = new Uint8Array(buffer);
+                  if (!buffer) return '';
+                  var bytes = null;
+                  if (buffer instanceof ArrayBuffer) {
+                    bytes = new Uint8Array(buffer);
+                  } else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(buffer)) {
+                    bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+                  }
+                  if (!bytes || !bytes.length) return '';
                   var chunkSize = 0x8000;
                   var chunks = [];
                   for (var i = 0; i < bytes.length; i += chunkSize) {
@@ -535,12 +548,24 @@ object DouyinJsScripts {
                   return btoa(chunks.join(''));
                 }
 
+                var PROTO_BRIDGE_CHUNK_SIZE = 96 * 1024;
+                var protoTxSeq = 0;
+
                 function emitProtoBuffer(buffer) {
                   try {
                     var bridge = getBridge();
-                    if (!bridge || typeof bridge.onInitProtoBase64 !== 'function') return;
+                    if (!bridge) return;
                     var b64 = arrayBufferToBase64Chunked(buffer);
-                    if (b64) {
+                    if (!b64) return;
+                    if (b64.length > PROTO_BRIDGE_CHUNK_SIZE && typeof bridge.onInitProtoChunk === 'function') {
+                      protoTxSeq += 1;
+                      var txId = String(Date.now()) + '_' + String(protoTxSeq);
+                      var total = Math.ceil(b64.length / PROTO_BRIDGE_CHUNK_SIZE);
+                      for (var idx = 0; idx < total; idx++) {
+                        var part = b64.slice(idx * PROTO_BRIDGE_CHUNK_SIZE, (idx + 1) * PROTO_BRIDGE_CHUNK_SIZE);
+                        bridge.onInitProtoChunk(txId, idx, total, part);
+                      }
+                    } else if (typeof bridge.onInitProtoBase64 === 'function') {
                       bridge.onInitProtoBase64(b64);
                     }
                   } catch (_) {}
@@ -693,7 +718,9 @@ object DouyinJsScripts {
                                 emitIdentityPayload(JSON.parse(this.responseText));
                               }
                             } else if (protoMatch) {
-                              if (this.responseType === 'arraybuffer' && this.response) {
+                              if (this.response instanceof ArrayBuffer) {
+                                emitProtoBuffer(this.response);
+                              } else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(this.response)) {
                                 emitProtoBuffer(this.response);
                               } else if (this.responseType === 'blob' && this.response && typeof this.response.arrayBuffer === 'function') {
                                 this.response.arrayBuffer().then(function (buf) {
@@ -748,8 +775,9 @@ object DouyinJsScripts {
     """.trimIndent()
 
     /**
-     * 只读读取浏览器 IndexedDB 中缓存的用户身份记录（每个 store 独立闭包与 `ev.target.result`，
+     * 只读读取浏览器 IndexedDB 中缓存的用户身份与群聊会话记录（每个 store 独立闭包与 `ev.target.result`，
      * 彻底避免在循环内共享句柄导致 `InvalidStateError`）。
+     * 返回 `{ users: [...], groups: [...] }`，同时通过 bridge 回调通知用户与群聊记录。
      */
     fun buildReadIndexedDbIdentitiesJs(
         bridgeName: String = DEFAULT_BRIDGE_NAME,
@@ -759,38 +787,97 @@ object DouyinJsScripts {
         val callIdLiteral = if (callId != null) jsStringLiteral(callId) else "null"
         return """
             (function () {
-              var BRIDGE_NAME = $bridgeLiteral;
-              var CALL_ID = $callIdLiteral;
+              const BRIDGE_NAME = $bridgeLiteral;
+              const CALL_ID = $callIdLiteral;
 
-              function notifyResult(records) {
-                var json = '[]';
-                try { json = JSON.stringify(records || []); } catch (_) {}
+              function notifyResult(payload) {
+                const safePayload = payload && typeof payload === 'object'
+                  ? {
+                      users: Array.isArray(payload.users) ? payload.users : [],
+                      groups: Array.isArray(payload.groups) ? payload.groups : []
+                    }
+                  : { users: [], groups: [] };
+                let json = '{"users":[],"groups":[]}';
+                try { json = JSON.stringify(safePayload); } catch (_) {}
                 try {
-                  var bridge = window[BRIDGE_NAME];
-                  if (bridge && typeof bridge.onIdentityRecords === 'function' && records && records.length > 0) {
-                    bridge.onIdentityRecords(json);
+                  const bridge = window[BRIDGE_NAME];
+                  if (bridge && typeof bridge.onIdentityRecords === 'function' && safePayload.users.length > 0) {
+                    bridge.onIdentityRecords(JSON.stringify(safePayload.users));
+                  }
+                  if (bridge && typeof bridge.onGroupRecords === 'function' && safePayload.groups.length > 0) {
+                    bridge.onGroupRecords(JSON.stringify(safePayload.groups));
                   }
                   if (CALL_ID && bridge && typeof bridge.onAsyncResult === 'function') {
                     bridge.onAsyncResult(CALL_ID, json);
                   }
                 } catch (_) {}
-                return records || [];
+                return safePayload;
               }
 
               if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') {
-                return Promise.resolve(notifyResult([]));
+                return Promise.resolve(notifyResult({ users: [], groups: [] }));
               }
 
               function pickStr(v, keys) {
+                if (!v || typeof v !== 'object') return null;
                 for (let i = 0; i < keys.length; i++) {
                   const val = v[keys[i]];
                   if (typeof val === 'string' && val.trim()) return val.trim();
                   if (typeof val === 'number' && isFinite(val)) return String(val);
+                  if (typeof val === 'bigint') return val.toString();
+                  if (val && typeof val === 'object' && typeof val.toString === 'function') {
+                    try {
+                      const s = String(val.toString()).trim();
+                      if (s && s !== '[object Object]') return s;
+                    } catch (_) {}
+                  }
                 }
                 return null;
               }
 
-              function pickRecord(item) {
+              function pickRawField(v, keys) {
+                if (!v || typeof v !== 'object') return undefined;
+                for (let i = 0; i < keys.length; i++) {
+                  if (v[keys[i]] !== undefined && v[keys[i]] !== null) return v[keys[i]];
+                }
+                return undefined;
+              }
+
+              function isValidTitle(raw) {
+                if (typeof raw !== 'string') return false;
+                const t = raw.trim();
+                if (!t || t.length > 80) return false;
+                return !/[\x00-\x1F\x7F]/.test(t);
+              }
+
+              function extractGroupConversationId(rawId, isExplicitGroup, isExplicitSingle) {
+                if (typeof rawId !== 'string') return null;
+                const s = rawId.trim();
+                if (!s) return null;
+                if (isExplicitSingle) return null;
+                if (/^\d{15,25}$/.test(s)) {
+                  return isExplicitGroup ? s : null;
+                }
+                const colonMatch = s.match(/^\d{1,4}:(\d+):(\d{15,25})$/);
+                if (colonMatch && colonMatch[1] === '2') {
+                  return colonMatch[2];
+                }
+                return null;
+              }
+
+              function tryParseJsonObject(raw) {
+                if (typeof raw !== 'string') return null;
+                const trimmed = raw.trim();
+                if (trimmed.length < 2 || trimmed.length > 16384 || trimmed.charAt(0) !== '{') return null;
+                try {
+                  const parsed = JSON.parse(trimmed);
+                  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+                } catch (_) {
+                  return null;
+                }
+              }
+
+              function pickUserRecord(item) {
                 if (!item || typeof item !== 'object') return null;
                 const v = (item.value && typeof item.value === 'object') ? item.value : item;
                 if (!v || typeof v !== 'object') return null;
@@ -807,50 +894,191 @@ object DouyinJsScripts {
                 };
               }
 
+              function inspectNodeForGroup(node) {
+                if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+                const coreRaw = node.coreInfo || node.core_info || node.core || null;
+                const core = (typeof coreRaw === 'string') ? tryParseJsonObject(coreRaw) : ((coreRaw && typeof coreRaw === 'object') ? coreRaw : null);
+                const typeVal = pickRawField(node, ['type', 'conversationType', 'conversation_type', 'convType', 'conv_type', 'chatType', 'chat_type']);
+                const coreTypeVal = core ? pickRawField(core, ['type', 'conversationType', 'conversation_type', 'convType', 'conv_type']) : undefined;
+                const effType = typeVal !== undefined ? typeVal : coreTypeVal;
+                const typeStr = effType !== undefined && effType !== null ? String(effType).trim().toLowerCase() : '';
+                const isExplicitSingle = (effType === 1 || typeStr === '1' || typeStr === 'single' || typeStr === 'one_to_one' || typeStr === 'friend' || typeStr === 'private');
+                const isExplicitGroup = !isExplicitSingle && (
+                  effType === 2 ||
+                  typeStr === '2' ||
+                  typeStr === 'group' ||
+                  node.isGroup === true ||
+                  node.is_group === true ||
+                  (core && (core.isGroup === true || core.is_group === true))
+                );
+
+                const idKeys = [
+                  'conversationShortId', 'conversation_short_id',
+                  'shortId', 'short_id',
+                  'convShortId', 'conv_short_id',
+                  'conversationId', 'conversation_id',
+                  'convId', 'conv_id',
+                  'id'
+                ];
+                let convId = null;
+                const idSources = core ? [node, core] : [node];
+                for (let sIdx = 0; sIdx < idSources.length && !convId; sIdx++) {
+                  const src = idSources[sIdx];
+                  for (let kIdx = 0; kIdx < idKeys.length; kIdx++) {
+                    const candidate = pickStr(src, [idKeys[kIdx]]);
+                    if (!candidate) continue;
+                    const extracted = extractGroupConversationId(candidate, isExplicitGroup, isExplicitSingle);
+                    if (extracted) {
+                      convId = extracted;
+                      break;
+                    }
+                  }
+                }
+                if (!convId) return null;
+
+                const titleKeys = [
+                  'name', 'title',
+                  'groupName', 'group_name',
+                  'convName', 'conv_name',
+                  'conversationName', 'conversation_name',
+                  'displayName', 'display_name'
+                ];
+                const rawTitle = (core ? pickStr(core, titleKeys) : null) || pickStr(node, titleKeys);
+                if (!isValidTitle(rawTitle)) return null;
+                return {
+                  platform_conversation_id: convId,
+                  title: rawTitle.trim(),
+                  conversation_type: 'group'
+                };
+              }
+
+              function collectGroupsFromRow(row, outGroups) {
+                if (!row) return;
+                const root = (typeof row === 'string') ? tryParseJsonObject(row) : row;
+                if (!root || typeof root !== 'object') return;
+                const queue = [{ obj: root, depth: 0 }];
+                let visited = 0;
+                const seen = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+                const nestedKeys = ['value', 'data', 'conversation', 'conv', 'info', 'coreInfo', 'core_info', 'item', 'session', 'record', 'conversations', 'list', 'items'];
+                while (queue.length > 0 && visited < 40) {
+                  const cur = queue.shift();
+                  if (!cur || !cur.obj || typeof cur.obj !== 'object') continue;
+                  if (seen) {
+                    if (seen.has(cur.obj)) continue;
+                    seen.add(cur.obj);
+                  }
+                  visited += 1;
+                  if (Array.isArray(cur.obj)) {
+                    if (cur.depth < 3) {
+                      const lim = Math.min(cur.obj.length, 30);
+                      for (let i = 0; i < lim; i++) {
+                        if (cur.obj[i] && typeof cur.obj[i] === 'object') {
+                          queue.push({ obj: cur.obj[i], depth: cur.depth + 1 });
+                        }
+                      }
+                    }
+                    continue;
+                  }
+                  const hit = inspectNodeForGroup(cur.obj);
+                  if (hit) {
+                    outGroups.push(hit);
+                    continue;
+                  }
+                  if (cur.depth < 3) {
+                    for (let k = 0; k < nestedKeys.length; k++) {
+                      const childRaw = cur.obj[nestedKeys[k]];
+                      if (!childRaw) continue;
+                      const childObj = (typeof childRaw === 'string') ? tryParseJsonObject(childRaw) : childRaw;
+                      if (childObj && typeof childObj === 'object') {
+                        queue.push({ obj: childObj, depth: cur.depth + 1 });
+                      }
+                    }
+                  }
+                }
+              }
+
+              function shouldSkipDb(dbName) {
+                if (typeof dbName !== 'string' || !dbName.trim()) return true;
+                const lower = dbName.toLowerCase();
+                return lower.indexOf('workbox') === 0 ||
+                  lower.indexOf('firebase') === 0 ||
+                  lower.indexOf('sentry') === 0 ||
+                  lower.indexOf('slardar') === 0 ||
+                  lower.indexOf('alog') !== -1 ||
+                  lower.indexOf('bd_log') !== -1;
+              }
+
+              function classifyStoreLimit(storeName, isUserDb) {
+                if (isUserDb) return 2500;
+                const lower = String(storeName || '').toLowerCase();
+                const priorityTokens = ['conv', 'group', 'session', 'room', 'chat', 'user', 'profile', 'member', 'contact', 'friend', 'core', 'info'];
+                for (let i = 0; i < priorityTokens.length; i++) {
+                  if (lower.indexOf(priorityTokens[i]) !== -1) return 2000;
+                }
+                const skipTokens = ['message', 'msg', 'log', 'event', 'metric', 'stat', 'report', 'media', 'blob', 'file', 'chunk', 'image', 'video', 'audio', 'sticker', 'emoji', 'draft', 'ack', 'cursor', 'sync'];
+                for (let j = 0; j < skipTokens.length; j++) {
+                  if (lower.indexOf(skipTokens[j]) !== -1) return 0;
+                }
+                return 400;
+              }
+
               function readOneDb(dbName) {
                 return new Promise(function (resolve) {
                   let settled = false;
-                  const finish = function (rows) {
+                  const finish = function (res) {
                     if (!settled) {
                       settled = true;
-                      resolve(rows || []);
+                      resolve(res || { users: [], groups: [] });
                     }
                   };
-                  const timer = setTimeout(function () { finish([]); }, 1500);
+                  const timer = setTimeout(function () { finish({ users: [], groups: [] }); }, 2000);
+                  const isUserDb = dbName.toLowerCase().indexOf('user') !== -1;
                   try {
                     const openReq = indexedDB.open(dbName);
-                    openReq.onerror = function () { clearTimeout(timer); finish([]); };
-                    openReq.onblocked = function () { clearTimeout(timer); finish([]); };
+                    openReq.onerror = function () { clearTimeout(timer); finish({ users: [], groups: [] }); };
+                    openReq.onblocked = function () { clearTimeout(timer); finish({ users: [], groups: [] }); };
                     openReq.onsuccess = function (openEv) {
                       const db = (openEv && openEv.target && openEv.target.result) ? openEv.target.result : openReq.result;
                       const stores = Array.from((db && db.objectStoreNames) ? db.objectStoreNames : []);
                       if (!stores.length) {
                         clearTimeout(timer);
                         try { db.close(); } catch (_) {}
-                        finish([]);
+                        finish({ users: [], groups: [] });
                         return;
                       }
-                      const out = [];
+                      const outUsers = [];
+                      const outGroups = [];
                       let pending = stores.length;
                       const finishStore = function () {
                         pending -= 1;
                         if (pending <= 0) {
                           clearTimeout(timer);
                           try { db.close(); } catch (_) {}
-                          finish(out);
+                          finish({ users: outUsers, groups: outGroups });
                         }
                       };
                       stores.forEach(function (storeName) {
+                        const limit = classifyStoreLimit(storeName, isUserDb);
+                        if (limit <= 0) {
+                          finishStore();
+                          return;
+                        }
                         try {
                           const tx = db.transaction(storeName, 'readonly');
                           const store = tx.objectStore(storeName);
-                          const storeReq = store.getAll();
+                          const storeReq = store.getAll(null, limit);
                           storeReq.onsuccess = function (ev) {
                             try {
                               const rows = (ev && ev.target && ev.target.result) ? ev.target.result : [];
                               rows.forEach(function (row) {
-                                const picked = pickRecord(row);
-                                if (picked) out.push(picked);
+                                if (isUserDb) {
+                                  const pickedUser = pickUserRecord(row);
+                                  if (pickedUser) outUsers.push(pickedUser);
+                                } else if (row && typeof row === 'object') {
+                                  const pickedUser = pickUserRecord(row);
+                                  if (pickedUser) outUsers.push(pickedUser);
+                                }
+                                collectGroupsFromRow(row, outGroups);
                               });
                             } catch (_) {}
                             finishStore();
@@ -863,32 +1091,44 @@ object DouyinJsScripts {
                     };
                   } catch (_) {
                     clearTimeout(timer);
-                    finish([]);
+                    finish({ users: [], groups: [] });
                   }
                 });
               }
 
               return Promise.race([
                 indexedDB.databases().then(function (dbs) {
-                  const userDbs = (dbs || [])
+                  const candidateDbs = (dbs || [])
                     .map(function (d) { return d && d.name; })
-                    .filter(function (name) {
-                      return typeof name === 'string' && name.toLowerCase().indexOf('user') !== -1;
-                    });
-                  return Promise.all(userDbs.map(readOneDb)).then(function (chunks) {
-                    const merged = [];
+                    .filter(function (name) { return !shouldSkipDb(name); });
+                  return Promise.all(candidateDbs.map(readOneDb)).then(function (chunks) {
+                    const mergedUsers = [];
+                    const mergedGroups = [];
+                    const seenUsers = Object.create(null);
+                    const seenGroups = Object.create(null);
                     chunks.forEach(function (chunk) {
-                      chunk.forEach(function (item) {
-                        merged.push(item);
+                      (chunk.users || []).forEach(function (u) {
+                        const uk = (u.sec_uid || u.uid || '') + '|' + (u.remark_name || '') + '|' + (u.nickname || '');
+                        if (uk && !seenUsers[uk]) {
+                          seenUsers[uk] = true;
+                          mergedUsers.push(u);
+                        }
+                      });
+                      (chunk.groups || []).forEach(function (g) {
+                        const gk = (g.platform_conversation_id || '') + '|' + (g.title || '');
+                        if (gk && !seenGroups[gk]) {
+                          seenGroups[gk] = true;
+                          mergedGroups.push(g);
+                        }
                       });
                     });
-                    return notifyResult(merged);
+                    return notifyResult({ users: mergedUsers, groups: mergedGroups });
                   });
                 }).catch(function () {
-                  return notifyResult([]);
+                  return notifyResult({ users: [], groups: [] });
                 }),
                 new Promise(function (resolve) {
-                  setTimeout(function () { resolve(notifyResult([])); }, 2500);
+                  setTimeout(function () { resolve(notifyResult({ users: [], groups: [] })); }, 3500);
                 })
               ]);
             })();
@@ -1125,6 +1365,240 @@ object DouyinJsScripts {
         })();
     """.trimIndent()
 
+    /**
+     * 只读检查单个会话 DOM 行关联的 React Props/Fiber（有界遍历），提取经严格校验的群聊元数据：
+     * - 仅当明确观察到群会话类型（`type === 2` / `conversationType === 2` / `:2:` 前缀 / `isGroup === true`）
+     *   且会话 ID 为 15..25 位 ASCII 数字（非 `:1:` 单聊 ID）且群名非空合法时，才返回 `domGroupId` + `domGroupTitle`；
+     * - 仅作身份池补充输入，后续仍统一经 `IdentityDisambiguator.matchGroup` 做同名冲突校验，绝不猜测绑定。
+     */
+    private const val DOM_REACT_GROUP_INSPECTOR_JS = """
+        function __flamePickIdStr(obj, keys) {
+          if (!obj || typeof obj !== 'object') return null;
+          for (var i = 0; i < keys.length; i++) {
+            var val = obj[keys[i]];
+            if (typeof val === 'string' && val.trim()) return val.trim();
+            if (typeof val === 'number' && isFinite(val)) return String(val);
+            if (typeof val === 'bigint') return val.toString();
+            if (val && typeof val === 'object' && typeof val.toString === 'function') {
+              try {
+                var s = String(val.toString()).trim();
+                if (s && s !== '[object Object]') return s;
+              } catch (_) {}
+            }
+          }
+          return null;
+        }
+        function __flamePickRawField(obj, keys) {
+          if (!obj || typeof obj !== 'object') return undefined;
+          for (var i = 0; i < keys.length; i++) {
+            if (obj[keys[i]] !== undefined && obj[keys[i]] !== null) return obj[keys[i]];
+          }
+          return undefined;
+        }
+        function __flameNormTitle(s) {
+          return String(s || '').replace(/\s+/g, ' ').trim();
+        }
+        function __flameInspectConvObject(node) {
+          if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+          if (typeof Node !== 'undefined' && node instanceof Node) return null;
+          var core = (node.coreInfo && typeof node.coreInfo === 'object')
+            ? node.coreInfo
+            : ((node.core_info && typeof node.core_info === 'object') ? node.core_info : null);
+          var typeVal = __flamePickRawField(node, ['type', 'conversationType', 'conversation_type', 'convType', 'conv_type', 'chatType', 'chat_type']);
+          var coreTypeVal = core ? __flamePickRawField(core, ['type', 'conversationType', 'conversation_type', 'convType', 'conv_type']) : undefined;
+          var effType = typeVal !== undefined ? typeVal : coreTypeVal;
+          var typeStr = effType !== undefined && effType !== null ? String(effType).trim().toLowerCase() : '';
+          var isSingle = (effType === 1 || typeStr === '1' || typeStr === 'single' || typeStr === 'one_to_one' || typeStr === 'friend' || typeStr === 'private');
+          var isGroup = !isSingle && (
+            effType === 2 ||
+            typeStr === '2' ||
+            typeStr === 'group' ||
+            node.isGroup === true ||
+            node.is_group === true ||
+            (core && (core.isGroup === true || core.is_group === true))
+          );
+
+          var idKeys = [
+            'conversationShortId', 'conversation_short_id',
+            'shortId', 'short_id',
+            'convShortId', 'conv_short_id',
+            'conversationId', 'conversation_id',
+            'convId', 'conv_id',
+            'id'
+          ];
+          var groupId = null;
+          var sawSingleColonId = false;
+          var sources = core ? [node, core] : [node];
+          for (var sIdx = 0; sIdx < sources.length; sIdx++) {
+            var src = sources[sIdx];
+            for (var kIdx = 0; kIdx < idKeys.length; kIdx++) {
+              var rawId = __flamePickIdStr(src, [idKeys[kIdx]]);
+              if (!rawId) continue;
+              if (/^\d{1,4}:1:/.test(rawId)) {
+                sawSingleColonId = true;
+                continue;
+              }
+              if (/^\d{15,25}$/.test(rawId) && isGroup && !groupId) {
+                groupId = rawId;
+              } else {
+                var cm = rawId.match(/^\d{1,4}:2:(\d{15,25})$/);
+                if (cm && !isSingle && !groupId) {
+                  groupId = cm[1];
+                  isGroup = true;
+                }
+              }
+            }
+          }
+          if (sawSingleColonId) {
+            isSingle = true;
+            isGroup = false;
+            groupId = null;
+          }
+
+          var titleKeys = [
+            'name', 'title',
+            'groupName', 'group_name',
+            'convName', 'conv_name',
+            'conversationName', 'conversation_name',
+            'displayName', 'display_name'
+          ];
+          var rawTitle = (core ? __flamePickIdStr(core, titleKeys) : null) || __flamePickIdStr(node, titleKeys);
+          var cleanTitle = rawTitle ? rawTitle.trim() : null;
+          if (cleanTitle && (cleanTitle.length > 80 || /[\x00-\x1F\x7F]/.test(cleanTitle))) {
+            cleanTitle = null;
+          }
+
+          if (groupId && cleanTitle) {
+            return { convType: 'group', groupId: groupId, groupTitle: cleanTitle };
+          }
+          if (isGroup) {
+            return { convType: 'group', groupId: null, groupTitle: cleanTitle };
+          }
+          if (isSingle) {
+            return { convType: 'friend', groupId: null, groupTitle: cleanTitle };
+          }
+          return null;
+        }
+        function __flameInspectRowReactGroup(row, rowTitle) {
+          var result = { domConversationType: null, domGroupId: null, domGroupTitle: null };
+          if (!row) return result;
+          var normRowTitle = __flameNormTitle(rowTitle);
+          var roots = [];
+          try {
+            var targets = [row];
+            if (row.firstElementChild) targets.push(row.firstElementChild);
+            if (row.parentElement) targets.push(row.parentElement);
+            for (var t = 0; t < targets.length; t++) {
+              var el = targets[t];
+              if (!el) continue;
+              var ownKeys = Object.keys(el);
+              for (var k = 0; k < ownKeys.length; k++) {
+                var key = ownKeys[k];
+                if (key.indexOf('__reactProps$') === 0 && el[key]) {
+                  roots.push(el[key]);
+                } else if (key.indexOf('__reactFiber$') === 0 && el[key]) {
+                  var fib = el[key];
+                  for (var hop = 0; hop < 10 && fib; hop++) {
+                    if (fib.memoizedProps && typeof fib.memoizedProps === 'object') {
+                      roots.push(fib.memoizedProps);
+                    }
+                    fib = fib.return;
+                  }
+                }
+              }
+            }
+          } catch (_) {}
+
+          var queue = [];
+          for (var r = 0; r < roots.length; r++) {
+            queue.push({ obj: roots[r], depth: 0 });
+          }
+          var visited = 0;
+          var seen = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+          var skipProp = {
+            children: true, _owner: true, _store: true, ref: true,
+            style: true, target: true, currentTarget: true, view: true,
+            return: true, child: true, sibling: true, stateNode: true, alternate: true
+          };
+          while (queue.length > 0 && visited < 80) {
+            var cur = queue.shift();
+            if (!cur || !cur.obj || typeof cur.obj !== 'object') continue;
+            if (typeof Node !== 'undefined' && cur.obj instanceof Node) continue;
+            if (typeof Window !== 'undefined' && cur.obj instanceof Window) continue;
+            if (seen) {
+              if (seen.has(cur.obj)) continue;
+              seen.add(cur.obj);
+            }
+            visited += 1;
+
+            var hit = __flameInspectConvObject(cur.obj);
+            if (hit) {
+              var hitNorm = hit.groupTitle ? __flameNormTitle(hit.groupTitle) : '';
+              var titleMatches = !normRowTitle || !hitNorm || hitNorm === normRowTitle;
+              if (hit.convType === 'group' && hit.groupId && hit.groupTitle && (!normRowTitle || hitNorm === normRowTitle)) {
+                result.domConversationType = 'group';
+                result.domGroupId = hit.groupId;
+                result.domGroupTitle = hit.groupTitle;
+                return result;
+              }
+              if (hit.convType === 'group' && titleMatches && !result.domConversationType) {
+                result.domConversationType = 'group';
+              } else if (hit.convType === 'friend' && titleMatches && !result.domConversationType) {
+                result.domConversationType = 'friend';
+              }
+            }
+
+            if (cur.depth < 3 && !Array.isArray(cur.obj)) {
+              var keys;
+              try { keys = Object.keys(cur.obj); } catch (_) { continue; }
+              var maxK = Math.min(keys.length, 24);
+              for (var ki = 0; ki < maxK; ki++) {
+                var propName = keys[ki];
+                if (skipProp[propName] || propName.indexOf('__react') === 0 || propName.indexOf('on') === 0) continue;
+                var val;
+                try { val = cur.obj[propName]; } catch (_) { continue; }
+                if (val && typeof val === 'object') {
+                  queue.push({ obj: val, depth: cur.depth + 1 });
+                }
+              }
+            }
+          }
+          return result;
+        }
+    """
+
+    fun buildCollectVisibleGroupIdentitiesJs(bundle: SelectorBundle): String {
+        val itemLit = jsStringLiteral(bundle.conversationItem)
+        val titleLit = jsStringLiteral(bundle.conversationTitle)
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              $DOM_REACT_GROUP_INSPECTOR_JS
+              var rows = document.querySelectorAll($itemLit);
+              var groups = [];
+              var seen = Object.create(null);
+              for (var i = 0; i < rows.length; i++) {
+                var row = rows[i];
+                var titleEl = row.querySelector($titleLit);
+                var title = titleEl ? __flameFirstNonEmptyLine(titleEl.innerText || titleEl.textContent || '') : '';
+                var reactMeta = __flameInspectRowReactGroup(row, title);
+                if (reactMeta && reactMeta.domGroupId && reactMeta.domGroupTitle) {
+                  var key = reactMeta.domGroupId + '|' + reactMeta.domGroupTitle;
+                  if (!seen[key]) {
+                    seen[key] = true;
+                    groups.push({
+                      platform_conversation_id: reactMeta.domGroupId,
+                      title: reactMeta.domGroupTitle,
+                      conversation_type: 'group'
+                    });
+                  }
+                }
+              }
+              return { groups: groups };
+            })();
+        """.trimIndent()
+    }
+
     fun buildScrollAndCollectChatsJs(bundle: SelectorBundle): String {
         val listLit = jsStringLiteral(bundle.conversationList)
         val itemLit = jsStringLiteral(bundle.conversationItem)
@@ -1134,6 +1608,7 @@ object DouyinJsScripts {
         return """
             (function () {
               $DOM_HELPERS_JS
+              $DOM_REACT_GROUP_INSPECTOR_JS
               var listEl = document.querySelector($listLit);
               if (!listEl) {
                 return { listFound: false, atBottom: true, items: [] };
@@ -1214,6 +1689,8 @@ object DouyinJsScripts {
                   }
                 } catch (_) {}
 
+                var reactMeta = __flameInspectRowReactGroup(row, title);
+
                 items.push({
                   title: title,
                   streakDays: streakDays,
@@ -1221,7 +1698,10 @@ object DouyinJsScripts {
                   streakLabel: streakLabel,
                   streakIconVariant: streakIconVariant,
                   streakLitToday: streakLitToday,
-                  hasSparkInPreview: hasSparkInPreview
+                  hasSparkInPreview: hasSparkInPreview,
+                  domConversationType: reactMeta ? reactMeta.domConversationType : null,
+                  domGroupId: reactMeta ? reactMeta.domGroupId : null,
+                  domGroupTitle: reactMeta ? reactMeta.domGroupTitle : null
                 });
               }
 

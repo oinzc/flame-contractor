@@ -165,7 +165,8 @@ object SparkDeteriorationDetector {
                 return@filter false
             }
             val targetConvType = cleanText(target.conversationType)
-            if (targetConvType != null && convType != null && targetConvType != convType) {
+            val normalizedCandConvType = convType?.takeIf { it == "friend" || it == "group" }
+            if (targetConvType != null && normalizedCandConvType != null && targetConvType != normalizedCandConvType) {
                 return@filter false
             }
             if (hasIdentityConflict(target, pUserId, pConvId, convType)) {

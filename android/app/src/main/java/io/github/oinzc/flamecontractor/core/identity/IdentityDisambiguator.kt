@@ -180,7 +180,7 @@ object IdentityDisambiguator {
             platformConversationId = conversationId,
             conversationType = nonBlank(matchedRecord?.conversationType) ?: "group",
             candidateCount = 1,
-            detail = "通过抖音会话 protobuf 唯一匹配群聊",
+            detail = "通过群会话 ID 唯一匹配群聊",
         )
     }
 

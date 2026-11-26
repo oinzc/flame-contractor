@@ -199,21 +199,67 @@ object DouyinProtobufParser {
         for (packed in slices) {
             val start = rangeStart(packed)
             val end = rangeEnd(packed)
-            val length = end - start
-            if (length !in MIN_CONVERSATION_ID_DIGITS..MAX_CONVERSATION_ID_DIGITS) continue
-            var allAsciiDigits = true
-            for (index in start until end) {
-                val b = data[index].toInt() and 0xFF
-                if (b < '0'.code || b > '9'.code) {
-                    allAsciiDigits = false
-                    break
-                }
-            }
-            if (allAsciiDigits) {
-                return String(data, start, length, Charsets.US_ASCII)
+            val raw = extractValidGroupConversationId(data, start, end)
+            if (raw != null) {
+                return raw
             }
         }
         return null
+    }
+
+    /**
+     * 校验 field 1 的群会话 ID：
+     * - 经典格式：纯 15..25 位 ASCII 数字（例如 `7310000000000000001`）；
+     * - 字节 IM 复合格式：`<1..4位数字>:2:<15..25位数字>`（例如 `0:2:7310000000000000001`），
+     *   严格要求中间类型段为 `2`（群聊），拒绝 `:1:` 单聊等其他格式。
+     * 调用方还会继续校验该 ID 必须等于 field 2 的 varint 且 field 3 == 2。
+     */
+    private fun extractValidGroupConversationId(data: ByteArray, start: Int, end: Int): String? {
+        val length = end - start
+        if (length in MIN_CONVERSATION_ID_DIGITS..MAX_CONVERSATION_ID_DIGITS &&
+            isAllAsciiDigits(data, start, end)
+        ) {
+            return String(data, start, length, Charsets.US_ASCII)
+        }
+        // 最短如 "0:2:" + 15 digits = 19，最长如 "9999:2:" + 25 digits = 32
+        if (length in (MIN_CONVERSATION_ID_DIGITS + 4)..(MAX_CONVERSATION_ID_DIGITS + 7)) {
+            val firstColon = indexOfAsciiByte(data, start, end, ':'.code)
+            if (firstColon > start && firstColon - start <= 4 &&
+                firstColon + 2 < end &&
+                data[firstColon + 1].toInt() == '2'.code &&
+                data[firstColon + 2].toInt() == ':'.code &&
+                isAllAsciiDigits(data, start, firstColon)
+            ) {
+                val idStart = firstColon + 3
+                val idLen = end - idStart
+                if (idLen in MIN_CONVERSATION_ID_DIGITS..MAX_CONVERSATION_ID_DIGITS &&
+                    isAllAsciiDigits(data, idStart, end)
+                ) {
+                    return String(data, idStart, idLen, Charsets.US_ASCII)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun isAllAsciiDigits(data: ByteArray, start: Int, end: Int): Boolean {
+        if (start >= end) return false
+        for (index in start until end) {
+            val b = data[index].toInt() and 0xFF
+            if (b < '0'.code || b > '9'.code) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun indexOfAsciiByte(data: ByteArray, start: Int, end: Int, target: Int): Int {
+        for (index in start until end) {
+            if ((data[index].toInt() and 0xFF) == target) {
+                return index
+            }
+        }
+        return -1
     }
 
     private fun firstValidTitle(data: ByteArray, slices: List<Long>): String? {

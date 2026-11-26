@@ -230,6 +230,39 @@ class DouyinProtobufParserTest {
         )
     }
 
+    @Test
+    fun parsesColonPrefixedGroupConversationIdAndRejectsSingleChatPrefix() {
+        val validColonGroup = concat(
+            bytesField(1, "0:2:7310000000000000099".toByteArray(Charsets.US_ASCII)),
+            varintField(2, BigInteger("7310000000000000099")),
+            varintField(3, 2L),
+            bytesField(5, "车友群测试".toByteArray(Charsets.UTF_8)),
+        )
+        val singleChatPrefix = concat(
+            bytesField(1, "0:1:7310000000000000098".toByteArray(Charsets.US_ASCII)),
+            varintField(2, BigInteger("7310000000000000098")),
+            varintField(3, 2L),
+            bytesField(5, "伪装单聊前缀".toByteArray(Charsets.UTF_8)),
+        )
+        val mismatchedColonVarint = concat(
+            bytesField(1, "0:2:7310000000000000097".toByteArray(Charsets.US_ASCII)),
+            varintField(2, BigInteger("7310000000000000000")),
+            varintField(3, 2L),
+            bytesField(5, "不匹配前缀群".toByteArray(Charsets.UTF_8)),
+        )
+
+        val payload = concat(
+            bytesField(50, validColonGroup),
+            bytesField(50, singleChatPrefix),
+            bytesField(50, mismatchedColonVarint),
+        )
+
+        assertEquals(
+            listOf(ConversationRecord("7310000000000000099", "车友群测试")),
+            DouyinProtobufParser.parseGroupConversations(payload),
+        )
+    }
+
     private fun nest(inner: ByteArray, depth: Int): ByteArray {
         var current = inner
         repeat(depth) {

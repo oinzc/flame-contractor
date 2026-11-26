@@ -1371,8 +1371,23 @@ class LoginWebViewActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun onGroupRecords(@Suppress("UNUSED_PARAMETER") rawJson: String?) {
+            // 登录页不需要收集群聊身份列表，保留空实现兼容共享钩子
+        }
+
+        @JavascriptInterface
         fun onInitProtoBase64(@Suppress("UNUSED_PARAMETER") base64: String?) {
             // 登录页不需要解析初始化 protobuf，保留空实现兼容共享钩子
+        }
+
+        @JavascriptInterface
+        fun onInitProtoChunk(
+            @Suppress("UNUSED_PARAMETER") txId: String?,
+            @Suppress("UNUSED_PARAMETER") index: Int,
+            @Suppress("UNUSED_PARAMETER") total: Int,
+            @Suppress("UNUSED_PARAMETER") chunk: String?,
+        ) {
+            // 登录页不需要解析分片 protobuf，保留空实现兼容共享钩子
         }
     }
 
