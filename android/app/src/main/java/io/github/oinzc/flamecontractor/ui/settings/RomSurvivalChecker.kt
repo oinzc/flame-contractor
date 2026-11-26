@@ -98,6 +98,7 @@ data class RomSurvivalSnapshot(
     val autostartGuidanceConfirmed: Boolean,
     val overlayAutoReturnAllowed: Boolean = false,
     val backgroundPopupAllowed: Boolean = true,
+    val autostartDetectedBySystem: Boolean? = null,
     val vendorFamily: OemVendorFamily = if (isXiaomiOrHyperOs) {
         OemVendorFamily.XIAOMI
     } else {
@@ -109,6 +110,9 @@ data class RomSurvivalSnapshot(
 ) {
     val autoReturnFullyAllowed: Boolean
         get() = overlayAutoReturnAllowed && backgroundPopupAllowed
+
+    val isAutostartSystemDetected: Boolean
+        get() = autostartDetectedBySystem != null
 
     val passedCount: Int
         get() = items.count { it.passed }
@@ -130,6 +134,7 @@ object RomSurvivalChecker {
 
     private const val PREFS_NAME = "flame_rom_survival_prefs"
     private const val KEY_AUTOSTART_CONFIRMED = "autostart_confirmed"
+    private const val MIUI_OP_AUTO_START = 10008
     private const val MIUI_OP_BACKGROUND_START_ACTIVITY = 10021
 
     private val XIAOMI_TOKENS = setOf("xiaomi", "redmi", "poco", "blackshark")
@@ -198,12 +203,17 @@ object RomSurvivalChecker {
         } else {
             true
         }
+        val detectedAutoStart = if (vendor == OemVendorFamily.XIAOMI) {
+            isXiaomiAutoStartAllowed(appContext)
+        } else {
+            null
+        }
         val manufacturerLabel = Build.MANUFACTURER?.takeIf { it.isNotBlank() } ?: "Android"
         val userConfirmedAutostart = isAutostartGuidanceConfirmed(appContext)
-        val autostartEffective = if (vendor.requiresManualAutostartConfirmation) {
-            userConfirmedAutostart
-        } else {
-            true
+        val autostartEffective = when {
+            detectedAutoStart != null -> detectedAutoStart
+            vendor.requiresManualAutostartConfirmation -> userConfirmedAutostart
+            else -> true
         }
 
         val dailyEnabled = isNotificationChannelEnabled(appContext, LocalNotifier.CHANNEL_DAILY_SUMMARY)
@@ -222,6 +232,7 @@ object RomSurvivalChecker {
             urgentAlertsChannelEnabled = urgentEnabled,
             overlayAutoReturnAllowed = overlayAllowed,
             backgroundPopupAllowed = backgroundPopupAllowed,
+            autostartDetectedBySystem = detectedAutoStart,
             vendorFamily = vendor,
         )
     }
@@ -239,13 +250,22 @@ object RomSurvivalChecker {
         urgentAlertsChannelEnabled: Boolean = true,
         overlayAutoReturnAllowed: Boolean = false,
         backgroundPopupAllowed: Boolean = true,
+        autostartDetectedBySystem: Boolean? = null,
         vendorFamily: OemVendorFamily = if (isXiaomiOrHyperOs) {
             OemVendorFamily.XIAOMI
         } else {
             detectVendorFamily(manufacturer = manufacturer, brand = manufacturer)
         },
     ): RomSurvivalSnapshot {
-        val oemMeta = resolveOemBackgroundGuidance(vendorFamily, manufacturer)
+        val isSystemVerifiedAutostart = autostartDetectedBySystem != null
+        val effectiveAutostartPassed = autostartDetectedBySystem ?: autostartGuidanceConfirmed
+        val oemMeta = resolveOemBackgroundGuidance(
+            vendorFamily = vendorFamily,
+            manufacturer = manufacturer,
+            isSystemVerifiedAutostart = isSystemVerifiedAutostart,
+            batteryOptimizationIgnored = batteryOptimizationIgnored,
+            autostartAllowed = effectiveAutostartPassed,
+        )
         val autoReturnReady = overlayAutoReturnAllowed && backgroundPopupAllowed
         val overlayDetail = when {
             autoReturnReady && vendorFamily.hasExtraBackgroundPopupSwitch ->
@@ -326,9 +346,11 @@ object RomSurvivalChecker {
             SurvivalCheckItem(
                 id = SurvivalCheckId.OEM_BACKGROUND_AUTOSTART,
                 title = oemMeta.title,
-                passed = autostartGuidanceConfirmed,
+                passed = effectiveAutostartPassed,
                 advisoryOnly = !vendorFamily.requiresManualAutostartConfirmation,
                 statusLabel = when {
+                    isSystemVerifiedAutostart && effectiveAutostartPassed -> "已开启"
+                    isSystemVerifiedAutostart -> "未开启"
                     vendorFamily.requiresManualAutostartConfirmation && userConfirmedFlag -> "已确认开启"
                     vendorFamily.requiresManualAutostartConfirmation -> "待前往设置"
                     userConfirmedFlag -> "已核对"
@@ -347,9 +369,10 @@ object RomSurvivalChecker {
             notificationsGranted = notificationsGranted,
             batteryOptimizationIgnored = batteryOptimizationIgnored,
             exactAlarmAllowed = exactAlarmAllowed,
-            autostartGuidanceConfirmed = autostartGuidanceConfirmed,
+            autostartGuidanceConfirmed = effectiveAutostartPassed,
             overlayAutoReturnAllowed = overlayAutoReturnAllowed,
             backgroundPopupAllowed = backgroundPopupAllowed,
+            autostartDetectedBySystem = autostartDetectedBySystem,
             vendorFamily = vendorFamily,
             dailySummaryChannelEnabled = dailySummaryChannelEnabled,
             urgentAlertsChannelEnabled = urgentAlertsChannelEnabled,
@@ -368,14 +391,45 @@ object RomSurvivalChecker {
     internal fun resolveOemBackgroundGuidance(
         vendorFamily: OemVendorFamily,
         manufacturer: String,
+        isSystemVerifiedAutostart: Boolean = false,
+        batteryOptimizationIgnored: Boolean = false,
+        autostartAllowed: Boolean = false,
     ): OemBackgroundGuidance = when (vendorFamily) {
-        OemVendorFamily.XIAOMI -> OemBackgroundGuidance(
-            title = "小米 / HyperOS 自启动与神隐策略",
-            detail = "HyperOS / MIUI 系统未开放自启动读取接口。请开启「允许自启动」并在「省电策略」选择「无限制」（关闭神隐后台冻结），防止手机重启或夜间被清理后无法自动发火。",
-            confirmCheckboxLabel = "我已在系统设置开启「自启动」并设为省电「无限制」",
-            primaryActionLabel = "去开自启动",
-            secondaryActionLabel = "省电 / 神隐策略",
-        )
+        OemVendorFamily.XIAOMI -> if (isSystemVerifiedAutostart) {
+            OemBackgroundGuidance(
+                title = "小米 / HyperOS 允许自启动",
+                detail = if (autostartAllowed) {
+                    if (batteryOptimizationIgnored) {
+                        "系统已实时检测到「允许自启动」已开启，且电池「无限制」已放行，定时续火可在锁屏与重启后稳定唤醒。"
+                    } else {
+                        "系统已实时检测到「允许自启动」已开启；建议同时在电池设置保持「无限制」以防锁屏断网。"
+                    }
+                } else if (batteryOptimizationIgnored) {
+                    "请点击下方前往开启「允许自启动」，返回本应用后将自动实时亮绿勾（上一步电池「无限制」已自动生效，无需重复设置省电策略）。"
+                } else {
+                    "请点击下方前往开启「允许自启动」，返回本应用后将自动实时亮绿勾；若电池优化尚未设为「无限制」，可点右侧补充放行。"
+                },
+                confirmCheckboxLabel = "我已在系统设置开启「允许自启动」",
+                primaryActionLabel = if (autostartAllowed) "查看自启动" else "去开自启动",
+                secondaryActionLabel = if (batteryOptimizationIgnored) null else "省电 / 神隐策略",
+            )
+        } else {
+            OemBackgroundGuidance(
+                title = "小米 / HyperOS 允许自启动",
+                detail = if (batteryOptimizationIgnored) {
+                    "当前系统未开放自启动状态读取，请开启「允许自启动」后勾选确认（上一步电池「无限制」已放行，无需重复设置省电策略）。"
+                } else {
+                    "请开启「允许自启动」并在「省电策略」保持「无限制」（勿选智能限制后台运行），防止手机重启或夜间被清理后无法自动发火。"
+                },
+                confirmCheckboxLabel = if (batteryOptimizationIgnored) {
+                    "我已在系统设置开启「允许自启动」"
+                } else {
+                    "我已在系统设置开启「自启动」并设为省电「无限制」"
+                },
+                primaryActionLabel = "去开自启动",
+                secondaryActionLabel = if (batteryOptimizationIgnored) null else "省电 / 神隐策略",
+            )
+        }
 
         OemVendorFamily.HUAWEI_HONOR -> OemBackgroundGuidance(
             title = "华为 / 荣耀应用启动管理",
@@ -447,10 +501,20 @@ object RomSurvivalChecker {
     }
 
     /**
+     * 读取小米 / HyperOS 私有权限 `OP_AUTO_START (10008)`（「允许自启动」）。
+     * 在不支持该 Op 码的机型上返回 `null`，调用方回退至手动确认勾选。
+     */
+    fun isXiaomiAutoStartAllowed(context: Context): Boolean? =
+        checkMiuiAppOp(context, MIUI_OP_AUTO_START)
+
+    /**
      * 读取小米 / HyperOS 私有权限 `OP_BACKGROUND_START_ACTIVITY (10021)`（「后台弹出界面」）。
      * 在不支持该 Op 码的机型上返回 `null`，调用方保守放行不阻塞非小米设备。
      */
-    fun isXiaomiBackgroundPopupAllowed(context: Context): Boolean? {
+    fun isXiaomiBackgroundPopupAllowed(context: Context): Boolean? =
+        checkMiuiAppOp(context, MIUI_OP_BACKGROUND_START_ACTIVITY)
+
+    private fun checkMiuiAppOp(context: Context, opCode: Int): Boolean? {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return null
         return runCatching {
             val method = AppOpsManager::class.java.getMethod(
@@ -461,7 +525,7 @@ object RomSurvivalChecker {
             )
             val mode = method.invoke(
                 appOps,
-                MIUI_OP_BACKGROUND_START_ACTIVITY,
+                opCode,
                 Process.myUid(),
                 context.packageName,
             ) as? Int ?: return null

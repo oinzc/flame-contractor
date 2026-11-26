@@ -305,6 +305,61 @@ class SetupReadinessModelsTest {
         assertEquals(OnboardingStep.entries.lastIndex, OnboardingGatePolicy.maxUnlockedStepIndex(bothReady))
     }
 
+    @Test
+    fun xiaomiSystemDetectedAutostartReplacesManualCheckboxAndHidesRedundantBatteryAction() {
+        val deniedSnapshot = RomSurvivalChecker.buildSnapshot(
+            checkedAtEpochMs = 6_000L,
+            isXiaomiOrHyperOs = true,
+            manufacturer = "Xiaomi",
+            notificationsGranted = true,
+            batteryOptimizationIgnored = true,
+            exactAlarmAllowed = true,
+            autostartGuidanceConfirmed = false,
+            overlayAutoReturnAllowed = true,
+            backgroundPopupAllowed = true,
+            autostartDetectedBySystem = false,
+            vendorFamily = OemVendorFamily.XIAOMI,
+        )
+        val deniedReadiness = SetupReadinessBuilder.build(
+            survivalSnapshot = deniedSnapshot,
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        val deniedOem = deniedReadiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART)
+        assertFalse(deniedOem.completed)
+        assertFalse(deniedOem.needsManualConfirmation)
+        assertNull(deniedOem.confirmCheckboxLabel)
+        assertNull(deniedOem.secondaryActionLabel)
+        assertEquals("未开启", deniedOem.statusLabel)
+        assertEquals(3, OnboardingGatePolicy.maxUnlockedStepIndex(deniedReadiness))
+        assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(deniedReadiness).contains("厂商自启动与后台"))
+
+        val allowedSnapshot = RomSurvivalChecker.buildSnapshot(
+            checkedAtEpochMs = 7_000L,
+            isXiaomiOrHyperOs = true,
+            manufacturer = "Xiaomi",
+            notificationsGranted = true,
+            batteryOptimizationIgnored = true,
+            exactAlarmAllowed = true,
+            autostartGuidanceConfirmed = false,
+            overlayAutoReturnAllowed = true,
+            backgroundPopupAllowed = true,
+            autostartDetectedBySystem = true,
+            vendorFamily = OemVendorFamily.XIAOMI,
+        )
+        val allowedReadiness = SetupReadinessBuilder.build(
+            survivalSnapshot = allowedSnapshot,
+            accountStatus = AccountStatus.PENDING_LOGIN,
+            enabledTargetCount = 0,
+        )
+        val allowedOem = allowedReadiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART)
+        assertTrue(allowedOem.completed)
+        assertFalse(allowedOem.needsManualConfirmation)
+        assertEquals("已开启", allowedOem.statusLabel)
+        assertEquals(OnboardingStep.entries.lastIndex, OnboardingGatePolicy.maxUnlockedStepIndex(allowedReadiness))
+        assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(allowedReadiness).isEmpty())
+    }
+
     private class InMemorySharedPreferences : SharedPreferences {
         private val data = linkedMapOf<String, Any?>()
 

@@ -375,9 +375,9 @@ internal fun SettingsHubScreen(
                 AppUpdateStatus.UpToDate -> "当前版本 $versionTag · 已是最新版本"
                 else -> "当前版本 $versionTag"
             }
-            FlameGroupedSection(title = "关于与开源") {
+            FlameGroupedSection(title = "版本与开源") {
                 FlameListRow(
-                    title = "应用版本与自动更新",
+                    title = SettingsSection.UPDATES.title,
                     subtitle = updateRowSubtitle,
                     leading = {
                         FlameRowAvatar(
@@ -413,7 +413,7 @@ internal fun SettingsHubScreen(
                     showDivider = true,
                     onClick = {
                         haptics.performFlameLightTick()
-                        onSelectSection(SettingsSection.ABOUT)
+                        onSelectSection(SettingsSection.UPDATES)
                     },
                 )
 

@@ -66,6 +66,22 @@ class MainNavigationStateTest {
     }
 
     @Test
+    fun `updates section is independent from feedback section and unwinds to settings hub`() {
+        val inUpdates = MainNavState(MainTab.TODAY)
+            .openSettings(section = SettingsSection.UPDATES)
+        assertTrue(inUpdates.isSettingsOpen)
+        assertEquals(SettingsSection.UPDATES, inUpdates.activeSettingsSection)
+        assertFalse(inUpdates.returnToTabOnBack)
+
+        val (backToHub, consumed) = inUpdates.navigateBack()
+        assertTrue(consumed)
+        assertEquals(
+            MainNavState(MainTab.TODAY, isSettingsOpen = true, activeSettingsSection = null),
+            backToHub,
+        )
+    }
+
+    @Test
     fun `reopening settings starts at hub unless section specified`() {
         val opened = MainNavState(MainTab.TARGETS)
             .openSettings(SettingsSection.SCHEDULE)

@@ -49,6 +49,7 @@ enum class SettingsSection(val title: String) {
     SURVIVAL("初始化与权限清单"),
     BACKUP("备份与跨机迁移"),
     DIAGNOSTICS("网页诊断与定位器维护"),
+    UPDATES("应用版本与更新"),
     ABOUT("问题反馈与建议"),
 }
 

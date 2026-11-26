@@ -202,7 +202,9 @@ internal object OnboardingGatePolicy {
         if (!readiness.itemById(SetupItemId.BATTERY_OPTIMIZATION).completed) add("忽略电池优化")
         if (!readiness.itemById(SetupItemId.EXACT_ALARM).completed) add("精确闹钟调度")
         val oem = readiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART)
-        if (oem.needsManualConfirmation && !oem.completed) add("厂商自启动与后台")
+        if ((oem.importance == SetupItemImportance.REQUIRED || oem.needsManualConfirmation) && !oem.completed) {
+            add("厂商自启动与后台")
+        }
     }
 }
 
@@ -633,6 +635,14 @@ fun OnboardingWizardScreen(
                                             }
                                         }
                                     },
+                                    nativePopupHint = if (!item.needsManualConfirmation &&
+                                        item.importance == SetupItemImportance.REQUIRED &&
+                                        !item.completed
+                                    ) {
+                                        "点击「${item.primaryActionLabel}」打开「抖音续火工」的自启动开关，返回本页后会自动实时检测并亮绿勾解锁下一步。"
+                                    } else {
+                                        null
+                                    },
                                     onConfirmCheckedChange = if (item.needsManualConfirmation) {
                                         onSetAutostartConfirmed
                                     } else {
@@ -816,7 +826,8 @@ fun OnboardingWizardScreen(
                                     }
 
                                     OnboardingStep.OEM_BACKGROUND -> {
-                                        if (!hasOpenedOemSettings) {
+                                        val oemItem = readiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART)
+                                        if (!oemItem.needsManualConfirmation || !hasOpenedOemSettings) {
                                             Triple("前往开启自启动", true, openOemAutostartSettings)
                                         } else {
                                             Triple(

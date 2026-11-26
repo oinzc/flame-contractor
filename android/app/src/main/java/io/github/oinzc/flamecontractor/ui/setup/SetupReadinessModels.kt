@@ -99,7 +99,17 @@ object SetupReadinessBuilder {
     ): SetupReadinessSnapshot {
         val vendor = survivalSnapshot.vendorFamily
         val manufacturer = survivalSnapshot.manufacturer.ifBlank { "Android" }
-        val oemMeta = RomSurvivalChecker.resolveOemBackgroundGuidance(vendor, manufacturer)
+        val isSystemVerifiedAutostart = survivalSnapshot.autostartDetectedBySystem != null
+        val autostartPassed = survivalSnapshot.autostartDetectedBySystem
+            ?: survivalSnapshot.autostartGuidanceConfirmed
+        val needsManualAutostart = vendor.requiresManualAutostartConfirmation && !isSystemVerifiedAutostart
+        val oemMeta = RomSurvivalChecker.resolveOemBackgroundGuidance(
+            vendorFamily = vendor,
+            manufacturer = manufacturer,
+            isSystemVerifiedAutostart = isSystemVerifiedAutostart,
+            batteryOptimizationIgnored = survivalSnapshot.batteryOptimizationIgnored,
+            autostartAllowed = autostartPassed,
+        )
         val loggedIn = isAccountLoggedIn(accountStatus)
         val targetsReady = enabledTargetCount > 0
 
@@ -118,7 +128,7 @@ object SetupReadinessBuilder {
 
         val oemWhyNeeded = when (vendor) {
             OemVendorFamily.XIAOMI ->
-                "小米 / HyperOS 默认拦截应用自启动并在锁屏后触发神隐后台冻结，未放行时夜间定时续火极易被系统终止。"
+                "小米 / HyperOS 默认拦截应用自启动，手机重启或夜间后台被回收后会导致定时续火无法按点唤醒。"
 
             OemVendorFamily.HUAWEI_HONOR ->
                 "华为 / 荣耀的自动启动管理会在锁屏后回收后台任务，改为手动并放行自启动与后台活动才能准点发火。"
@@ -235,16 +245,18 @@ object SetupReadinessBuilder {
                 title = oemMeta.title,
                 whyNeeded = oemWhyNeeded,
                 howToHint = oemMeta.detail,
-                completed = survivalSnapshot.autostartGuidanceConfirmed,
+                completed = autostartPassed,
                 statusLabel = when {
-                    vendor.requiresManualAutostartConfirmation && survivalSnapshot.autostartGuidanceConfirmed -> "已确认开启"
+                    isSystemVerifiedAutostart && autostartPassed -> "已开启"
+                    isSystemVerifiedAutostart -> "未开启"
+                    vendor.requiresManualAutostartConfirmation && autostartPassed -> "已确认开启"
                     vendor.requiresManualAutostartConfirmation -> "待手动确认"
                     else -> "按需核对"
                 },
                 primaryActionLabel = oemMeta.primaryActionLabel,
                 secondaryActionLabel = oemMeta.secondaryActionLabel,
-                needsManualConfirmation = vendor.requiresManualAutostartConfirmation,
-                confirmCheckboxLabel = oemMeta.confirmCheckboxLabel,
+                needsManualConfirmation = needsManualAutostart,
+                confirmCheckboxLabel = if (needsManualAutostart) oemMeta.confirmCheckboxLabel else null,
             ),
             SetupChecklistItem(
                 id = SetupItemId.DOUYIN_LOGIN,

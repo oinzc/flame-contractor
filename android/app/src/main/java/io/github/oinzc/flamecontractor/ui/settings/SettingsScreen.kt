@@ -605,14 +605,18 @@ fun SettingsRoute(
                 onBack = onBack,
             )
 
+            SettingsSection.UPDATES -> SettingsUpdatesPage(
+                appUpdateManager = appUpdateManager,
+                updateUiState = updateUiState,
+                onBack = onBack,
+            )
+
             SettingsSection.ABOUT -> SettingsAboutPage(
                 uiState = uiState,
                 preFillDraft = pendingFeedbackDraft,
                 onConsumePreFillDraft = onConsumeFeedbackDraft,
                 onBuildDiagnosticsReportText = viewModel::buildDiagnosticsReportText,
                 onBack = onBack,
-                appUpdateManager = appUpdateManager,
-                updateUiState = updateUiState,
             )
         }
     }
