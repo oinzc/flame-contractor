@@ -181,6 +181,7 @@ fun TodayRoute(
     urgentSignalNonce: Long = 0L,
     accountId: String = DEFAULT_ACCOUNT_ID,
     displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    onSwitchToStandardMode: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -295,6 +296,7 @@ fun TodayRoute(
             onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
             onFeedbackIssue = handleFeedbackIssue,
             onOpenAccountSwitcher = onOpenAccountSwitcher,
+            onSwitchToStandardMode = onSwitchToStandardMode,
             otherAccountAlertBadge = otherAccountAlertBadge,
             resolveJobScreenshotFile = { jobId ->
                 container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)

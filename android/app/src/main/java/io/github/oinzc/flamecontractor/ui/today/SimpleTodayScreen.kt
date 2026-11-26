@@ -7,10 +7,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,7 +17,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -53,8 +52,6 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -69,16 +66,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
@@ -136,6 +134,61 @@ internal sealed interface SimpleActionState {
         val totalCount: Int,
         val allSucceeded: Boolean,
     ) : SimpleActionState
+}
+
+internal enum class SimpleProgressDotKind {
+    DONE_EMBER,
+    DONE_HEALTHY,
+    UNKNOWN_DANGER,
+    PENDING,
+}
+
+internal data class SimpleProgressDotStripModel(
+    val dots: List<SimpleProgressDotKind>,
+    val overflowCount: Int,
+)
+
+internal const val SIMPLE_MAX_VISIBLE_DOTS = 18
+
+internal fun buildSimpleProgressDots(
+    totalCount: Int,
+    succeededCount: Int,
+    unknownCount: Int,
+    allCompleted: Boolean,
+    maxVisibleDots: Int = SIMPLE_MAX_VISIBLE_DOTS,
+): SimpleProgressDotStripModel {
+    val safeTotal = totalCount.coerceAtLeast(0)
+    if (safeTotal == 0 || maxVisibleDots <= 0) {
+        return SimpleProgressDotStripModel(dots = emptyList(), overflowCount = 0)
+    }
+    val safeUnknown = unknownCount.coerceIn(0, safeTotal)
+    val safeSucceeded = succeededCount.coerceIn(0, (safeTotal - safeUnknown).coerceAtLeast(0))
+    val overflow = (safeTotal - maxVisibleDots).coerceAtLeast(0)
+    val visibleCount = safeTotal.coerceAtMost(maxVisibleDots)
+
+    val visibleUnknown = safeUnknown.coerceAtMost(visibleCount)
+    val remainingSlots = (visibleCount - visibleUnknown).coerceAtLeast(0)
+    val visibleSucceeded = if (overflow == 0) {
+        safeSucceeded.coerceAtMost(remainingSlots)
+    } else {
+        ((safeSucceeded.toFloat() / safeTotal.toFloat()) * remainingSlots)
+            .toInt()
+            .coerceIn(if (safeSucceeded > 0 && remainingSlots > 0) 1 else 0, remainingSlots)
+    }
+    val visiblePending = (visibleCount - visibleUnknown - visibleSucceeded).coerceAtLeast(0)
+
+    val doneKind = if (allCompleted && safeUnknown == 0) {
+        SimpleProgressDotKind.DONE_HEALTHY
+    } else {
+        SimpleProgressDotKind.DONE_EMBER
+    }
+
+    val dots = buildList(visibleCount) {
+        repeat(visibleSucceeded) { add(doneKind) }
+        repeat(visiblePending) { add(SimpleProgressDotKind.PENDING) }
+        repeat(visibleUnknown) { add(SimpleProgressDotKind.UNKNOWN_DANGER) }
+    }
+    return SimpleProgressDotStripModel(dots = dots, overflowCount = overflow)
 }
 
 internal fun resolveSimpleActionState(state: TodayUiState): SimpleActionState {
@@ -269,6 +322,38 @@ internal fun resolveSimpleActionState(state: TodayUiState): SimpleActionState {
     )
 }
 
+internal fun resolveSimplePrimaryCtaLabel(
+    actionState: SimpleActionState,
+    state: TodayUiState,
+): String = when (actionState) {
+    is SimpleActionState.Executing -> "正在续火（${actionState.progressText}）"
+    is SimpleActionState.NeedsUnknownReview -> "去核对结果（${actionState.unknownCount} 位）"
+    is SimpleActionState.ReadyToSend -> "立即续火（还差 ${actionState.pendingCount} 位）"
+    is SimpleActionState.AllCompletedToday -> if (actionState.allSucceeded) {
+        "今日已续完 · 点此重发"
+    } else {
+        "今日已处理 · 点此重发"
+    }
+
+    is SimpleActionState.Guided -> when (actionState.action) {
+        SimpleGuidedAction.LOGIN -> when (state.account?.status) {
+            AccountStatus.AUTH_EXPIRED -> "重新登录抖音"
+            AccountStatus.VERIFICATION_REQUIRED -> "去完成安全验证"
+            else -> "登录抖音账号"
+        }
+
+        SimpleGuidedAction.SELECT_TARGETS -> if (state.enabledTargetCount == 0) {
+            "去扫描并挑选好友"
+        } else {
+            "去给好友绑定模板"
+        }
+
+        SimpleGuidedAction.RECOVER_COOLDOWN -> "查看原因并恢复"
+        SimpleGuidedAction.OPEN_DIAGNOSTICS -> "前往页面诊断"
+        SimpleGuidedAction.OPEN_SCHEDULE -> "开启自动续火"
+    }
+}
+
 internal fun formatSimpleScheduleLine(
     state: TodayUiState,
     now: Instant = Instant.now(),
@@ -352,12 +437,12 @@ fun SimpleTodayScreen(
     onCopyDiagnosticsLog: (() -> Unit)? = null,
     onFeedbackIssue: ((title: String, content: String) -> Unit)? = null,
     onOpenAccountSwitcher: () -> Unit = {},
+    onSwitchToStandardMode: () -> Unit = { onOpenSettings(SettingsSection.APPEARANCE) },
     otherAccountAlertBadge: Boolean = false,
     resolveJobScreenshotFile: (String) -> File? = { null },
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
-    val fontScale = LocalDensity.current.fontScale
     val actionState = remember(state) { resolveSimpleActionState(state) }
     val scheduleLine = remember(
         state.account,
@@ -367,135 +452,107 @@ fun SimpleTodayScreen(
     ) {
         formatSimpleScheduleLine(state)
     }
+    val isInitialLoading = state.isLoading && state.account == null
 
-    BoxWithConstraints(
+    val handlePrimaryClick: () -> Unit = {
+        when (actionState) {
+            is SimpleActionState.Executing -> Unit
+            is SimpleActionState.NeedsUnknownReview -> onOpenUnknownReview(actionState.firstJobId)
+            is SimpleActionState.Guided -> when (actionState.action) {
+                SimpleGuidedAction.LOGIN -> onReloginClick()
+                SimpleGuidedAction.SELECT_TARGETS -> onOpenTab(MainTab.TARGETS)
+                SimpleGuidedAction.RECOVER_COOLDOWN -> onOpenCooldownDetail()
+                SimpleGuidedAction.OPEN_DIAGNOSTICS -> onOpenSettings(SettingsSection.DIAGNOSTICS)
+                SimpleGuidedAction.OPEN_SCHEDULE -> onOpenSettings(SettingsSection.SCHEDULE)
+            }
+
+            is SimpleActionState.ReadyToSend -> onTriggerManualBatch()
+            is SimpleActionState.AllCompletedToday -> onTriggerForceAllBatch()
+        }
+    }
+
+    Scaffold(
         modifier = modifier
             .fillMaxSize()
             .background(palette.canvas),
-    ) {
-        val containerMaxWidth = maxWidth
-        val circleDiameter: Dp = when {
-            fontScale >= 1.3f -> 220.dp.coerceAtMost(containerMaxWidth - 52.dp).coerceAtLeast(188.dp)
-            else -> 204.dp.coerceAtMost(containerMaxWidth - 52.dp).coerceAtLeast(180.dp)
-        }
-        val stackQuickActions = containerMaxWidth < 360.dp && fontScale >= 1.3f
-
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            containerColor = palette.canvas,
-            contentColor = palette.ink,
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            topBar = {
-                SimpleTodayTopBar(
-                    account = state.account,
-                    otherAccountAlertBadge = otherAccountAlertBadge,
-                    onOpenAccountSwitcher = onOpenAccountSwitcher,
-                    onOpenSettings = { onOpenSettings(null) },
-                )
-            },
-            snackbarHost = {
-                SnackbarHost(
-                    hostState = snackbarHostState,
-                    modifier = Modifier
-                        .navigationBarsPadding()
-                        .padding(bottom = 12.dp),
-                )
-            },
-        ) { innerPadding ->
-            Box(
+        containerColor = palette.canvas,
+        contentColor = palette.ink,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            SimpleTodayTopBar(
+                account = state.account,
+                otherAccountAlertBadge = otherAccountAlertBadge,
+                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                onOpenSettings = { onOpenSettings(null) },
+            )
+        },
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.TopCenter,
+                    .navigationBarsPadding()
+                    .padding(bottom = 12.dp),
+            )
+        },
+    ) { innerPadding ->
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            val availableHeight = maxHeight
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .heightIn(min = availableHeight)
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween,
             ) {
+                // 上半留白，让数字视觉中心自然落在光学黄金偏上位置
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 视觉主角区：大字重等宽数字 + 柔和圆点进度 + 单行状态/排班说明
+                SimpleHeroEditorialSection(
+                    state = state,
+                    actionState = actionState,
+                    scheduleLine = scheduleLine,
+                    isInitialLoading = isInitialLoading,
+                    onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+                    onOpenSchedule = { onOpenSettings(SettingsSection.SCHEDULE) },
+                )
+
+                // 底部拇指操作区：高对比单色主按钮 + 极轻文字次入口
                 Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 560.dp)
-                        .verticalScroll(rememberScrollState())
-                        .navigationBarsPadding()
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                        .fillMaxWidth()
+                        .padding(top = 28.dp, bottom = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    if (!state.isLoading || state.account != null) {
-                        SimpleAlertInterceptSection(
+                    if (!isInitialLoading) {
+                        SimpleBottomPrimaryButton(
+                            actionState = actionState,
                             state = state,
-                            onOpenUnknownReview = onOpenUnknownReview,
-                            onReloginClick = onReloginClick,
-                            onOpenCooldownDetail = onOpenCooldownDetail,
-                            onOpenDiagnostics = { onOpenSettings(SettingsSection.DIAGNOSTICS) },
-                            onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+                            onClick = handlePrimaryClick,
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    SimpleCentralFlameButton(
-                        actionState = actionState,
-                        diameter = circleDiameter,
-                        onClick = {
-                            when (actionState) {
-                                is SimpleActionState.Executing -> Unit
-                                is SimpleActionState.NeedsUnknownReview ->
-                                    onOpenUnknownReview(actionState.firstJobId)
-
-                                is SimpleActionState.Guided -> when (actionState.action) {
-                                    SimpleGuidedAction.LOGIN -> onReloginClick()
-                                    SimpleGuidedAction.SELECT_TARGETS -> onOpenTab(MainTab.TARGETS)
-                                    SimpleGuidedAction.RECOVER_COOLDOWN -> onOpenCooldownDetail()
-                                    SimpleGuidedAction.OPEN_DIAGNOSTICS ->
-                                        onOpenSettings(SettingsSection.DIAGNOSTICS)
-
-                                    SimpleGuidedAction.OPEN_SCHEDULE ->
-                                        onOpenSettings(SettingsSection.SCHEDULE)
-                                }
-
-                                is SimpleActionState.ReadyToSend -> onTriggerManualBatch()
-                                is SimpleActionState.AllCompletedToday -> onTriggerForceAllBatch()
-                            }
-                        },
-                    )
-
-                    val liveFeedbackText = remember(state.executionState) {
-                        when {
-                            state.executionState.running ->
-                                state.executionState.currentTask?.takeIf { it.isNotBlank() }
-
-                            !state.executionState.lastErrorSummary.isNullOrBlank() ->
-                                state.executionState.lastErrorSummary
-
-                            !state.executionState.lastMessage.isNullOrBlank() ->
-                                state.executionState.lastMessage
-
-                            else -> null
-                        }
-                    }
-                    if (!liveFeedbackText.isNullOrBlank()) {
-                        SimpleLiveStatusNote(
-                            text = liveFeedbackText,
-                            isError = !state.executionState.running &&
-                                !state.executionState.lastErrorSummary.isNullOrBlank(),
-                        )
-                    }
-
-                    SimpleScheduleStatusCard(
-                        text = scheduleLine,
-                        isEnabled = state.account?.enabled == true &&
-                            state.account.status != AccountStatus.PAUSED,
-                        onClick = { onOpenSettings(SettingsSection.SCHEDULE) },
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    SimpleQuickActionsRow(
+                    SimpleQuietFooterLinks(
                         enabledTargetCount = state.enabledTargetCount,
-                        stacked = stackQuickActions,
+                        showReloginHint = state.account?.status in setOf(
+                            AccountStatus.AUTH_EXPIRED,
+                            AccountStatus.VERIFICATION_REQUIRED,
+                        ),
                         onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+                        onSwitchToStandardMode = onSwitchToStandardMode,
                         onReloginClick = onReloginClick,
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
@@ -623,65 +680,60 @@ private fun SimpleTodayTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(modifier = Modifier.weight(1f, fill = false)) {
-            Surface(
-                onClick = {
-                    haptics.performFlameLightTick()
-                    onOpenAccountSwitcher()
-                },
-                interactionSource = accountInteraction,
+            Row(
                 modifier = Modifier
                     .flamePressScale(interactionSource = accountInteraction)
-                    .heightIn(min = 46.dp),
-                shape = RoundedCornerShape(999.dp),
-                color = palette.surface,
-                contentColor = palette.ink,
-                border = BorderStroke(
-                    width = 1.2.dp,
-                    color = if (otherAccountAlertBadge) semantics.dangerBorder else palette.hairlineStrong,
-                ),
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(
+                        interactionSource = accountInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onOpenAccountSwitcher()
+                        },
+                    )
+                    .heightIn(min = 42.dp)
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    modifier = Modifier.padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(9.dp)
-                            .clip(CircleShape)
-                            .background(statusStyle.dotColor),
-                    )
-                    Text(
-                        text = displayName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Icon(
-                        imageVector = Icons.Outlined.KeyboardArrowDown,
-                        contentDescription = "切换或管理账号",
-                        tint = palette.inkSecondary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(statusStyle.dotColor),
+                )
+                Text(
+                    text = displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Icon(
+                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = "切换或管理账号",
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(16.dp),
+                )
             }
             if (otherAccountAlertBadge) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = (-2).dp, y = 2.dp)
-                        .size(10.dp)
+                        .offset(x = (-2).dp, y = 4.dp)
+                        .size(8.dp)
                         .clip(CircleShape)
                         .background(semantics.danger)
-                        .border(2.dp, palette.surface, CircleShape),
+                        .border(1.5.dp, palette.canvas, CircleShape),
                 )
             }
         }
@@ -696,750 +748,884 @@ private fun SimpleTodayTopBar(
             interactionSource = settingsInteraction,
             modifier = Modifier
                 .flamePressScale(interactionSource = settingsInteraction)
-                .heightIn(min = 46.dp),
-            shape = RoundedCornerShape(999.dp),
-            color = palette.surface,
-            contentColor = palette.ink,
-            border = BorderStroke(1.2.dp, palette.hairlineStrong),
+                .size(40.dp)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "设置"
+                },
+            shape = CircleShape,
+            color = palette.surfaceSubtle,
+            contentColor = palette.inkSecondary,
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+            Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Outlined.Settings,
                     contentDescription = null,
-                    tint = palette.ink,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = "设置",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.ink,
-                    maxLines = 1,
-                    softWrap = false,
+                    modifier = Modifier.size(19.dp),
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SimpleAlertInterceptSection(
+private fun SimpleHeroEditorialSection(
     state: TodayUiState,
-    onOpenUnknownReview: (String?) -> Unit,
-    onReloginClick: () -> Unit,
-    onOpenCooldownDetail: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
+    actionState: SimpleActionState,
+    scheduleLine: String,
+    isInitialLoading: Boolean,
     onOpenTargets: () -> Unit,
+    onOpenSchedule: () -> Unit,
 ) {
-    val account = state.account
-    val status = account?.status ?: AccountStatus.PENDING_LOGIN
-    val isAuthIssue = account == null || status in setOf(
-        AccountStatus.PENDING_LOGIN,
-        AccountStatus.AUTH_EXPIRED,
-        AccountStatus.VERIFICATION_REQUIRED,
-    )
+    val palette = FlameThemeTokens.palette
+    val reducedMotion = rememberReducedMotion()
+    val fontScale = LocalDensity.current.fontScale
 
-    val hasUnknown = state.unknownReviewJobs.isNotEmpty()
-    val hasCooldown = status == AccountStatus.COOLDOWN
-    val hasDomBroken = status == AccountStatus.DOM_BROKEN
-    val hasNoTargets = !isAuthIssue && !hasCooldown && !hasDomBroken && state.enabledTargetCount == 0
-    val hasNoBoundTemplates = !isAuthIssue && !hasCooldown && !hasDomBroken &&
-        state.enabledTargetCount > 0 && state.boundEnabledTargetCount == 0
-
-    if (!hasUnknown && !isAuthIssue && !hasCooldown && !hasDomBroken && !hasNoTargets && !hasNoBoundTemplates) {
+    if (isInitialLoading) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 48.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.2.dp,
+                color = palette.inkSecondary,
+                trackColor = palette.hairline,
+            )
+            Text(
+                text = "正在读取今日续火状态…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = palette.inkTertiary,
+            )
+        }
         return
+    }
+
+    val eyebrowSpec = resolveSimpleEyebrowSpec(actionState = actionState, state = state)
+    val heroNumberSize = if (fontScale > 1.25f) 54.sp else 68.sp
+    val heroDenomSize = if (fontScale > 1.25f) 24.sp else 28.sp
+
+    val showNumericHero = state.enabledTargetCount > 0 && when (actionState) {
+        is SimpleActionState.ReadyToSend,
+        is SimpleActionState.AllCompletedToday,
+        is SimpleActionState.Executing,
+        is SimpleActionState.NeedsUnknownReview,
+        -> true
+
+        is SimpleActionState.Guided -> actionState.action !in setOf(
+            SimpleGuidedAction.LOGIN,
+            SimpleGuidedAction.SELECT_TARGETS,
+        )
     }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (hasUnknown) {
-            SimpleProminentAlertCard(
-                icon = Icons.AutoMirrored.Outlined.HelpOutline,
-                title = "有 ${state.unknownReviewJobs.size} 位好友发送结果待核对",
-                message = "系统无法确认消息是否已发出。为防止重复发送，请先在手机抖音里看一眼，再手动确认结果。",
-                actionLabel = "立即核对",
-                tone = FlameTone.DANGER,
-                onAction = { onOpenUnknownReview(state.unknownReviewJobs.firstOrNull()?.job?.id) },
-            )
-        }
-
-        if (isAuthIssue) {
-            val (title, message, tone) = when (status) {
-                AccountStatus.AUTH_EXPIRED -> Triple(
-                    "抖音登录已失效",
-                    "自动续火已暂停，请重新登录抖音账号后再继续续火。",
-                    FlameTone.DANGER,
-                )
-
-                AccountStatus.VERIFICATION_REQUIRED -> Triple(
-                    "抖音需要安全验证",
-                    "网页触发了安全验证，请亲自打开页面完成验证以恢复续火。",
-                    FlameTone.WARNING,
-                )
-
-                else -> Triple(
-                    "尚未登录抖音账号",
-                    "请先登录抖音账号，登录后即可一键自动给好友续火花。",
-                    FlameTone.WARNING,
-                )
-            }
-            SimpleProminentAlertCard(
-                icon = if (status == AccountStatus.VERIFICATION_REQUIRED) {
-                    Icons.Outlined.Security
-                } else {
-                    Icons.Outlined.QrCodeScanner
-                },
-                title = title,
-                message = message,
-                actionLabel = "去登录抖音",
-                tone = tone,
-                onAction = onReloginClick,
-            )
-        }
-
-        if (hasCooldown && account != null) {
-            SimpleProminentAlertCard(
-                icon = Icons.Outlined.WarningAmber,
-                title = "连续失败已暂停续火",
-                message = "已连续 ${account.failureStreak} 轮发送失败，系统已暂停保护。点下方查看原因并解除暂停。",
-                actionLabel = "查看并恢复",
-                tone = FlameTone.WARNING,
-                onAction = onOpenCooldownDetail,
-            )
-        }
-
-        if (hasDomBroken) {
-            SimpleProminentAlertCard(
-                icon = Icons.Outlined.Build,
-                title = "抖音网页结构异常",
-                message = "检测到聊天页面结构变化，为防误发已暂停自动续火，请前往诊断检查。",
-                actionLabel = "前往诊断",
-                tone = FlameTone.DANGER,
-                onAction = onOpenDiagnostics,
-            )
-        }
-
-        if (hasNoTargets) {
-            SimpleProminentAlertCard(
-                icon = Icons.Outlined.GroupAdd,
-                title = "尚未选择要续火的好友",
-                message = "先挑选需要每天续火花的好友并启用，之后就能一键完成续火。",
-                actionLabel = "去选续火好友",
-                tone = FlameTone.WARNING,
-                onAction = onOpenTargets,
-            )
-        }
-
-        if (hasNoBoundTemplates) {
-            SimpleProminentAlertCard(
-                icon = Icons.Outlined.ErrorOutline,
-                title = "启用好友尚未绑定消息模板",
-                message = "当前 ${state.enabledTargetCount} 位已启用好友还没有绑定发送内容，请前往好友页设置。",
-                actionLabel = "去选续火好友",
-                tone = FlameTone.WARNING,
-                onAction = onOpenTargets,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SimpleProminentAlertCard(
-    icon: ImageVector,
-    title: String,
-    message: String,
-    actionLabel: String,
-    tone: FlameTone,
-    onAction: () -> Unit,
-) {
-    val toneColors = resolveFlameToneColors(tone)
-    val semantics = FlameThemeTokens.semanticColors
-    val palette = FlameThemeTokens.palette
-    val haptics = LocalHapticFeedback.current
-    val buttonInteraction = remember { MutableInteractionSource() }
-
-    val ctaContainer = when (tone) {
-        FlameTone.DANGER -> Color(0xFFDC2626)
-        FlameTone.WARNING -> palette.monoCtaContainer
-        else -> palette.monoCtaContainer
-    }
-    val ctaContent = when (tone) {
-        FlameTone.DANGER -> Color.White
-        FlameTone.WARNING -> palette.monoCtaContent
-        else -> palette.monoCtaContent
-    }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = toneColors.container,
-        contentColor = toneColors.onContainer,
-        border = BorderStroke(
-            width = if (tone == FlameTone.DANGER) 1.8.dp else 1.4.dp,
-            color = if (tone == FlameTone.DANGER) semantics.dangerBorder else toneColors.border,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = toneColors.fg,
-                    modifier = Modifier.size(24.dp),
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = toneColors.onContainer,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyLarge,
-                color = toneColors.onContainer.copy(alpha = 0.92f),
-            )
-            Button(
-                onClick = {
-                    haptics.performFlameLightTick()
-                    onAction()
-                },
-                interactionSource = buttonInteraction,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .flamePressScale(interactionSource = buttonInteraction)
-                    .heightIn(min = 52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ctaContainer,
-                    contentColor = ctaContent,
-                ),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-            ) {
-                Text(
-                    text = actionLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SimpleCentralFlameButton(
-    actionState: SimpleActionState,
-    diameter: Dp,
-    onClick: () -> Unit,
-) {
-    val palette = FlameThemeTokens.palette
-    val semantics = FlameThemeTokens.semanticColors
-    val isDark = FlameThemeTokens.isDark
-    val reducedMotion = rememberReducedMotion()
-    val haptics = LocalHapticFeedback.current
-    val fontScale = LocalDensity.current.fontScale
-    val interactionSource = remember { MutableInteractionSource() }
-    val isClickable = actionState !is SimpleActionState.Executing
-
-    val colorAnimDuration = if (reducedMotion) 0 else 220
-
-    val targetRingColor = when (actionState) {
-        is SimpleActionState.Executing -> palette.ember
-        is SimpleActionState.NeedsUnknownReview -> Color(0xFFDC2626)
-        is SimpleActionState.Guided -> when (actionState.action) {
-            SimpleGuidedAction.RECOVER_COOLDOWN,
-            SimpleGuidedAction.OPEN_DIAGNOSTICS,
-            -> semantics.warning
-
-            else -> palette.monoCtaContainer
-        }
-
-        is SimpleActionState.ReadyToSend -> palette.emberBright
-        is SimpleActionState.AllCompletedToday -> semantics.healthy
-    }
-
-    val ringColor by animateColorAsState(
-        targetValue = targetRingColor,
-        animationSpec = tween(durationMillis = colorAnimDuration, easing = FlameMotionSpec.easeOut),
-        label = "simple_main_ring_color",
-    )
-
-    val outerDiameter = diameter + 24.dp
-    val iconSize = if (fontScale > 1.25f) 36.dp else 44.dp
-
-    Box(
-        modifier = Modifier.size(outerDiameter),
-        contentAlignment = Alignment.Center,
-    ) {
-        // 克制柔和静态外环，提供明确视觉聚焦（无装饰性循环动画）
-        Box(
-            modifier = Modifier
-                .size(outerDiameter)
-                .clip(CircleShape)
-                .background(ringColor.copy(alpha = if (isDark) 0.16f else 0.11f))
-                .border(
-                    width = 1.5.dp,
-                    color = ringColor.copy(alpha = if (isDark) 0.34f else 0.24f),
-                    shape = CircleShape,
-                ),
+        // 顶部柔和语义眉标（无重框）
+        SimpleStatusEyebrowPill(
+            text = eyebrowSpec.text,
+            icon = eyebrowSpec.icon,
+            tone = eyebrowSpec.tone,
+            showSpinner = actionState is SimpleActionState.Executing,
         )
 
-        val circleModifier = Modifier
-            .flamePressScale(
-                interactionSource = interactionSource,
-                pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
-                enabled = isClickable,
-            )
-            .size(diameter)
-            .clip(CircleShape)
+        Spacer(modifier = Modifier.height(18.dp))
 
-        val circleBrush: Brush = when (actionState) {
-            is SimpleActionState.Executing ->
-                Brush.linearGradient(listOf(palette.emberContainer, palette.emberContainer))
+        // 视觉主角：大号等宽数字（或引导态标题）
+        AnimatedContent(
+            targetState = Pair(showNumericHero, actionState),
+            transitionSpec = {
+                if (reducedMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    fadeIn(tween(FlameMotionSpec.TAB_ENTER_MS, easing = FlameMotionSpec.easeOut)) togetherWith
+                        fadeOut(tween(FlameMotionSpec.TAB_EXIT_MS, easing = FlameMotionSpec.easeOut))
+                }
+            },
+            label = "simple_hero_editorial",
+        ) { (numeric, current) ->
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (numeric) {
+                    val numerator = when (current) {
+                        is SimpleActionState.Executing -> if (current.progressTotal > 0) {
+                            current.progressCurrent
+                        } else {
+                            state.succeededTodayCount
+                        }
 
-            is SimpleActionState.NeedsUnknownReview ->
-                Brush.verticalGradient(listOf(Color(0xFFEF4444), Color(0xFFDC2626)))
-
-            is SimpleActionState.Guided -> when (actionState.action) {
-                SimpleGuidedAction.RECOVER_COOLDOWN,
-                SimpleGuidedAction.OPEN_DIAGNOSTICS,
-                -> Brush.verticalGradient(listOf(Color(0xFFD97706), Color(0xFFB45309)))
-
-                else -> Brush.linearGradient(
-                    listOf(palette.monoCtaContainer, palette.monoCtaContainer),
-                )
-            }
-
-            is SimpleActionState.ReadyToSend -> if (isDark) {
-                Brush.verticalGradient(listOf(palette.emberBright, palette.ember))
-            } else {
-                Brush.verticalGradient(listOf(palette.emberBright, palette.ember))
-            }
-
-            is SimpleActionState.AllCompletedToday -> if (isDark) {
-                Brush.verticalGradient(listOf(Color(0xFF059669), Color(0xFF047857)))
-            } else {
-                Brush.verticalGradient(listOf(Color(0xFF10B981), Color(0xFF059669)))
-            }
-        }
-
-        val rimBrush = when (actionState) {
-            is SimpleActionState.Executing ->
-                Brush.linearGradient(listOf(palette.emberBorder, palette.emberBorder))
-
-            else -> Brush.verticalGradient(
-                listOf(
-                    Color.White.copy(alpha = if (isDark) 0.24f else 0.36f),
-                    Color.White.copy(alpha = 0.06f),
-                ),
-            )
-        }
-
-        Box(
-            modifier = circleModifier
-                .background(circleBrush)
-                .border(width = 1.5.dp, brush = rimBrush, shape = CircleShape)
-                .clickable(
-                    enabled = isClickable,
-                    interactionSource = interactionSource,
-                    indication = LocalIndication.current,
-                    role = Role.Button,
-                    onClick = {
-                        haptics.performFlameLightTick()
-                        onClick()
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            AnimatedContent(
-                targetState = actionState,
-                transitionSpec = {
-                    if (reducedMotion) {
-                        EnterTransition.None togetherWith ExitTransition.None
-                    } else {
-                        (fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
-                            scaleIn(
-                                initialScale = 0.96f,
-                                animationSpec = tween(180, easing = FlameMotionSpec.easeOut),
-                            )) togetherWith fadeOut(tween(130, easing = FlameMotionSpec.easeOut))
+                        is SimpleActionState.ReadyToSend -> current.succeededCount
+                        is SimpleActionState.AllCompletedToday -> current.succeededCount
+                        else -> state.succeededTodayCount
                     }
-                },
-                label = "simple_circle_button_content",
-            ) { current ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 18.dp, vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    when (current) {
-                        is SimpleActionState.Executing -> {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(iconSize),
-                                strokeWidth = 3.8.dp,
-                                color = palette.ember,
-                                trackColor = palette.emberBorder.copy(alpha = 0.45f),
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "续火中…",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.ember,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = current.progressText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = palette.ember.copy(alpha = 0.88f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center,
-                            )
+                    val denominator = when (current) {
+                        is SimpleActionState.Executing -> if (current.progressTotal > 0) {
+                            current.progressTotal
+                        } else {
+                            state.enabledTargetCount
                         }
 
-                        is SimpleActionState.NeedsUnknownReview -> {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(iconSize),
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "先核对结果",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "待人工核对 ${current.unknownCount} 条",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White.copy(alpha = 0.92f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                        is SimpleActionState.ReadyToSend -> current.totalCount
+                        is SimpleActionState.AllCompletedToday -> current.totalCount
+                        else -> state.enabledTargetCount
+                    }
 
-                        is SimpleActionState.Guided -> {
-                            val contentColor = when (current.action) {
-                                SimpleGuidedAction.RECOVER_COOLDOWN,
-                                SimpleGuidedAction.OPEN_DIAGNOSTICS,
-                                -> Color.White
-
-                                else -> palette.monoCtaContent
-                            }
-                            val guidedIcon = when (current.action) {
-                                SimpleGuidedAction.LOGIN -> Icons.Outlined.QrCodeScanner
-                                SimpleGuidedAction.SELECT_TARGETS -> Icons.Outlined.GroupAdd
-                                SimpleGuidedAction.RECOVER_COOLDOWN -> Icons.Outlined.WarningAmber
-                                SimpleGuidedAction.OPEN_DIAGNOSTICS -> Icons.Outlined.Build
-                                SimpleGuidedAction.OPEN_SCHEDULE -> Icons.Outlined.Schedule
-                            }
-                            Icon(
-                                imageVector = guidedIcon,
-                                contentDescription = null,
-                                tint = contentColor,
-                                modifier = Modifier.size(iconSize),
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = current.title,
-                                style = MaterialTheme.typography.headlineSmall,
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            text = numerator.toString(),
+                            style = MaterialTheme.typography.displaySmall.copy(
+                                fontSize = heroNumberSize,
+                                lineHeight = heroNumberSize * 1.04f,
                                 fontWeight = FontWeight.Bold,
-                                color = contentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = current.subtitle,
-                                style = MaterialTheme.typography.bodyMedium,
+                                letterSpacing = (-2).sp,
+                                fontFeatureSettings = "tnum",
+                            ),
+                            color = palette.ink,
+                            modifier = Modifier.alignByBaseline(),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "/ $denominator",
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontSize = heroDenomSize,
+                                lineHeight = heroDenomSize * 1.1f,
                                 fontWeight = FontWeight.Medium,
-                                color = contentColor.copy(alpha = 0.85f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
+                                fontFeatureSettings = "tnum",
+                            ),
+                            color = palette.inkTertiary,
+                            modifier = Modifier.alignByBaseline(),
+                        )
+                    }
 
-                        is SimpleActionState.ReadyToSend -> {
-                            Icon(
-                                imageVector = Icons.Filled.LocalFireDepartment,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(iconSize),
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "一键续火",
-                                style = MaterialTheme.typography.headlineMedium.copy(
-                                    fontSize = 26.sp,
-                                    lineHeight = 32.sp,
-                                ),
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(5.dp))
-                            Text(
-                                text = "今日 ${current.succeededCount} / ${current.totalCount}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White.copy(alpha = 0.94f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                        is SimpleActionState.AllCompletedToday -> {
-                            Icon(
-                                imageVector = Icons.Outlined.CheckCircle,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(iconSize),
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = if (current.allSucceeded) "今日已续完" else "今日已处理",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "${current.succeededCount} / ${current.totalCount}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White.copy(alpha = 0.96f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = "再次点击可重发",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White.copy(alpha = 0.86f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                    val subtitleText = buildString {
+                        append(
+                            when (current) {
+                                is SimpleActionState.AllCompletedToday ->
+                                    if (current.allSucceeded) "今日已全部安全点亮" else "今日已全部处理"
+
+                                is SimpleActionState.Executing ->
+                                    state.executionState.currentTask?.takeIf { it.isNotBlank() }
+                                        ?: "正在逐位确认送达…"
+
+                                is SimpleActionState.NeedsUnknownReview ->
+                                    "已暂停自动重发，请先人工核对"
+
+                                else -> "今日已点亮火花好友"
+                            },
+                        )
+                        val maxSpark = state.maxOfficialSparkDays
+                        if (maxSpark != null && maxSpark > 0 && current !is SimpleActionState.Executing) {
+                            append(" · 最长 ")
+                            append(maxSpark)
+                            append(" 天")
                         }
                     }
+
+                    Text(
+                        text = subtitleText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.inkTertiary,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    val (headline, description) = resolveGuidedHeroCopy(actionState = current, state = state)
+                    Text(
+                        text = headline,
+                        style = MaterialTheme.typography.displaySmall.copy(
+                            fontSize = if (fontScale > 1.25f) 28.sp else 32.sp,
+                            lineHeight = if (fontScale > 1.25f) 36.sp else 40.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = (-0.5).sp,
+                        ),
+                        color = palette.ink,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.inkSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.widthIn(max = 280.dp),
+                    )
                 }
             }
         }
+
+        // 极简圆点进度条（可点击直接进入续火好友列表）
+        if (state.enabledTargetCount > 0) {
+            val dotModel = remember(
+                state.enabledTargetCount,
+                state.succeededTodayCount,
+                state.unknownReviewJobs.size,
+                actionState,
+            ) {
+                buildSimpleProgressDots(
+                    totalCount = state.enabledTargetCount,
+                    succeededCount = state.succeededTodayCount,
+                    unknownCount = state.unknownReviewJobs.size,
+                    allCompleted = actionState is SimpleActionState.AllCompletedToday,
+                )
+            }
+            Spacer(modifier = Modifier.height(22.dp))
+            SimpleProgressDotStrip(
+                model = dotModel,
+                onClick = onOpenTargets,
+            )
+        }
+
+        // 异常说明或单行定时状态（绝不与底部主按钮重复出按钮）
+        val inlineAlert = resolveSimpleInlineAlert(actionState = actionState, state = state)
+        if (inlineAlert != null) {
+            Spacer(modifier = Modifier.height(20.dp))
+            SimpleInlineCallout(
+                text = inlineAlert.message,
+                tone = inlineAlert.tone,
+            )
+        } else {
+            val liveNote = remember(state.executionState) {
+                when {
+                    state.executionState.running -> null
+                    !state.executionState.lastErrorSummary.isNullOrBlank() ->
+                        state.executionState.lastErrorSummary to true
+
+                    !state.executionState.lastMessage.isNullOrBlank() ->
+                        state.executionState.lastMessage to false
+
+                    else -> null
+                }
+            }
+            if (liveNote != null) {
+                Spacer(modifier = Modifier.height(18.dp))
+                SimpleInlineCallout(
+                    text = liveNote.first!!,
+                    tone = if (liveNote.second) FlameTone.DANGER else FlameTone.NEUTRAL,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(22.dp))
+            SimpleQuietScheduleRow(
+                text = scheduleLine,
+                isActive = state.account?.enabled == true &&
+                    state.account.status in setOf(AccountStatus.HEALTHY, AccountStatus.RUNNING),
+                onClick = onOpenSchedule,
+            )
+        }
+    }
+}
+
+private data class SimpleEyebrowSpec(
+    val text: String,
+    val icon: ImageVector,
+    val tone: FlameTone,
+)
+
+private fun resolveSimpleEyebrowSpec(
+    actionState: SimpleActionState,
+    state: TodayUiState,
+): SimpleEyebrowSpec = when (actionState) {
+    is SimpleActionState.Executing -> SimpleEyebrowSpec(
+        text = "正在续火 · ${actionState.progressText}",
+        icon = Icons.Filled.LocalFireDepartment,
+        tone = FlameTone.EMBER,
+    )
+
+    is SimpleActionState.NeedsUnknownReview -> SimpleEyebrowSpec(
+        text = "${actionState.unknownCount} 位发送结果待核对",
+        icon = Icons.AutoMirrored.Outlined.HelpOutline,
+        tone = FlameTone.DANGER,
+    )
+
+    is SimpleActionState.ReadyToSend -> SimpleEyebrowSpec(
+        text = "今日待续 ${actionState.pendingCount} 位",
+        icon = Icons.Filled.LocalFireDepartment,
+        tone = FlameTone.NEUTRAL,
+    )
+
+    is SimpleActionState.AllCompletedToday -> SimpleEyebrowSpec(
+        text = if (actionState.allSucceeded) "今日已全部点亮" else "今日已全部处理",
+        icon = Icons.Outlined.CheckCircle,
+        tone = FlameTone.HEALTHY,
+    )
+
+    is SimpleActionState.Guided -> when (actionState.action) {
+        SimpleGuidedAction.LOGIN -> when (state.account?.status) {
+            AccountStatus.AUTH_EXPIRED -> SimpleEyebrowSpec(
+                text = "登录态已失效",
+                icon = Icons.Outlined.QrCodeScanner,
+                tone = FlameTone.DANGER,
+            )
+
+            AccountStatus.VERIFICATION_REQUIRED -> SimpleEyebrowSpec(
+                text = "需本人安全验证",
+                icon = Icons.Outlined.Security,
+                tone = FlameTone.WARNING,
+            )
+
+            else -> SimpleEyebrowSpec(
+                text = "尚未绑定抖音号",
+                icon = Icons.Outlined.QrCodeScanner,
+                tone = FlameTone.NEUTRAL,
+            )
+        }
+
+        SimpleGuidedAction.SELECT_TARGETS -> SimpleEyebrowSpec(
+            text = if (state.enabledTargetCount == 0) "尚未挑选续火好友" else "好友未绑定模板",
+            icon = Icons.Outlined.GroupAdd,
+            tone = FlameTone.NEUTRAL,
+        )
+
+        SimpleGuidedAction.RECOVER_COOLDOWN -> SimpleEyebrowSpec(
+            text = "连续失败已暂停保护",
+            icon = Icons.Outlined.WarningAmber,
+            tone = FlameTone.WARNING,
+        )
+
+        SimpleGuidedAction.OPEN_DIAGNOSTICS -> SimpleEyebrowSpec(
+            text = "网页结构异常",
+            icon = Icons.Outlined.Build,
+            tone = FlameTone.DANGER,
+        )
+
+        SimpleGuidedAction.OPEN_SCHEDULE -> SimpleEyebrowSpec(
+            text = "自动续火已暂停",
+            icon = Icons.Outlined.Schedule,
+            tone = FlameTone.NEUTRAL,
+        )
+    }
+}
+
+private fun resolveGuidedHeroCopy(
+    actionState: SimpleActionState,
+    state: TodayUiState,
+): Pair<String, String> = when (actionState) {
+    is SimpleActionState.Guided -> when (actionState.action) {
+        SimpleGuidedAction.LOGIN -> when (state.account?.status) {
+            AccountStatus.AUTH_EXPIRED -> "登录已失效" to "重新登录抖音账号后，即可恢复一键与自动续火"
+            AccountStatus.VERIFICATION_REQUIRED -> "需要安全验证" to "网页触发了安全验证，请亲自打开页面完成验证"
+            else -> "先登录抖音" to "绑定你的抖音账号后，每天一键即可给好友续火花"
+        }
+
+        SimpleGuidedAction.SELECT_TARGETS -> if (state.enabledTargetCount == 0) {
+            "准备开始" to "先扫描抖音会话挑选续火好友，之后每天一键即可完成"
+        } else {
+            "绑定发送模板" to "已启用 ${state.enabledTargetCount} 位好友，先给他们选择默认续火内容"
+        }
+
+        SimpleGuidedAction.RECOVER_COOLDOWN -> "续火已暂停" to "连续失败触发保护，查看原因并恢复后再继续发送"
+        SimpleGuidedAction.OPEN_DIAGNOSTICS -> "页面结构变动" to "检测到抖音聊天页改版，为防误发已暂停自动发送"
+        SimpleGuidedAction.OPEN_SCHEDULE -> "自动续火已关" to "开启排班开关后，每天会在设定时段自动帮你续火"
+    }
+
+    else -> "今日续火" to "一切就绪"
+}
+
+private data class SimpleInlineAlert(
+    val message: String,
+    val tone: FlameTone,
+)
+
+private fun resolveSimpleInlineAlert(
+    actionState: SimpleActionState,
+    state: TodayUiState,
+): SimpleInlineAlert? = when (actionState) {
+    is SimpleActionState.NeedsUnknownReview -> SimpleInlineAlert(
+        message = "系统无法确认 ${actionState.unknownCount} 位好友是否已收到消息。为防重复发送，请先在手机抖音里看一眼再手动确认。",
+        tone = FlameTone.DANGER,
+    )
+
+    is SimpleActionState.Guided -> when (actionState.action) {
+        SimpleGuidedAction.RECOVER_COOLDOWN -> SimpleInlineAlert(
+            message = "已连续 ${state.account?.failureStreak ?: 0} 轮发送失败，自动续火已暂停保护。点击下方按钮查看原因并恢复。",
+            tone = FlameTone.WARNING,
+        )
+
+        SimpleGuidedAction.OPEN_DIAGNOSTICS -> SimpleInlineAlert(
+            message = "检测到抖音网页结构变化，为防误发已暂停自动续火，请前往诊断页核查。",
+            tone = FlameTone.DANGER,
+        )
+
+        else -> null
+    }
+
+    else -> null
+}
+
+@Composable
+private fun SimpleStatusEyebrowPill(
+    text: String,
+    icon: ImageVector,
+    tone: FlameTone,
+    showSpinner: Boolean,
+) {
+    val palette = FlameThemeTokens.palette
+    val toneColors = resolveFlameToneColors(tone)
+    val bgColor = if (tone == FlameTone.NEUTRAL) palette.surfaceSubtle else toneColors.container
+    val fgColor = if (tone == FlameTone.NEUTRAL) palette.inkSecondary else toneColors.fg
+
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = bgColor,
+        contentColor = fgColor,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (showSpinner) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(13.dp),
+                    strokeWidth = 2.dp,
+                    color = fgColor,
+                    trackColor = fgColor.copy(alpha = 0.2f),
+                )
+            } else {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = fgColor,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+                color = fgColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SimpleProgressDotStrip(
+    model: SimpleProgressDotStripModel,
+    onClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+
+    FlowRow(
+        modifier = Modifier
+            .widthIn(max = 264.dp)
+            .flamePressScale(interactionSource = interaction)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onClick()
+                },
+            )
+            .semantics { contentDescription = "查看续火好友列表" }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        model.dots.forEach { kind ->
+            val dotColor = when (kind) {
+                SimpleProgressDotKind.DONE_EMBER -> palette.ember
+                SimpleProgressDotKind.DONE_HEALTHY -> semantics.healthy
+                SimpleProgressDotKind.UNKNOWN_DANGER -> semantics.danger
+                SimpleProgressDotKind.PENDING -> palette.hairlineStrong
+            }
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+        }
+        if (model.overflowCount > 0) {
+            Text(
+                text = "+${model.overflowCount}",
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.inkTertiary,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }
 
 @Composable
-private fun SimpleLiveStatusNote(
+private fun SimpleInlineCallout(
     text: String,
-    isError: Boolean,
+    tone: FlameTone,
 ) {
     val palette = FlameThemeTokens.palette
-    val semantics = FlameThemeTokens.semanticColors
+    val toneColors = resolveFlameToneColors(tone)
+    val bgColor = if (tone == FlameTone.NEUTRAL) palette.surfaceSubtle else toneColors.container
+    val borderColor = if (tone == FlameTone.NEUTRAL) palette.hairline else toneColors.border
+    val textColor = if (tone == FlameTone.NEUTRAL) palette.inkSecondary else toneColors.onContainer
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = if (isError) semantics.dangerContainer else palette.surfaceSubtle,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (isError) semantics.dangerBorder else palette.hairline,
-        ),
+        shape = RoundedCornerShape(16.dp),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor),
     ) {
         Text(
             text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (isError) semantics.onDangerContainer else palette.inkSecondary,
+            style = MaterialTheme.typography.bodySmall,
+            color = textColor,
             textAlign = TextAlign.Center,
-            maxLines = 3,
+            maxLines = 4,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         )
     }
 }
 
 @Composable
-private fun SimpleScheduleStatusCard(
+private fun SimpleQuietScheduleRow(
     text: String,
-    isEnabled: Boolean,
+    isActive: Boolean,
     onClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val haptics = LocalHapticFeedback.current
-    val interactionSource = remember { MutableInteractionSource() }
+    val interaction = remember { MutableInteractionSource() }
 
-    Surface(
-        onClick = {
-            haptics.performFlameLightTick()
-            onClick()
-        },
-        interactionSource = interactionSource,
+    Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .flamePressScale(interactionSource = interactionSource)
-            .heightIn(min = 52.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = palette.surface,
-        contentColor = palette.ink,
-        border = BorderStroke(1.dp, palette.hairline),
+            .flamePressScale(interactionSource = interaction)
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onClick()
+                },
+            )
+            .heightIn(min = 38.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Schedule,
-                contentDescription = null,
-                tint = if (isEnabled) semantics.healthy else palette.inkTertiary,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = palette.ink,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = "调整定时设置",
-                tint = palette.inkTertiary,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+        Icon(
+            imageVector = Icons.Outlined.Schedule,
+            contentDescription = null,
+            tint = if (isActive) semantics.healthy else palette.inkTertiary,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = palette.inkSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = "调整定时设置",
+            tint = palette.inkTertiary,
+            modifier = Modifier.size(15.dp),
+        )
     }
 }
 
 @Composable
-private fun SimpleQuickActionsRow(
-    enabledTargetCount: Int,
-    stacked: Boolean,
-    onOpenTargets: () -> Unit,
-    onReloginClick: () -> Unit,
-) {
-    if (stacked) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            SimpleQuickActionButton(
-                icon = Icons.Outlined.Groups,
-                label = "续火好友（$enabledTargetCount 位）",
-                onClick = onOpenTargets,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            SimpleQuickActionButton(
-                icon = Icons.Outlined.QrCodeScanner,
-                label = "重登抖音",
-                onClick = onReloginClick,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-    } else {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SimpleQuickActionButton(
-                icon = Icons.Outlined.Groups,
-                label = "续火好友（$enabledTargetCount 位）",
-                onClick = onOpenTargets,
-                modifier = Modifier.weight(1f),
-            )
-            SimpleQuickActionButton(
-                icon = Icons.Outlined.QrCodeScanner,
-                label = "重登抖音",
-                onClick = onReloginClick,
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SimpleQuickActionButton(
-    icon: ImageVector,
-    label: String,
+private fun SimpleBottomPrimaryButton(
+    actionState: SimpleActionState,
+    state: TodayUiState,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val reducedMotion = rememberReducedMotion()
     val haptics = LocalHapticFeedback.current
-    val interactionSource = remember { MutableInteractionSource() }
+    val interaction = remember { MutableInteractionSource() }
+    val enabled = actionState !is SimpleActionState.Executing
+    val animDuration = if (reducedMotion) 0 else 200
+
+    val targetContainer = when (actionState) {
+        is SimpleActionState.Executing -> palette.emberContainer
+        is SimpleActionState.NeedsUnknownReview -> Color(0xFFDC2626)
+        is SimpleActionState.AllCompletedToday -> palette.surface
+        is SimpleActionState.ReadyToSend -> palette.monoCtaContainer
+        is SimpleActionState.Guided -> when (actionState.action) {
+            SimpleGuidedAction.OPEN_DIAGNOSTICS -> Color(0xFFDC2626)
+            else -> palette.monoCtaContainer
+        }
+    }
+    val targetContent = when (actionState) {
+        is SimpleActionState.Executing -> palette.ember
+        is SimpleActionState.NeedsUnknownReview -> Color.White
+        is SimpleActionState.AllCompletedToday -> palette.ink
+        is SimpleActionState.ReadyToSend -> palette.monoCtaContent
+        is SimpleActionState.Guided -> when (actionState.action) {
+            SimpleGuidedAction.OPEN_DIAGNOSTICS -> Color.White
+            else -> palette.monoCtaContent
+        }
+    }
+    val targetBorder = when (actionState) {
+        is SimpleActionState.Executing -> palette.emberBorder
+        is SimpleActionState.AllCompletedToday -> palette.hairlineStrong
+        else -> Color.Transparent
+    }
+
+    val containerColor by animateColorAsState(
+        targetValue = targetContainer,
+        animationSpec = tween(durationMillis = animDuration, easing = FlameMotionSpec.easeOut),
+        label = "simple_cta_bg",
+    )
+    val contentColor by animateColorAsState(
+        targetValue = targetContent,
+        animationSpec = tween(durationMillis = animDuration, easing = FlameMotionSpec.easeOut),
+        label = "simple_cta_fg",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = targetBorder,
+        animationSpec = tween(durationMillis = animDuration, easing = FlameMotionSpec.easeOut),
+        label = "simple_cta_border",
+    )
+
+    val label = remember(actionState, state.account?.status, state.enabledTargetCount) {
+        resolveSimplePrimaryCtaLabel(actionState = actionState, state = state)
+    }
 
     Surface(
         onClick = {
             haptics.performFlameLightTick()
             onClick()
         },
-        interactionSource = interactionSource,
-        modifier = modifier
-            .flamePressScale(interactionSource = interactionSource)
-            .heightIn(min = 58.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = palette.surface,
-        contentColor = palette.ink,
-        border = BorderStroke(1.4.dp, palette.hairlineStrong),
+        enabled = enabled,
+        interactionSource = interaction,
+        modifier = Modifier
+            .fillMaxWidth()
+            .flamePressScale(
+                interactionSource = interaction,
+                pressedScale = FlameMotionSpec.PRESS_SCALE_DEFAULT,
+                enabled = enabled,
+            )
+            .heightIn(min = 56.dp),
+        shape = RoundedCornerShape(999.dp),
+        color = containerColor,
+        contentColor = contentColor,
+        border = if (borderColor == Color.Transparent) null else BorderStroke(1.dp, borderColor),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .padding(horizontal = 22.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = palette.ink,
-                modifier = Modifier.size(21.dp),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
+            when (actionState) {
+                is SimpleActionState.Executing -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.2.dp,
+                        color = contentColor,
+                        trackColor = contentColor.copy(alpha = 0.22f),
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                }
+
+                is SimpleActionState.ReadyToSend -> {
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = null,
+                        tint = palette.emberBright,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                is SimpleActionState.AllCompletedToday -> {
+                    Icon(
+                        imageVector = Icons.Outlined.CheckCircle,
+                        contentDescription = null,
+                        tint = semantics.healthy,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                is SimpleActionState.NeedsUnknownReview -> {
+                    Icon(
+                        imageVector = Icons.Outlined.ErrorOutline,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
+                is SimpleActionState.Guided -> {
+                    val guidedIcon = when (actionState.action) {
+                        SimpleGuidedAction.LOGIN -> Icons.Outlined.QrCodeScanner
+                        SimpleGuidedAction.SELECT_TARGETS -> Icons.Outlined.GroupAdd
+                        SimpleGuidedAction.RECOVER_COOLDOWN -> Icons.Outlined.WarningAmber
+                        SimpleGuidedAction.OPEN_DIAGNOSTICS -> Icons.Outlined.Build
+                        SimpleGuidedAction.OPEN_SCHEDULE -> Icons.Outlined.Schedule
+                    }
+                    Icon(
+                        imageVector = guidedIcon,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+            }
+
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = palette.ink,
-                maxLines = 2,
+                color = contentColor,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SimpleQuietFooterLinks(
+    enabledTargetCount: Int,
+    showReloginHint: Boolean,
+    onOpenTargets: () -> Unit,
+    onSwitchToStandardMode: () -> Unit,
+    onReloginClick: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+    val targetsInteraction = remember { MutableInteractionSource() }
+    val modeInteraction = remember { MutableInteractionSource() }
+    val reloginInteraction = remember { MutableInteractionSource() }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .flamePressScale(interactionSource = targetsInteraction)
+                .clip(RoundedCornerShape(999.dp))
+                .clickable(
+                    interactionSource = targetsInteraction,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onOpenTargets()
+                    },
+                )
+                .heightIn(min = 40.dp)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Groups,
+                contentDescription = null,
+                tint = palette.inkSecondary,
+                modifier = Modifier.size(15.dp),
+            )
+            Text(
+                text = if (enabledTargetCount > 0) "续火好友 ($enabledTargetCount)" else "续火好友",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                color = palette.inkSecondary,
+                maxLines = 1,
+            )
+        }
+
+        Text(
+            text = "·",
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.hairlineStrong,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
+
+        if (showReloginHint) {
+            Box(
+                modifier = Modifier
+                    .flamePressScale(interactionSource = reloginInteraction)
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(
+                        interactionSource = reloginInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onReloginClick()
+                        },
+                    )
+                    .heightIn(min = 40.dp)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "重登抖音",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = "·",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.hairlineStrong,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .flamePressScale(interactionSource = modeInteraction)
+                .clip(RoundedCornerShape(999.dp))
+                .clickable(
+                    interactionSource = modeInteraction,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onSwitchToStandardMode()
+                    },
+                )
+                .heightIn(min = 40.dp)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "切换标准模式",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                color = palette.inkSecondary,
+                maxLines = 1,
             )
         }
     }

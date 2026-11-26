@@ -235,6 +235,80 @@ class SimpleTodayActionStateTest {
         )
     }
 
+    @Test
+    fun `buildSimpleProgressDots maps ember, healthy, danger, pending and overflow cleanly`() {
+        val empty = buildSimpleProgressDots(totalCount = 0, succeededCount = 0, unknownCount = 0, allCompleted = false)
+        assertTrue(empty.dots.isEmpty())
+        assertEquals(0, empty.overflowCount)
+
+        val inProgress = buildSimpleProgressDots(totalCount = 5, succeededCount = 3, unknownCount = 0, allCompleted = false)
+        assertEquals(
+            listOf(
+                SimpleProgressDotKind.DONE_EMBER,
+                SimpleProgressDotKind.DONE_EMBER,
+                SimpleProgressDotKind.DONE_EMBER,
+                SimpleProgressDotKind.PENDING,
+                SimpleProgressDotKind.PENDING,
+            ),
+            inProgress.dots,
+        )
+        assertEquals(0, inProgress.overflowCount)
+
+        val doneAll = buildSimpleProgressDots(totalCount = 3, succeededCount = 3, unknownCount = 0, allCompleted = true)
+        assertEquals(
+            listOf(
+                SimpleProgressDotKind.DONE_HEALTHY,
+                SimpleProgressDotKind.DONE_HEALTHY,
+                SimpleProgressDotKind.DONE_HEALTHY,
+            ),
+            doneAll.dots,
+        )
+
+        val withUnknown = buildSimpleProgressDots(totalCount = 4, succeededCount = 2, unknownCount = 1, allCompleted = false)
+        assertEquals(
+            listOf(
+                SimpleProgressDotKind.DONE_EMBER,
+                SimpleProgressDotKind.DONE_EMBER,
+                SimpleProgressDotKind.PENDING,
+                SimpleProgressDotKind.UNKNOWN_DANGER,
+            ),
+            withUnknown.dots,
+        )
+
+        val overflowed = buildSimpleProgressDots(totalCount = 25, succeededCount = 10, unknownCount = 0, allCompleted = false)
+        assertEquals(SIMPLE_MAX_VISIBLE_DOTS, overflowed.dots.size)
+        assertEquals(25 - SIMPLE_MAX_VISIBLE_DOTS, overflowed.overflowCount)
+        assertTrue(overflowed.dots.any { it == SimpleProgressDotKind.DONE_EMBER })
+        assertTrue(overflowed.dots.any { it == SimpleProgressDotKind.PENDING })
+    }
+
+    @Test
+    fun `resolveSimplePrimaryCtaLabel matches every state clearly without jargon`() {
+        val readyState = baseHealthyState().copy(enabledTargetCount = 15, boundEnabledTargetCount = 15, succeededTodayCount = 12, pendingTargetCount = 3)
+        assertEquals(
+            "立即续火（还差 3 位）",
+            resolveSimplePrimaryCtaLabel(resolveSimpleActionState(readyState), readyState),
+        )
+
+        val doneState = baseHealthyState().copy(enabledTargetCount = 15, boundEnabledTargetCount = 15, succeededTodayCount = 15, pendingTargetCount = 0)
+        assertEquals(
+            "今日已续完 · 点此重发",
+            resolveSimplePrimaryCtaLabel(resolveSimpleActionState(doneState), doneState),
+        )
+
+        val expiredState = baseHealthyState(AccountStatus.AUTH_EXPIRED)
+        assertEquals(
+            "重新登录抖音",
+            resolveSimplePrimaryCtaLabel(resolveSimpleActionState(expiredState), expiredState),
+        )
+
+        val emptyTargets = baseHealthyState().copy(enabledTargetCount = 0, boundEnabledTargetCount = 0, pendingTargetCount = 0)
+        assertEquals(
+            "去扫描并挑选好友",
+            resolveSimplePrimaryCtaLabel(resolveSimpleActionState(emptyTargets), emptyTargets),
+        )
+    }
+
     private fun baseAccount(
         status: AccountStatus = AccountStatus.HEALTHY,
         enabled: Boolean = true,

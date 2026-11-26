@@ -403,6 +403,9 @@ class MainActivity : AppCompatActivity() {
                                 urgentSignalNonce = urgentNonceForActive,
                                 accountId = activeAccountId,
                                 displayMode = themePreference.displayMode,
+                                onSwitchToStandardMode = {
+                                    container.themePreferencesStore.setDisplayMode(UiDisplayMode.STANDARD)
+                                },
                             )
                         },
                         targetsContent = {
