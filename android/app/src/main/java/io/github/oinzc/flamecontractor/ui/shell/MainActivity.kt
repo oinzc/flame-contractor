@@ -5,6 +5,7 @@ import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import android.os.Looper
 import android.webkit.WebSettings
+import android.widget.Toast
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
 import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.core.update.AppUpdateInstallOutcome
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.execution.LoginMode
@@ -61,7 +63,9 @@ import io.github.oinzc.flamecontractor.ui.templates.TemplatesRoute
 import io.github.oinzc.flamecontractor.ui.theme.FlameTheme
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import io.github.oinzc.flamecontractor.ui.today.TodayRoute
+import io.github.oinzc.flamecontractor.ui.update.AppUpdateSheet
 import io.github.oinzc.flamecontractor.widget.FlameStatusWidgetUpdater
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -131,6 +135,7 @@ class MainActivity : AppCompatActivity() {
                 val launchSignal = pendingLaunchSignal
 
                 val onboardingState by container.setupOnboardingStore.state.collectAsState()
+                val updateUiState by container.appUpdateManager.state.collectAsState()
                 val activeAccountId by container.activeAccountStore.activeAccountId.collectAsState()
                 val accounts by remember(container) {
                     container.database.accountDao().observeAll()
@@ -154,6 +159,14 @@ class MainActivity : AppCompatActivity() {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
                             refreshSurvivalSnapshot()
+                            val resumeOutcome = container.appUpdateManager.onHostResumed(this@MainActivity)
+                            if (resumeOutcome is AppUpdateInstallOutcome.Failed) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    resumeOutcome.message,
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
                         }
                     }
                     lifecycleOwner.lifecycle.addObserver(observer)
@@ -246,6 +259,13 @@ class MainActivity : AppCompatActivity() {
                     if (shouldAutoLaunch) {
                         onboardingInitialStep = onboardingState.lastStepIndex
                         showOnboardingWizard = true
+                    }
+                }
+
+                LaunchedEffect(hasEvaluatedAutoOnboarding, showOnboardingWizard) {
+                    if (!hasEvaluatedAutoOnboarding || showOnboardingWizard) return@LaunchedEffect
+                    if (processAutoUpdateCheckTriggered.compareAndSet(false, true)) {
+                        container.appUpdateManager.checkForUpdates(manual = false)
                     }
                 }
 
@@ -481,6 +501,7 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 },
                                 onOpenFeedbackWithDraft = openFeedbackWithDraft,
+                                appUpdateManager = container.appUpdateManager,
                             )
                         }
                     }
@@ -553,6 +574,13 @@ class MainActivity : AppCompatActivity() {
                         onDismiss = { showAccountManagerSheet = false },
                     )
                 }
+
+                if (updateUiState.showDialog && !showOnboardingWizard) {
+                    AppUpdateSheet(
+                        uiState = updateUiState,
+                        appUpdateManager = container.appUpdateManager,
+                    )
+                }
             }
         }
     }
@@ -586,5 +614,9 @@ class MainActivity : AppCompatActivity() {
             category = categoryExtra,
             nonce = signalCounter,
         )
+    }
+
+    companion object {
+        private val processAutoUpdateCheckTriggered = AtomicBoolean(false)
     }
 }

@@ -62,11 +62,14 @@ import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -118,6 +121,10 @@ import io.github.oinzc.flamecontractor.core.support.FeedbackSubmissionRequest
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitResult
 import io.github.oinzc.flamecontractor.core.support.FeedbackSubmitter
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
+import io.github.oinzc.flamecontractor.core.update.AppUpdateCheckResult
+import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
+import io.github.oinzc.flamecontractor.core.update.AppUpdateStatus
+import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
@@ -126,6 +133,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.flamePressScale
@@ -133,6 +141,10 @@ import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import io.github.oinzc.flamecontractor.ui.update.formatLastCheckedLabel
+import io.github.oinzc.flamecontractor.ui.update.formatPrefixedVersion
+import io.github.oinzc.flamecontractor.ui.update.formatUpdateStatusSummary
+import io.github.oinzc.flamecontractor.ui.update.resolveReleaseFallbackUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -152,6 +164,8 @@ internal fun SettingsAboutPage(
     preFillDraft: FeedbackPreFillDraft? = null,
     onConsumePreFillDraft: (Long) -> Unit = {},
     onBuildDiagnosticsReportText: (suspend () -> String)? = null,
+    appUpdateManager: AppUpdateManager? = null,
+    updateUiState: AppUpdateUiState? = null,
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -176,6 +190,8 @@ internal fun SettingsAboutPage(
             androidRelease = Build.VERSION.RELEASE.orEmpty(),
             apiLevel = Build.VERSION.SDK_INT,
             selectorDigest = uiState.selectorDigest,
+            deviceBrand = Build.BRAND.orEmpty(),
+            deviceModel = Build.MODEL.orEmpty(),
         )
     }
     val envSummary = remember(uiState.selectorDigest, uiState.survivalSnapshot) {
@@ -188,6 +204,8 @@ internal fun SettingsAboutPage(
             selectorDigest = uiState.selectorDigest,
             survivalPassed = uiState.survivalSnapshot.passedCount,
             survivalTotal = uiState.survivalSnapshot.totalCount,
+            deviceBrand = Build.BRAND.orEmpty(),
+            deviceModel = Build.MODEL.orEmpty(),
         )
     }
 
@@ -758,7 +776,7 @@ internal fun SettingsAboutPage(
                                 color = palette.ink,
                             )
                             Text(
-                                text = "仅附版本号、Android 版本、品牌与定位器摘要，帮助快速定位问题",
+                                text = "仅附版本号、Android 版本、手机型号与定位器摘要，帮助快速定位问题",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.inkSecondary,
                             )
@@ -1057,7 +1075,46 @@ internal fun SettingsAboutPage(
                 }
             }
 
-            // 2. 项目名片与 GitHub 源码直达
+            // 2. 应用版本与自动更新
+            AppUpdateSectionCard(
+                versionLabel = versionLabel,
+                updateUiState = updateUiState,
+                canManageUpdates = appUpdateManager != null,
+                onAutoCheckChanged = { enabled ->
+                    haptics.performFlameLightTick()
+                    appUpdateManager?.setAutoCheckEnabled(enabled)
+                },
+                onCheckNow = {
+                    val manager = appUpdateManager ?: return@AppUpdateSectionCard
+                    haptics.performFlameLightTick()
+                    coroutineScope.launch {
+                        when (val result = manager.checkForUpdates(manual = true)) {
+                            AppUpdateCheckResult.UpToDate ->
+                                showNotice("已是最新版本（$versionLabel）")
+
+                            is AppUpdateCheckResult.NotConfigured ->
+                                showNotice(result.message)
+
+                            is AppUpdateCheckResult.Error ->
+                                showNotice(result.message)
+
+                            is AppUpdateCheckResult.UpdateAvailable ->
+                                showNotice("发现新版本 ${formatPrefixedVersion(result.release.versionName)}")
+
+                            AppUpdateCheckResult.Skipped -> Unit
+                        }
+                    }
+                },
+                onReopenUpdateDialog = {
+                    haptics.performFlameLightTick()
+                    appUpdateManager?.reopenUpdateDialog()
+                },
+                onOpenReleases = {
+                    openUrlWithFeedback(resolveReleaseFallbackUrl(updateUiState?.activeRelease))
+                },
+            )
+
+            // 3. 项目名片与 GitHub 源码直达
             FlameCard(contentPadding = PaddingValues(16.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
@@ -1241,7 +1298,7 @@ internal fun SettingsAboutPage(
 
                 FlameListRow(
                     title = "复制脱敏环境信息",
-                    subtitle = "仅含版本号、Android 系统版本与定位器摘要，不含任何个人数据",
+                    subtitle = "仅含版本号、Android 系统版本、手机型号与定位器摘要，不含任何个人数据",
                     leading = {
                         FlameRowAvatar(tone = FlameTone.HEALTHY) {
                             Icon(
@@ -1319,6 +1376,332 @@ internal fun SettingsAboutPage(
 }
 
 internal const val MAX_FEEDBACK_DIAGNOSTIC_LOG_CHARS: Int = 15_500
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AppUpdateSectionCard(
+    versionLabel: String,
+    updateUiState: AppUpdateUiState?,
+    canManageUpdates: Boolean,
+    onAutoCheckChanged: (Boolean) -> Unit,
+    onCheckNow: () -> Unit,
+    onReopenUpdateDialog: () -> Unit,
+    onOpenReleases: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val status = updateUiState?.status ?: AppUpdateStatus.Idle
+    val isConfigured = updateUiState?.isConfigured ?: false
+    val isChecking = status is AppUpdateStatus.Checking
+    val hasAvailableUpdate = updateUiState?.hasAvailableUpdate == true
+    val autoCheckEnabled = updateUiState?.autoCheckEnabled ?: true
+
+    val nowEpochMs = remember(updateUiState?.lastCheckedAtEpochMs, status) {
+        System.currentTimeMillis()
+    }
+    val statusSummary = remember(updateUiState, versionLabel) {
+        updateUiState?.let(::formatUpdateStatusSummary) ?: "当前版本 $versionLabel"
+    }
+    val lastCheckedLabel = remember(updateUiState?.lastCheckedAtEpochMs, nowEpochMs) {
+        formatLastCheckedLabel(updateUiState?.lastCheckedAtEpochMs, nowEpochMs)
+    }
+
+    val avatarTone = when {
+        status is AppUpdateStatus.ReadyToInstall || status is AppUpdateStatus.UpToDate -> FlameTone.HEALTHY
+        hasAvailableUpdate -> FlameTone.EMBER
+        status is AppUpdateStatus.Error && !isConfigured -> FlameTone.NEUTRAL
+        status is AppUpdateStatus.Error -> FlameTone.DANGER
+        else -> FlameTone.NEUTRAL
+    }
+
+    FlameCard(contentPadding = PaddingValues(16.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                FlameRowAvatar(tone = avatarTone) {
+                    Icon(
+                        imageVector = if (status is AppUpdateStatus.UpToDate) {
+                            Icons.Outlined.CheckCircle
+                        } else {
+                            Icons.Outlined.SystemUpdate
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "应用版本与自动更新",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        FlameMiniTag(
+                            text = versionLabel,
+                            tone = FlameTone.NEUTRAL,
+                        )
+                    }
+                    Text(
+                        text = statusSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                when (status) {
+                    is AppUpdateStatus.UpdateAvailable -> FlameStatusPill(
+                        text = "可更新",
+                        tone = FlameTone.EMBER,
+                    )
+
+                    is AppUpdateStatus.Downloading -> {
+                        val pct = status.progressPercent?.coerceIn(0, 100)
+                        FlameStatusPill(
+                            text = if (pct != null) "$pct%" else "下载中",
+                            tone = FlameTone.EMBER,
+                        )
+                    }
+
+                    is AppUpdateStatus.Verifying -> FlameStatusPill(
+                        text = "校验中",
+                        tone = FlameTone.EMBER,
+                    )
+
+                    is AppUpdateStatus.ReadyToInstall -> FlameStatusPill(
+                        text = "待安装",
+                        tone = FlameTone.HEALTHY,
+                    )
+
+                    AppUpdateStatus.UpToDate -> FlameStatusPill(
+                        text = "已最新",
+                        tone = FlameTone.HEALTHY,
+                    )
+
+                    AppUpdateStatus.Checking -> FlameStatusPill(
+                        text = "检查中",
+                        tone = FlameTone.NEUTRAL,
+                        showDot = false,
+                    )
+
+                    is AppUpdateStatus.Error -> if (updateUiState?.isConfigured == false) {
+                        FlameStatusPill(
+                            text = "未配置",
+                            tone = FlameTone.NEUTRAL,
+                            showDot = false,
+                        )
+                    } else {
+                        FlameStatusPill(
+                            text = "检查异常",
+                            tone = FlameTone.DANGER,
+                        )
+                    }
+
+                    AppUpdateStatus.Idle -> if (updateUiState != null && !isConfigured) {
+                        FlameStatusPill(
+                            text = "未配置",
+                            tone = FlameTone.NEUTRAL,
+                            showDot = false,
+                        )
+                    }
+                }
+            }
+
+            if (updateUiState != null && isConfigured) {
+                Text(
+                    text = "最近检查：$lastCheckedLabel",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                )
+            }
+
+            if (status is AppUpdateStatus.Error && status.release == null) {
+                SettingsFeedbackBanner(
+                    message = status.message.trim().ifEmpty { "检查更新失败，请稍后重试" },
+                    tone = if (isConfigured) FlameTone.DANGER else FlameTone.NEUTRAL,
+                )
+            }
+
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = canManageUpdates) {
+                        onAutoCheckChanged(!autoCheckEnabled)
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "启动时自动检查更新",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.ink,
+                    )
+                    Text(
+                        text = "冷启动静默检查新版本（6 小时内不重复打扰，支持手动一键检查）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                    )
+                }
+                Switch(
+                    checked = autoCheckEnabled,
+                    enabled = canManageUpdates,
+                    onCheckedChange = onAutoCheckChanged,
+                    colors = settingsSwitchColors(),
+                )
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (hasAvailableUpdate) {
+                    val primaryText = when (status) {
+                        is AppUpdateStatus.ReadyToInstall -> "立即安装"
+                        is AppUpdateStatus.Downloading,
+                        is AppUpdateStatus.Verifying,
+                        -> "查看下载进度"
+
+                        else -> "查看新版本"
+                    }
+                    val openDialogInteraction = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = onReopenUpdateDialog,
+                        enabled = canManageUpdates,
+                        interactionSource = openDialogInteraction,
+                        modifier = Modifier.flamePressScale(
+                            interactionSource = openDialogInteraction,
+                            enabled = canManageUpdates,
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.monoCtaContainer,
+                            contentColor = palette.monoCtaContent,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.SystemUpdate,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = primaryText,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(start = 6.dp),
+                        )
+                    }
+
+                    if (status is AppUpdateStatus.UpdateAvailable || status is AppUpdateStatus.Error) {
+                        OutlinedButton(
+                            onClick = onCheckNow,
+                            enabled = canManageUpdates && !isChecking,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, palette.hairlineStrong),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = "重新检查",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(start = 5.dp),
+                            )
+                        }
+                    }
+                } else {
+                    val checkInteraction = remember { MutableInteractionSource() }
+                    val canCheck = canManageUpdates && !isChecking
+                    Button(
+                        onClick = onCheckNow,
+                        enabled = canCheck,
+                        interactionSource = checkInteraction,
+                        modifier = Modifier.flamePressScale(
+                            interactionSource = checkInteraction,
+                            enabled = canCheck,
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.monoCtaContainer,
+                            contentColor = palette.monoCtaContent,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        if (isChecking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                                color = palette.monoCtaContent,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        Text(
+                            text = if (isChecking) "正在检查…" else "立即检查更新",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(start = 6.dp),
+                        )
+                    }
+
+                    if ((updateUiState != null && !isConfigured) || status is AppUpdateStatus.Error) {
+                        OutlinedButton(
+                            onClick = onOpenReleases,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, palette.hairlineStrong),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = "前往 GitHub Releases",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(start = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 internal fun trimDiagnosticLogForFeedback(rawReport: String): String {
     val trimmed = rawReport.trim()

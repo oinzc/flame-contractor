@@ -93,6 +93,8 @@ import io.github.oinzc.flamecontractor.core.support.FeedbackKind
 import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemeMode
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
+import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
@@ -113,6 +115,8 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -142,6 +146,7 @@ fun SettingsRoute(
     pendingFeedbackDraft: FeedbackPreFillDraft? = null,
     onConsumeFeedbackDraft: (Long) -> Unit = {},
     onOpenFeedbackWithDraft: (FeedbackPreFillDraft) -> Unit = { onSelectSection(SettingsSection.ABOUT) },
+    appUpdateManager: AppUpdateManager? = null,
 ) {
     val context = LocalContext.current
     val resolvedAccountId = accountId.trim().ifEmpty { DEFAULT_ACCOUNT_ID }
@@ -149,6 +154,10 @@ fun SettingsRoute(
         themePreferencesStore ?: ThemePreferencesStore.fromContext(context)
     }
     val themePreference by resolvedThemeStore.preference.collectAsState()
+    val updateStateFlow: StateFlow<AppUpdateUiState?> = remember(appUpdateManager) {
+        appUpdateManager?.state ?: MutableStateFlow(null)
+    }
+    val updateUiState by updateStateFlow.collectAsState()
 
     val factory = remember(
         context,
@@ -487,6 +496,8 @@ fun SettingsRoute(
                 onSelectSection = { target -> onSelectSection(target) },
                 onStartOnboardingWizard = onStartOnboardingWizard,
                 onBack = onBack,
+                updateUiState = updateUiState,
+                onOpenUpdateDialog = { appUpdateManager?.reopenUpdateDialog() },
             )
 
             SettingsSection.APPEARANCE -> SettingsAppearancePage(
@@ -600,6 +611,8 @@ fun SettingsRoute(
                 onConsumePreFillDraft = onConsumeFeedbackDraft,
                 onBuildDiagnosticsReportText = viewModel::buildDiagnosticsReportText,
                 onBack = onBack,
+                appUpdateManager = appUpdateManager,
+                updateUiState = updateUiState,
             )
         }
     }

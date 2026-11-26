@@ -1,6 +1,7 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Icon
@@ -30,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import io.github.oinzc.flamecontractor.BuildConfig
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
+import io.github.oinzc.flamecontractor.core.update.AppUpdateStatus
+import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
@@ -52,6 +57,7 @@ import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import io.github.oinzc.flamecontractor.ui.update.formatPrefixedVersion
 
 @Composable
 internal fun SettingsHubScreen(
@@ -61,6 +67,8 @@ internal fun SettingsHubScreen(
     onStartOnboardingWizard: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    updateUiState: AppUpdateUiState? = null,
+    onOpenUpdateDialog: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -346,7 +354,69 @@ internal fun SettingsHubScreen(
 
             // 4. 关于与开源源码
             val versionTag = ProjectLinks.formatVersionLabel(BuildConfig.VERSION_NAME, versionCode = 0)
+            val hasAvailableUpdate = updateUiState?.hasAvailableUpdate == true
+            val updateRowSubtitle = when (val updateStatus = updateUiState?.status) {
+                is AppUpdateStatus.UpdateAvailable ->
+                    "发现新版本 ${formatPrefixedVersion(updateStatus.release.versionName)}"
+
+                is AppUpdateStatus.Downloading -> {
+                    val v = formatPrefixedVersion(updateStatus.release.versionName)
+                    val pct = updateStatus.progressPercent?.coerceIn(0, 100)
+                    if (pct != null) "正在下载 $v · $pct%" else "正在下载 $v…"
+                }
+
+                is AppUpdateStatus.Verifying ->
+                    "正在校验 ${formatPrefixedVersion(updateStatus.release.versionName)} 安装包…"
+
+                is AppUpdateStatus.ReadyToInstall ->
+                    "发现新版本 ${formatPrefixedVersion(updateStatus.release.versionName)} · 已就绪待安装"
+
+                AppUpdateStatus.Checking -> "正在检查更新…"
+                AppUpdateStatus.UpToDate -> "当前版本 $versionTag · 已是最新版本"
+                else -> "当前版本 $versionTag"
+            }
             FlameGroupedSection(title = "关于与开源") {
+                FlameListRow(
+                    title = "应用版本与自动更新",
+                    subtitle = updateRowSubtitle,
+                    leading = {
+                        FlameRowAvatar(
+                            tone = if (hasAvailableUpdate) FlameTone.EMBER else FlameTone.NEUTRAL,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.SystemUpdate,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            if (hasAvailableUpdate) {
+                                FlameStatusPill(
+                                    text = "可更新",
+                                    tone = FlameTone.EMBER,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .clickable {
+                                            haptics.performFlameLightTick()
+                                            onOpenUpdateDialog()
+                                        },
+                                )
+                            }
+                            HubChevron()
+                        }
+                    },
+                    showDivider = true,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onSelectSection(SettingsSection.ABOUT)
+                    },
+                )
+
                 FlameListRow(
                     title = "GitHub 项目源码",
                     subtitle = "${ProjectLinks.REPO_DISPLAY_PATH} · $versionTag",
