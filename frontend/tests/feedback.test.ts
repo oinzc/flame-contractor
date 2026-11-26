@@ -1,15 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  DEFAULT_PERSISTED_FEEDBACK_DRAFT,
+  FEEDBACK_DRAFT_STORAGE_KEY,
   FEEDBACK_LIMITS,
+  arePersistedFeedbackDraftsEqual,
   buildFeedbackFallbackText,
   buildWebDiagnosticLog,
+  clearPersistedFeedbackDraft,
   estimateBase64DecodedBytes,
+  hasPersistedFeedbackDraft,
+  loadPersistedFeedbackDraft,
   normalizeFeedbackEndpoint,
+  normalizePersistedFeedbackDraft,
+  savePersistedFeedbackDraft,
   submitInAppFeedback,
   validateDiagnosticLog,
   validateFeedbackDraft,
   validateFeedbackImages,
+  type FeedbackDraftStorageLike,
 } from '../src/lib/feedback.ts'
 import {
   computeScaledDimensions,
@@ -157,6 +166,7 @@ test('submitInAppFeedback posts JSON, serializes images, parses imageCount, and 
   const parsedBody = JSON.parse(capturedBody) as Record<string, unknown>
   assert.equal(parsedBody.kind, 'bug')
   assert.equal(parsedBody.client, 'desktop')
+  assert.equal(parsedBody.contact, '')
   assert.equal(parsedBody.website, '')
   assert.equal('images' in parsedBody, false)
   assert.equal('diagnosticLog' in parsedBody, false)
@@ -564,7 +574,8 @@ test('buildFeedbackFallbackText appends diagnostic log block only when attached'
   assert.ok(
     withLog.indexOf('--- 运行环境（已脱敏）---') < withLog.indexOf('--- 脱敏诊断日志 ---'),
   )
-  assert.ok(withLog.indexOf('--- 脱敏诊断日志 ---') < withLog.indexOf('联系方式：dev@example.com'))
+  assert.equal(withLog.includes('联系方式'), false)
+  assert.equal(withLog.includes('dev@example.com'), false)
 
   const disabledLog = buildFeedbackFallbackText({
     kind: 'bug',
@@ -619,16 +630,146 @@ test('cloudflare-worker relay sanitizes accidental secrets and formats issue pay
 
   const issue = buildIssuePayload({
     kind: 'feature',
-    title: '',
-    content: '希望安卓小组件增加更多配色\n顺便优化刷新速度',
-    contact: '',
+    title: '联系 13812345678 咨询小组件',
+    content: '希望安卓小组件增加更多配色，时间戳 1732596627000\n顺便优化刷新速度',
+    contact: 'legacy@example.com',
     client: 'android',
     version: 'v0.5.0',
     environment: 'Android 15 (API 35)',
     includeEnv: true,
   })
-  assert.equal(issue.title, '[Feature] 希望安卓小组件增加更多配色')
+  assert.equal(issue.title, '[Feature] 联系 138****5678 咨询小组件')
   assert.deepEqual(issue.labels, ['enhancement', 'in-app-feedback'])
   assert.ok(issue.body.includes('Android App'))
   assert.ok(issue.body.includes('Android 15 (API 35)'))
+  assert.ok(issue.body.includes('1732596627000'))
+  assert.equal(issue.body.includes('### 联系方式'), false)
+  assert.equal(issue.body.includes('legacy@example.com'), false)
+})
+
+function createMemoryStorage(): FeedbackDraftStorageLike & { store: Map<string, string> } {
+  const store = new Map<string, string>()
+  return {
+    store,
+    getItem(key: string) {
+      return store.get(key) ?? null
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value)
+    },
+    removeItem(key: string) {
+      store.delete(key)
+    },
+  }
+}
+
+test('persisted feedback draft helpers save, load, clear, and ignore legacy contact cleanly', () => {
+  const storage = createMemoryStorage()
+
+  // Empty storage yields default draft
+  const initial = loadPersistedFeedbackDraft(storage)
+  assert.deepEqual(initial, DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+  assert.equal(hasPersistedFeedbackDraft(initial), false)
+
+  // Save & reload all 6 persisted fields
+  const draft = {
+    kind: 'feature' as const,
+    title: '支持深色模式自动跟随',
+    content: '希望弹窗关闭后再次打开依然保留刚才写的建议内容',
+    includeEnv: false,
+    includeDiagnosticLog: true,
+    externalDiagnosticLog: '=== Android 诊断日志 ===\n状态：正常',
+  }
+  assert.equal(hasPersistedFeedbackDraft(draft), true)
+  assert.equal(savePersistedFeedbackDraft(draft, storage), true)
+  assert.ok(storage.store.has(FEEDBACK_DRAFT_STORAGE_KEY))
+
+  const restored = loadPersistedFeedbackDraft(storage)
+  assert.deepEqual(restored, draft)
+  assert.equal(arePersistedFeedbackDraftsEqual(restored, draft), true)
+
+  // Clear removes persisted draft and reverts load to defaults
+  assert.equal(clearPersistedFeedbackDraft(storage), true)
+  assert.equal(storage.store.has(FEEDBACK_DRAFT_STORAGE_KEY), false)
+  assert.deepEqual(loadPersistedFeedbackDraft(storage), DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+
+  // Normalization drops extra/legacy fields (such as contact) and clamps invalid values
+  const normalized = normalizePersistedFeedbackDraft({
+    kind: 'unknown',
+    title: 't'.repeat(FEEDBACK_LIMITS.maxTitle + 20),
+    content: 'c'.repeat(FEEDBACK_LIMITS.maxContent + 20),
+    contact: '13812345678',
+    includeEnv: 'not-bool',
+    includeDiagnosticLog: 1,
+    externalDiagnosticLog: 42,
+  })
+  assert.equal(normalized.kind, 'bug')
+  assert.equal(normalized.title.length, FEEDBACK_LIMITS.maxTitle)
+  assert.equal(normalized.content.length, FEEDBACK_LIMITS.maxContent)
+  assert.equal(normalized.includeEnv, true)
+  assert.equal(normalized.includeDiagnosticLog, false)
+  assert.equal(normalized.externalDiagnosticLog, '')
+  assert.equal('contact' in normalized, false)
+})
+
+test('persisted feedback draft helpers degrade safely on corrupt JSON or unavailable storage', () => {
+  const storage = createMemoryStorage()
+
+  // Corrupt JSON
+  storage.setItem(FEEDBACK_DRAFT_STORAGE_KEY, '{invalid-json')
+  assert.deepEqual(loadPersistedFeedbackDraft(storage), DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+
+  // Non-object JSON payloads
+  for (const weird of ['null', '[]', '"text"', '123', 'true']) {
+    storage.setItem(FEEDBACK_DRAFT_STORAGE_KEY, weird)
+    assert.deepEqual(loadPersistedFeedbackDraft(storage), DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+  }
+
+  // Explicitly unavailable storage (null)
+  assert.deepEqual(loadPersistedFeedbackDraft(null), DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+  assert.equal(savePersistedFeedbackDraft(DEFAULT_PERSISTED_FEEDBACK_DRAFT, null), false)
+  assert.equal(clearPersistedFeedbackDraft(null), false)
+
+  // Throwing storage (e.g. SecurityError / QuotaExceededError)
+  const throwingStorage: FeedbackDraftStorageLike = {
+    getItem() {
+      throw new Error('SecurityError')
+    },
+    setItem() {
+      throw new Error('QuotaExceededError')
+    },
+    removeItem() {
+      throw new Error('SecurityError')
+    },
+  }
+  assert.deepEqual(loadPersistedFeedbackDraft(throwingStorage), DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+  assert.equal(savePersistedFeedbackDraft(DEFAULT_PERSISTED_FEEDBACK_DRAFT, throwingStorage), false)
+  assert.equal(clearPersistedFeedbackDraft(throwingStorage), false)
+})
+
+test('submitInAppFeedback always sends empty contact even if caller passes a legacy contact value', async () => {
+  let capturedBody = ''
+  const result = await submitInAppFeedback(
+    'https://feedback.example.com/v1/feedback',
+    {
+      kind: 'bug',
+      title: '协议兼容测试',
+      content: '确认客户端不会向服务端外发任何联系方式',
+      contact: '13812345678',
+      includeEnv: false,
+      client: 'web',
+      version: 'v0.6.2',
+      environment: '',
+    },
+    async (_input, init) => {
+      capturedBody = String(init?.body ?? '')
+      return new Response(JSON.stringify({ ok: true, issueNumber: 99 }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  )
+  assert.equal(result.ok, true)
+  const parsed = JSON.parse(capturedBody) as Record<string, unknown>
+  assert.equal(parsed.contact, '')
 })

@@ -25,7 +25,6 @@ const IMAGE_KV_TTL_SEC = 180 * 86400
 const MIN_CONTENT_LEN = 5
 const MAX_CONTENT_LEN = 2000
 const MAX_TITLE_LEN = 100
-const MAX_CONTACT_LEN = 100
 const MAX_ENV_LEN = 400
 const MAX_DIAGNOSTIC_LOG_LEN = 16_000
 
@@ -91,6 +90,10 @@ export function sanitizeSensitiveText(raw) {
     .replace(/\b(Authorization\s*:\s*Bearer\s+)[^\s"'`]+/gi, '$1[REDACTED_TOKEN]')
     .replace(/\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]')
     .replace(/\bMS4wLjAB[A-Za-z0-9_-]{8,}/g, '[REDACTED_UID]')
+    .replace(
+      /(?<![0-9A-Za-z])(\+86[\s-]?)?(1[3-9]\d)\d{4}(\d{4})(?![0-9A-Za-z])/g,
+      (_match, prefix = '', head, tail) => `${prefix}${head}****${tail}`,
+    )
 }
 
 function escapeMarkdownCodeFences(raw) {
@@ -415,7 +418,7 @@ export function buildIssuePayload(input, imageUrls = []) {
   const content = sanitizeSensitiveText(input.content).trim()
   const title = deriveTitle(input.title || '', content, kindMeta)
   const version = sanitizeSensitiveText(input.version || '').trim().slice(0, 40) || '未提供'
-  const contact = sanitizeSensitiveText(input.contact || '').trim().slice(0, MAX_CONTACT_LEN)
+  // 隐私加固：彻底忽略/丢弃旧版客户端传入的 input.contact，绝不写入公开 GitHub Issue
   const includeEnv = input.includeEnv !== false
   const envInfo = includeEnv ? sanitizeSensitiveText(input.environment || '').trim().slice(0, MAX_ENV_LEN) : ''
   const diagnosticLog = formatDiagnosticLogForIssue(input.diagnosticLog)
@@ -460,10 +463,6 @@ export function buildIssuePayload(input, imageUrls = []) {
     )
   }
 
-  if (contact) {
-    sections.push('', '### 联系方式（用户自愿留存）', contact)
-  }
-
   return {
     title,
     body: sections.join('\n'),
@@ -487,6 +486,7 @@ export default {
         imageUploadSupported: Boolean(env && (env.FEEDBACK_IMAGES_R2 || env.FEEDBACK_IMAGES_KV)),
         imageStorage: env && env.FEEDBACK_IMAGES_R2 ? 'r2' : env && env.FEEDBACK_IMAGES_KV ? 'kv' : 'none',
         diagnosticLogSupported: true,
+        contactPubliclyDropped: true,
       })
     }
 

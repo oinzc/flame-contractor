@@ -14,15 +14,22 @@ import { isTauriDesktop, openDesktopExternalUrl } from '../../lib/desktop.ts'
 import {
   FEEDBACK_KIND_OPTIONS,
   FEEDBACK_LIMITS,
+  arePersistedFeedbackDraftsEqual,
   buildFeedbackFallbackText,
   buildWebDiagnosticLog,
   buildWebEnvSummary,
+  clearPersistedFeedbackDraft,
+  createDefaultPersistedFeedbackDraft,
   getConfiguredFeedbackEndpoint,
+  hasPersistedFeedbackDraft,
+  loadPersistedFeedbackDraft,
+  savePersistedFeedbackDraft,
   submitInAppFeedback,
   validateDiagnosticLog,
   type FeedbackKind,
   type FeedbackSubmitOutcome,
   type FeedbackSubmitPayload,
+  type PersistedFeedbackDraft,
 } from '../../lib/feedback.ts'
 import {
   extractClipboardImageFiles,
@@ -52,6 +59,22 @@ export interface FeedbackComposerProps {
   showUnconfiguredNotice?: boolean
   onNotice?: (message: string) => void
   onSubmitted?: (outcome: Extract<FeedbackSubmitOutcome, { ok: true }>) => void
+}
+
+const FEEDBACK_DRAFT_SYNC_EVENT = 'flame-feedback-draft-sync'
+
+interface FeedbackDraftSyncDetail {
+  sourceId: string
+  draft: PersistedFeedbackDraft
+}
+
+function dispatchFeedbackDraftSync(sourceId: string, draft: PersistedFeedbackDraft): void {
+  if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return
+  window.dispatchEvent(
+    new CustomEvent<FeedbackDraftSyncDetail>(FEEDBACK_DRAFT_SYNC_EVENT, {
+      detail: { sourceId, draft },
+    }),
+  )
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -86,14 +109,18 @@ export function FeedbackComposer({
     [appVersionLabel, isDesktop],
   )
 
-  const [kind, setKind] = useState<FeedbackKind>('bug')
-  const [title, setTitle] = useState('')
-  const [content, setContent] = useState('')
-  const [contact, setContact] = useState('')
-  const [includeEnv, setIncludeEnv] = useState(true)
-  const [includeDiagnosticLog, setIncludeDiagnosticLog] = useState(false)
+  const initialDraft = useMemo(() => loadPersistedFeedbackDraft(), [])
+  const [kind, setKind] = useState<FeedbackKind>(initialDraft.kind)
+  const [title, setTitle] = useState(initialDraft.title)
+  const [content, setContent] = useState(initialDraft.content)
+  const [includeEnv, setIncludeEnv] = useState(initialDraft.includeEnv)
+  const [includeDiagnosticLog, setIncludeDiagnosticLog] = useState(
+    initialDraft.includeDiagnosticLog,
+  )
   const [diagExpanded, setDiagExpanded] = useState(false)
-  const [externalDiagnosticLog, setExternalDiagnosticLog] = useState('')
+  const [externalDiagnosticLog, setExternalDiagnosticLog] = useState(
+    initialDraft.externalDiagnosticLog,
+  )
   const [diagnosticLogError, setDiagnosticLogError] = useState<string | null>(null)
   const [copiedDiagnosticLog, setCopiedDiagnosticLog] = useState(false)
   const [diagSnapshotTick, setDiagSnapshotTick] = useState(0)
@@ -108,6 +135,8 @@ export function FeedbackComposer({
   const [copiedDraft, setCopiedDraft] = useState(false)
   const [copyFeedbackError, setCopyFeedbackError] = useState<string | null>(null)
 
+  const instanceIdRef = useRef(`${idPrefix}-${Math.random().toString(36).slice(2)}`)
+  const lastSyncedDraftRef = useRef<PersistedFeedbackDraft>(initialDraft)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const diagTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -123,6 +152,49 @@ export function FeedbackComposer({
   imagesRef.current = images
   processingRef.current = processingImages
   submittingRef.current = submitting
+
+  const currentDraft = useMemo<PersistedFeedbackDraft>(
+    () => ({
+      kind,
+      title,
+      content,
+      includeEnv,
+      includeDiagnosticLog,
+      externalDiagnosticLog,
+    }),
+    [kind, title, content, includeEnv, includeDiagnosticLog, externalDiagnosticLog],
+  )
+
+  useEffect(() => {
+    if (arePersistedFeedbackDraftsEqual(currentDraft, lastSyncedDraftRef.current)) {
+      return
+    }
+    lastSyncedDraftRef.current = currentDraft
+    savePersistedFeedbackDraft(currentDraft)
+    dispatchFeedbackDraftSync(instanceIdRef.current, currentDraft)
+  }, [currentDraft])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    function handleDraftSync(event: Event) {
+      const detail = (event as CustomEvent<FeedbackDraftSyncDetail>).detail
+      if (!detail || detail.sourceId === instanceIdRef.current || !detail.draft) {
+        return
+      }
+      if (arePersistedFeedbackDraftsEqual(detail.draft, lastSyncedDraftRef.current)) {
+        return
+      }
+      lastSyncedDraftRef.current = detail.draft
+      setKind(detail.draft.kind)
+      setTitle(detail.draft.title)
+      setContent(detail.draft.content)
+      setIncludeEnv(detail.draft.includeEnv)
+      setIncludeDiagnosticLog(detail.draft.includeDiagnosticLog)
+      setExternalDiagnosticLog(detail.draft.externalDiagnosticLog)
+    }
+    window.addEventListener(FEEDBACK_DRAFT_SYNC_EVENT, handleDraftSync)
+    return () => window.removeEventListener(FEEDBACK_DRAFT_SYNC_EVENT, handleDraftSync)
+  }, [])
 
   useEffect(() => {
     mountedRef.current = true
@@ -309,7 +381,7 @@ export function FeedbackComposer({
       kind,
       title,
       content,
-      contact,
+      contact: '',
       includeEnv,
       includeDiagnosticLog,
       diagnosticLog,
@@ -410,17 +482,27 @@ export function FeedbackComposer({
     setCopyFeedbackError(null)
     try {
       const result = await submitInAppFeedback(feedbackEndpoint, payload)
-      if (!mountedRef.current) return
-      setOutcome(result)
       if (result.ok) {
-        setTitle('')
-        setContent('')
+        const emptyDraft = createDefaultPersistedFeedbackDraft()
+        lastSyncedDraftRef.current = emptyDraft
+        clearPersistedFeedbackDraft()
+        dispatchFeedbackDraftSync(instanceIdRef.current, emptyDraft)
+        if (!mountedRef.current) return
+        setOutcome(result)
+        setKind(emptyDraft.kind)
+        setTitle(emptyDraft.title)
+        setContent(emptyDraft.content)
+        setIncludeEnv(emptyDraft.includeEnv)
+        setIncludeDiagnosticLog(emptyDraft.includeDiagnosticLog)
+        setExternalDiagnosticLog(emptyDraft.externalDiagnosticLog)
         setContentError(null)
-        setExternalDiagnosticLog('')
         setDiagnosticLogError(null)
         clearAllImages()
         onSubmitted?.(result)
+        return
       }
+      if (!mountedRef.current) return
+      setOutcome(result)
     } finally {
       if (mountedRef.current) {
         setSubmitting(false)
@@ -434,12 +516,9 @@ export function FeedbackComposer({
   const diagnosticLogLen = previewDiagnosticLog.length
   const diagnosticLogTooLong = diagnosticLogLen > FEEDBACK_LIMITS.maxDiagnosticLog
   const hasCopyableText = Boolean(title.trim() || content.trim())
-  const hasDraft = Boolean(
-    title || content || contact || images.length > 0 || externalDiagnosticLog.trim(),
-  )
+  const hasDraft = hasPersistedFeedbackDraft(currentDraft) || images.length > 0
   const titleId = `${idPrefix}-title`
   const contentId = `${idPrefix}-content`
-  const contactId = `${idPrefix}-contact`
   const fileInputId = `${idPrefix}-images`
   const diagPanelId = `${idPrefix}-diag-panel`
   const diagInputId = `${idPrefix}-diag-input`
@@ -645,24 +724,10 @@ export function FeedbackComposer({
 
         <div className="fc-feedback-privacy">
           <ShieldAlertIcon width={14} height={14} className="fc-feedback-privacy-icon" />
-          <span>截图将随公开 GitHub Issue 展示，请先遮挡隐私或敏感信息</span>
+          <span>
+            反馈内容与截图会公开显示在 GitHub Issues，请勿填写手机号、微信号等个人隐私（截图也请先遮挡敏感信息）；问题修复将通过版本更新推送。
+          </span>
         </div>
-      </div>
-
-      <div className="fc-field">
-        <label className="fc-label" htmlFor={contactId}>
-          <span>联系方式</span>
-          <span className="fc-hint">可选，公开 Issue 可见</span>
-        </label>
-        <input
-          id={contactId}
-          className="fc-input"
-          maxLength={FEEDBACK_LIMITS.maxContact}
-          placeholder="邮箱或 GitHub ID，介意可留空"
-          value={contact}
-          disabled={submitting}
-          onChange={(e) => setContact(e.target.value)}
-        />
       </div>
 
       <label className="fc-feedback-env-check">
@@ -939,11 +1004,16 @@ export function FeedbackComposer({
             type="button"
             className="fc-btn fc-btn-ghost fc-btn-sm"
             onClick={() => {
-              setTitle('')
-              setContent('')
-              setContact('')
-              setExternalDiagnosticLog('')
-              setIncludeDiagnosticLog(false)
+              const emptyDraft = createDefaultPersistedFeedbackDraft()
+              lastSyncedDraftRef.current = emptyDraft
+              clearPersistedFeedbackDraft()
+              dispatchFeedbackDraftSync(instanceIdRef.current, emptyDraft)
+              setKind(emptyDraft.kind)
+              setTitle(emptyDraft.title)
+              setContent(emptyDraft.content)
+              setIncludeEnv(emptyDraft.includeEnv)
+              setIncludeDiagnosticLog(emptyDraft.includeDiagnosticLog)
+              setExternalDiagnosticLog(emptyDraft.externalDiagnosticLog)
               setDiagnosticLogError(null)
               clearAllImages()
               setContentError(null)

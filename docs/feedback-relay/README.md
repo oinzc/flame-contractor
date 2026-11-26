@@ -72,10 +72,11 @@ npx wrangler deploy
      "configured": true,
      "imageUploadSupported": true,
      "imageStorage": "kv",
-     "diagnosticLogSupported": true
+     "diagnosticLogSupported": true,
+     "contactPubliclyDropped": true
    }
    ```
-   其中 `imageStorage` 取值为 `"r2"` / `"kv"` / `"none"`。
+   其中 `imageStorage` 取值为 `"r2"` / `"kv"` / `"none"`，`contactPubliclyDropped: true` 表示服务端已启用隐私加固策略，彻底丢弃任何客户端传入的 `contact` 字段，绝不写入公开 Issue。
 
 ### 第 5 步：一键注入到正式发版（Android APK + Windows 桌面端）
 
@@ -111,7 +112,8 @@ npx wrangler deploy
   "configured": true,
   "imageUploadSupported": true,
   "imageStorage": "r2",
-  "diagnosticLogSupported": true
+  "diagnosticLogSupported": true,
+  "contactPubliclyDropped": true
 }
 ```
 
@@ -124,7 +126,7 @@ npx wrangler deploy
     "kind": "bug | feature | question",
     "title": "可选简短标题（≤100字）",
     "content": "必填详细描述（5–2000字）",
-    "contact": "可选联系方式（≤100字）",
+    "contact": "已废弃（仅为兼容旧版客户端保留，服务端静默丢弃，绝不写入公开 Issue）",
     "client": "android | desktop | web",
     "version": "v0.6.1",
     "environment": "脱敏运行环境摘要（可选）",
@@ -140,7 +142,8 @@ npx wrangler deploy
     ]
   }
   ```
-  - `diagnosticLog` 为可选字符串字段（可省略、为 `null` 或为空字符串）：去除首尾空白后上限 **16,000** 字符（非字符串或超限均返回 HTTP `400`）。服务端会再次执行敏感信息脱敏，并将正文中的连续三个及以上反引号（`` ``` ``）转义为 `` ` ` ` `` 防止 Markdown 代码块逃逸，再以 `<details><summary>展开脱敏诊断日志（供排查定位）</summary>...</details>` 折叠插入「运行环境（已脱敏）」与「联系方式」之间；未附带日志时不输出该折叠区块。
+  - `contact` 字段仅为向后兼容旧版客户端（v0.5.0–v0.6.2）而容忍传入（不会返回 `400`），服务端会**彻底忽略并丢弃**，绝不再向公开 GitHub Issue 写入任何联系方式区块或内容。
+  - `diagnosticLog` 为可选字符串字段（可省略、为 `null` 或为空字符串）：去除首尾空白后上限 **16,000** 字符（非字符串或超限均返回 HTTP `400`）。服务端会再次执行敏感信息脱敏，并将正文中的连续三个及以上反引号（`` ``` ``）转义为 `` ` ` ` `` 防止 Markdown 代码块逃逸，再以 `<details><summary>展开脱敏诊断日志（供排查定位）</summary>...</details>` 折叠插入「运行环境（已脱敏）」之后；未附带日志时不输出该折叠区块。
   - `images` 为可选字段（可省略或为空数组 `[]`）：最多 **3** 张，单张解码后体积不超过 **800 KB**，仅允许 **JPG / PNG / WebP**。
   - 若携带图片但服务端未绑定 `FEEDBACK_IMAGES_R2` 或 `FEEDBACK_IMAGES_KV`，返回 HTTP `503` 及中文错误提示；纯文本反馈不受影响。
 - 成功响应（`201 Created`）：
@@ -154,7 +157,7 @@ npx wrangler deploy
     "message": "反馈已提交（#42，含 1 张截图），感谢你的帮助！"
   }
   ```
-  有附图时，生成的 GitHub Issue 正文会在「反馈内容」与「运行环境（已脱敏）」之间自动插入 `### 附图` 区块并嵌入 Markdown 图片外链；有脱敏诊断日志时，会在「运行环境（已脱敏）」之后、「联系方式」之前以折叠 `<details>` 区块展示。
+  有附图时，生成的 GitHub Issue 正文会在「反馈内容」与「运行环境（已脱敏）」之间自动插入 `### 附图` 区块并嵌入 Markdown 图片外链；有脱敏诊断日志时，会在「运行环境（已脱敏）」之后以折叠 `<details>` 区块展示。
 
 ### 3. 读取托管图片：`GET /v1/images/:filename`
 
@@ -168,4 +171,5 @@ npx wrangler deploy
 - **魔数校验（Magic Bytes）**：服务端忽略客户端声明的 `mimeType` 与文件名后缀，强制检查解码后文件头魔数（JPEG `FF D8 FF`、PNG `89 50 4E 47 0D 0A 1A 0A`、WebP `RIFF....WEBP`），拦截伪造 MIME、SVG/HTML 脚本或畸形 Base64。
 - **防路径穿越与沙箱响应头**：图片路由仅放行 UUID + 白名单扩展名，并固定返回 `X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`、`Cross-Origin-Resource-Policy: cross-origin`、`Cache-Control: public, max-age=31536000, immutable` 及 CORS 头。
 - **失败自动清理**：若 GitHub Issue 创建失败（上游返回非 2xx 或网络异常），Worker 会尽力（best-effort）删除本次已写入 R2/KV 的图片对象，避免孤立垃圾文件残留。
-- **脱敏、防注入与限流**：服务端对全部文本与 `diagnosticLog` 执行二次正则脱敏（Bark URL Key、`device_key=...`、Cookie、Bearer Token、GitHub Token、抖音 `sec_uid`），对诊断日志连续反引号做防 Markdown 代码块逃逸处理，并保持按 IP 限流机制不变。
+- **隐私加固与零联系方式落库**：服务端彻底忽略并丢弃 `contact` 字段（兼容旧版客户端不报 `400`），绝不向公开 Issue 输出任何联系方式区块。
+- **脱敏、防注入与限流**：服务端对全部文本与 `diagnosticLog` 执行二次正则脱敏（Bark URL Key、`device_key=...`、Cookie、Bearer Token、GitHub Token、抖音 `sec_uid`、以及独立出现的中国大陆 11 位手机号自动打码为前 3 后 4 格式如 `138****5678`，同时避免误伤 13 位毫秒时间戳与长数字/十六进制 ID），对诊断日志连续反引号做防 Markdown 代码块逃逸处理，并保持按 IP 限流机制不变。

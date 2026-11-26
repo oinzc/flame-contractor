@@ -50,6 +50,32 @@ export const FEEDBACK_LIMITS = {
   submitTimeoutMs: 30_000,
 } as const
 
+export const FEEDBACK_DRAFT_STORAGE_KEY = 'flame_feedback_draft_v1'
+
+export interface PersistedFeedbackDraft {
+  kind: FeedbackKind
+  title: string
+  content: string
+  includeEnv: boolean
+  includeDiagnosticLog: boolean
+  externalDiagnosticLog: string
+}
+
+export const DEFAULT_PERSISTED_FEEDBACK_DRAFT: Readonly<PersistedFeedbackDraft> = {
+  kind: 'bug',
+  title: '',
+  content: '',
+  includeEnv: true,
+  includeDiagnosticLog: false,
+  externalDiagnosticLog: '',
+}
+
+export interface FeedbackDraftStorageLike {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
 export interface FeedbackDraft {
   kind: FeedbackKind
   title: string
@@ -97,6 +123,131 @@ export interface WebDiagnosticLogOptions {
 }
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/
+
+function isFeedbackKind(value: unknown): value is FeedbackKind {
+  return value === 'bug' || value === 'feature' || value === 'question'
+}
+
+function resolveFeedbackDraftStorage(
+  storage?: FeedbackDraftStorageLike | null,
+): FeedbackDraftStorageLike | null {
+  if (storage !== undefined) {
+    return storage
+  }
+  try {
+    if (typeof globalThis === 'undefined' || !('localStorage' in globalThis)) {
+      return null
+    }
+    const candidate = globalThis.localStorage
+    if (
+      candidate &&
+      typeof candidate.getItem === 'function' &&
+      typeof candidate.setItem === 'function' &&
+      typeof candidate.removeItem === 'function'
+    ) {
+      return candidate
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function createDefaultPersistedFeedbackDraft(): PersistedFeedbackDraft {
+  return { ...DEFAULT_PERSISTED_FEEDBACK_DRAFT }
+}
+
+export function normalizePersistedFeedbackDraft(raw: unknown): PersistedFeedbackDraft {
+  const defaults = createDefaultPersistedFeedbackDraft()
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return defaults
+  }
+  const obj = raw as Record<string, unknown>
+  return {
+    kind: isFeedbackKind(obj.kind) ? obj.kind : defaults.kind,
+    title: typeof obj.title === 'string' ? obj.title.slice(0, FEEDBACK_LIMITS.maxTitle) : defaults.title,
+    content:
+      typeof obj.content === 'string' ? obj.content.slice(0, FEEDBACK_LIMITS.maxContent) : defaults.content,
+    includeEnv: typeof obj.includeEnv === 'boolean' ? obj.includeEnv : defaults.includeEnv,
+    includeDiagnosticLog:
+      typeof obj.includeDiagnosticLog === 'boolean'
+        ? obj.includeDiagnosticLog
+        : defaults.includeDiagnosticLog,
+    externalDiagnosticLog:
+      typeof obj.externalDiagnosticLog === 'string'
+        ? obj.externalDiagnosticLog
+        : defaults.externalDiagnosticLog,
+  }
+}
+
+export function arePersistedFeedbackDraftsEqual(
+  a: PersistedFeedbackDraft,
+  b: PersistedFeedbackDraft,
+): boolean {
+  return (
+    a.kind === b.kind &&
+    a.title === b.title &&
+    a.content === b.content &&
+    a.includeEnv === b.includeEnv &&
+    a.includeDiagnosticLog === b.includeDiagnosticLog &&
+    a.externalDiagnosticLog === b.externalDiagnosticLog
+  )
+}
+
+export function hasPersistedFeedbackDraft(draft: PersistedFeedbackDraft): boolean {
+  return !arePersistedFeedbackDraftsEqual(draft, DEFAULT_PERSISTED_FEEDBACK_DRAFT)
+}
+
+export function loadPersistedFeedbackDraft(
+  storage?: FeedbackDraftStorageLike | null,
+): PersistedFeedbackDraft {
+  const resolvedStorage = resolveFeedbackDraftStorage(storage)
+  if (!resolvedStorage) {
+    return createDefaultPersistedFeedbackDraft()
+  }
+  try {
+    const rawText = resolvedStorage.getItem(FEEDBACK_DRAFT_STORAGE_KEY)
+    if (!rawText) {
+      return createDefaultPersistedFeedbackDraft()
+    }
+    const parsed: unknown = JSON.parse(rawText)
+    return normalizePersistedFeedbackDraft(parsed)
+  } catch {
+    return createDefaultPersistedFeedbackDraft()
+  }
+}
+
+export function savePersistedFeedbackDraft(
+  draft: PersistedFeedbackDraft,
+  storage?: FeedbackDraftStorageLike | null,
+): boolean {
+  const resolvedStorage = resolveFeedbackDraftStorage(storage)
+  if (!resolvedStorage) {
+    return false
+  }
+  try {
+    const normalized = normalizePersistedFeedbackDraft(draft)
+    resolvedStorage.setItem(FEEDBACK_DRAFT_STORAGE_KEY, JSON.stringify(normalized))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function clearPersistedFeedbackDraft(
+  storage?: FeedbackDraftStorageLike | null,
+): boolean {
+  const resolvedStorage = resolveFeedbackDraftStorage(storage)
+  if (!resolvedStorage) {
+    return false
+  }
+  try {
+    resolvedStorage.removeItem(FEEDBACK_DRAFT_STORAGE_KEY)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export function isAllowedFeedbackImageMimeType(value: string): value is FeedbackImageMimeType {
   return (ALLOWED_FEEDBACK_IMAGE_MIME_TYPES as readonly string[]).includes(value)
@@ -464,9 +615,6 @@ export function buildFeedbackFallbackText(payload: FeedbackSubmitPayload): strin
   if (effectiveDiagnosticLog) {
     lines.push('', '--- 脱敏诊断日志 ---', effectiveDiagnosticLog)
   }
-  if (payload.contact.trim()) {
-    lines.push('', `联系方式：${payload.contact.trim()}`)
-  }
   return lines.join('\n')
 }
 
@@ -510,7 +658,7 @@ export async function submitInAppFeedback(
     kind: payload.kind,
     title: payload.title.trim(),
     content: payload.content.trim(),
-    contact: payload.contact.trim(),
+    contact: '',
     client: payload.client,
     version: payload.version.trim(),
     environment: payload.includeEnv ? payload.environment.trim() : '',

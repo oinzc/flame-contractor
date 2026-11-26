@@ -140,6 +140,7 @@ test('GET /health 与 GET / 返回存储能力与配置状态字段', async () =
         service: 'flame-contractor-feedback-relay',
         ...item.expected,
         diagnosticLogSupported: true,
+        contactPubliclyDropped: true,
       })
     }
   }
@@ -696,15 +697,15 @@ test('diagnosticLog 折叠渲染、顺序位置、防反引号注入与二次脱
   assert.ok(capturedIssue)
   const body = capturedIssue.body
 
-  // 区块顺序：运行环境 -> 折叠诊断日志 -> 联系方式
+  // 区块顺序：运行环境 -> 折叠诊断日志（且旧客户端传入的 contact 绝不写入公开 Issue）
   const envIdx = body.indexOf('### 运行环境（已脱敏）')
   const detailsIdx = body.indexOf('<details>\n<summary>展开脱敏诊断日志（供排查定位）</summary>\n\n```text\n')
   const detailsEndIdx = body.indexOf('\n```\n\n</details>')
-  const contactIdx = body.indexOf('### 联系方式（用户自愿留存）')
   assert.ok(envIdx >= 0, '应包含运行环境区块')
   assert.ok(detailsIdx > envIdx, '折叠日志应位于运行环境之后')
   assert.ok(detailsEndIdx > detailsIdx, '折叠日志应正确闭合')
-  assert.ok(contactIdx > detailsEndIdx, '折叠日志应位于联系方式之前')
+  assert.equal(body.includes('### 联系方式'), false, '公开 Issue 不得包含联系方式区块')
+  assert.equal(body.includes('tester@example.com'), false, '旧客户端传入的 contact 内容必须被彻底丢弃')
 
   // 二次脱敏校验：不得残留原始敏感值
   for (const secret of [
@@ -839,4 +840,160 @@ test('diagnosticLog 参数校验：非字符串与超 16000 字返回 400，边�
   )
 
   assert.equal(githubCalls, 4)
+})
+
+test('隐私加固：兼容旧版客户端传入 contact 返回 201，但彻底丢弃不写入公开 Issue', async () => {
+  const capturedIssues = []
+  const env = { GITHUB_TOKEN: 'test-token' }
+
+  const legacyCases = [
+    { version: 'v0.5.0', contact: '13812345678' },
+    { version: 'v0.6.2', contact: 'wechat_private_id_99' },
+    { version: 'v0.6.0', contact: 'x'.repeat(260) },
+    { version: 'v0.5.1', contact: { phone: '13900001111' } },
+  ]
+
+  await withMockFetch(
+    async (_url, init) => {
+      capturedIssues.push(JSON.parse(init.body))
+      const num = 200 + capturedIssues.length
+      return new Response(
+        JSON.stringify({ number: num, html_url: `https://github.com/oinzc/flame-contractor/issues/${num}` }),
+        { status: 201 },
+      )
+    },
+    async () => {
+      for (const item of legacyCases) {
+        const resp = await worker.fetch(
+          makeFeedbackRequest({
+            kind: 'bug',
+            title: '旧版本反馈兼容测试',
+            content: '旧版客户端携带联系方式字段提交不应报错',
+            contact: item.contact,
+            client: 'android',
+            version: item.version,
+          }),
+          env,
+        )
+        assert.equal(resp.status, 201, `旧版本 ${item.version} 传 contact 应返回 201`)
+      }
+    },
+  )
+
+  assert.equal(capturedIssues.length, legacyCases.length)
+  for (const issue of capturedIssues) {
+    assert.equal(issue.body.includes('### 联系方式'), false)
+    assert.equal(issue.body.includes('13812345678'), false)
+    assert.equal(issue.body.includes('138****5678'), false)
+    assert.equal(issue.body.includes('wechat_private_id_99'), false)
+    assert.equal(issue.body.includes('13900001111'), false)
+    assert.equal(issue.body.includes('x'.repeat(50)), false)
+  }
+
+  const directIssue = buildIssuePayload({
+    kind: 'question',
+    title: '直接调用 buildIssuePayload 测试',
+    content: '确认直接构造载荷时也会丢弃联系方式字段',
+    contact: 'private@example.com',
+    client: 'web',
+    version: 'v0.6.2',
+  })
+  assert.equal(directIssue.body.includes('### 联系方式'), false)
+  assert.equal(directIssue.body.includes('private@example.com'), false)
+})
+
+test('隐私加固：中国大陆 11 位手机号自动脱敏为前 3 后 4，且不误伤 13 位时间戳、长 ID 与 hex 摘要', async () => {
+  // 1. 直接测试 sanitizeSensitiveText 的命中与不误伤边界
+  const raw = [
+    '独立手机号 13899887766 结束',
+    '中文紧邻：联系我13987654321或15911112222谢谢',
+    '带区号与符号：tel:18600001234 (+86 17711112222) +86-19933334444 +8616655556666',
+    '13位毫秒时间戳：ts=1732596627000 created=1700000000000 pseudo=1381234567890',
+    '长数字ID与86前缀13位：order=8613812345678 uid=9876543213812345678 twelve=138123456789 leading0=013812345678',
+    '非号段与短号：short=1381234567 invalid2=12812345678 invalid1=11812345678',
+    'hex与字母紧邻：sha=deadbeef13812345678 tail=13812345678cafe wrap=a13812345678b id13812345678 13812345678px',
+  ].join('\n')
+
+  const scrubbed = sanitizeSensitiveText(raw)
+
+  assert.ok(scrubbed.includes('独立手机号 138****7766 结束'))
+  assert.ok(scrubbed.includes('中文紧邻：联系我139****4321或159****2222谢谢'))
+  assert.ok(
+    scrubbed.includes('带区号与符号：tel:186****1234 (+86 177****2222) +86-199****4444 +86166****6666'),
+  )
+  for (const rawPhone of [
+    '13899887766',
+    '13987654321',
+    '15911112222',
+    '18600001234',
+    '17711112222',
+    '19933334444',
+    '16655556666',
+  ]) {
+    assert.equal(scrubbed.includes(rawPhone), false, `手机号未脱敏: ${rawPhone}`)
+  }
+
+  for (const preserved of [
+    'ts=1732596627000',
+    'created=1700000000000',
+    'pseudo=1381234567890',
+    'order=8613812345678',
+    'uid=9876543213812345678',
+    'twelve=138123456789',
+    'leading0=013812345678',
+    'short=1381234567',
+    'invalid2=12812345678',
+    'invalid1=11812345678',
+    'sha=deadbeef13812345678',
+    'tail=13812345678cafe',
+    'wrap=a13812345678b',
+    'id13812345678',
+    '13812345678px',
+  ]) {
+    assert.ok(scrubbed.includes(preserved), `非手机号被误改: ${preserved}`)
+  }
+
+  // 多次调用幂等
+  assert.equal(sanitizeSensitiveText(scrubbed), scrubbed)
+
+  // 2. 端到端测试标题、正文、诊断日志中的手机号自动打码
+  let capturedIssue = null
+  const env = { GITHUB_TOKEN: 'test-token' }
+  await withMockFetch(
+    async (_url, init) => {
+      capturedIssue = JSON.parse(init.body)
+      return new Response(
+        JSON.stringify({ number: 210, html_url: 'https://github.com/oinzc/flame-contractor/issues/210' }),
+        { status: 201 },
+      )
+    },
+    async () => {
+      const resp = await worker.fetch(
+        makeFeedbackRequest({
+          kind: 'bug',
+          title: '账号 13812345678 登录失败',
+          content: '我的手机号是13900005678，报错时间戳 1732596627000，流水号 2026112613812345678。',
+          contact: '18899990000',
+          diagnosticLog: 'ts=1732596627000 phone=15822223333 hash=abcdef13812345678',
+          client: 'web',
+          version: 'v0.6.2',
+        }),
+        env,
+      )
+      assert.equal(resp.status, 201)
+    },
+  )
+
+  assert.ok(capturedIssue)
+  assert.equal(capturedIssue.title, '[Bug] 账号 138****5678 登录失败')
+  assert.ok(capturedIssue.body.includes('我的手机号是139****5678'))
+  assert.ok(capturedIssue.body.includes('报错时间戳 1732596627000'))
+  assert.ok(capturedIssue.body.includes('流水号 2026112613812345678'))
+  assert.ok(capturedIssue.body.includes('phone=158****3333'))
+  assert.ok(capturedIssue.body.includes('hash=abcdef13812345678'))
+  assert.equal(capturedIssue.body.includes('13900005678'), false)
+  assert.equal(capturedIssue.body.includes('15822223333'), false)
+  assert.equal(capturedIssue.body.includes('18899990000'), false)
+  assert.equal(capturedIssue.body.includes('188****0000'), false)
+  assert.equal(capturedIssue.body.includes('### 联系方式'), false)
 })
