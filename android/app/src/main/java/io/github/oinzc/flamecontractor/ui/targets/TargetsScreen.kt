@@ -19,12 +19,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -34,6 +37,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.Delete
@@ -131,6 +135,7 @@ fun TargetsRoute(
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     imageStore: TemplateImageStorage? = null,
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -181,6 +186,7 @@ fun TargetsRoute(
         onRequestDelete = viewModel::requestDeleteTarget,
         onOpenSettings = onOpenSettings,
         onOpenFeedback = onOpenFeedback,
+        onBack = onBack,
         modifier = modifier,
     )
 
@@ -286,11 +292,13 @@ fun TargetsScreen(
     onRequestDelete: (ContractTargetEntity) -> Unit,
     onOpenSettings: (SettingsSection?) -> Unit = {},
     onOpenFeedback: () -> Unit = { onOpenSettings(SettingsSection.ABOUT) },
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
     val reducedMotion = rememberReducedMotion()
     val dockBottomClearance = flameDockBottomPadding()
+    val navBarBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     var selectedTargetId by remember { mutableStateOf<String?>(null) }
     var showScanActionSheet by remember { mutableStateOf(false) }
 
@@ -311,6 +319,9 @@ fun TargetsScreen(
     ) {
         val isWideScreen = maxWidth >= 600.dp
         val compactFeedbackButton = maxWidth < 430.dp
+        val hasBottomDock = onBack == null && !isWideScreen
+        val bottomClearance = if (hasBottomDock) dockBottomClearance else navBarBottomPadding + 20.dp
+        val compactScanButton = onBack != null && maxWidth < 380.dp
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -318,46 +329,99 @@ fun TargetsScreen(
             contentColor = palette.ink,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
-                FlameTopBar(title = "好友") {
-                    FlameTopPillButton(
-                        text = if (uiState.scanRunning) {
-                            "扫描(${uiState.scanDiscoveredCount})"
-                        } else {
-                            "扫描对账"
-                        },
-                        leadingIcon = Icons.Outlined.Sync,
-                        primary = false,
-                        enabled = !uiState.scanRunning,
-                        onClick = {
-                            if (uiState.hasAvailableSnapshot) {
-                                showScanActionSheet = true
+                if (onBack != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FlameIconButton(
+                            icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = "返回极简主页",
+                            onClick = onBack,
+                        )
+                        Text(
+                            text = "续火好友",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = palette.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FlameTopPillButton(
+                            text = when {
+                                uiState.scanRunning -> "扫描(${uiState.scanDiscoveredCount})"
+                                compactScanButton -> "扫描"
+                                else -> "扫描对账"
+                            },
+                            leadingIcon = Icons.Outlined.Sync,
+                            primary = false,
+                            enabled = !uiState.scanRunning,
+                            onClick = {
+                                if (uiState.hasAvailableSnapshot) {
+                                    showScanActionSheet = true
+                                } else {
+                                    onStartManualScan()
+                                }
+                            },
+                        )
+                        FlameTopPillButton(
+                            text = "新增",
+                            leadingIcon = Icons.Default.Add,
+                            primary = true,
+                            onClick = onOpenCreateTarget,
+                        )
+                        FlameIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            onClick = { onOpenSettings(null) },
+                        )
+                    }
+                } else {
+                    FlameTopBar(title = "好友") {
+                        FlameTopPillButton(
+                            text = if (uiState.scanRunning) {
+                                "扫描(${uiState.scanDiscoveredCount})"
                             } else {
-                                onStartManualScan()
-                            }
-                        },
-                    )
-                    FlameTopPillButton(
-                        text = "新增",
-                        leadingIcon = Icons.Default.Add,
-                        primary = true,
-                        onClick = onOpenCreateTarget,
-                    )
-                    FlameFeedbackTopButton(
-                        onClick = onOpenFeedback,
-                        compact = compactFeedbackButton,
-                    )
-                    FlameIconButton(
-                        icon = Icons.Outlined.Settings,
-                        contentDescription = "设置与维护",
-                        onClick = { onOpenSettings(null) },
-                    )
+                                "扫描对账"
+                            },
+                            leadingIcon = Icons.Outlined.Sync,
+                            primary = false,
+                            enabled = !uiState.scanRunning,
+                            onClick = {
+                                if (uiState.hasAvailableSnapshot) {
+                                    showScanActionSheet = true
+                                } else {
+                                    onStartManualScan()
+                                }
+                            },
+                        )
+                        FlameTopPillButton(
+                            text = "新增",
+                            leadingIcon = Icons.Default.Add,
+                            primary = true,
+                            onClick = onOpenCreateTarget,
+                        )
+                        FlameFeedbackTopButton(
+                            onClick = onOpenFeedback,
+                            compact = compactFeedbackButton,
+                        )
+                        FlameIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            onClick = { onOpenSettings(null) },
+                        )
+                    }
                 }
             },
             snackbarHost = {
                 SnackbarHost(
                     hostState = snackbarHostState,
                     modifier = Modifier.padding(
-                        bottom = if (isWideScreen) 16.dp else dockBottomClearance - 12.dp,
+                        bottom = if (hasBottomDock) dockBottomClearance - 12.dp else navBarBottomPadding + 16.dp,
                     ),
                 )
             },
@@ -432,7 +496,7 @@ fun TargetsScreen(
                             .weight(1f)
                             .padding(
                                 top = 12.dp,
-                                bottom = if (isWideScreen) 24.dp else dockBottomClearance,
+                                bottom = bottomClearance,
                             ),
                         contentAlignment = Alignment.TopCenter,
                     ) {
@@ -490,7 +554,7 @@ fun TargetsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
-                        contentPadding = PaddingValues(top = 2.dp, bottom = dockBottomClearance),
+                        contentPadding = PaddingValues(top = 2.dp, bottom = bottomClearance),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         item(key = "targets_grouped_list") {

@@ -1,6 +1,7 @@
 package io.github.oinzc.flamecontractor.ui.shell
 
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -184,5 +185,64 @@ class MainNavigationStateTest {
         val secondaryNotice = buildAccountDeleteNotice("acc_2", totalAccountCount = 2)
         assertTrue(secondaryNotice.canDelete)
         assertTrue(secondaryNotice.detailMessage.contains("冷启动"))
+    }
+
+    @Test
+    fun `simple mode back navigation unwinds settings then returns from targets to today`() {
+        val inSettingsFromTargets = MainNavState(
+            selectedTab = MainTab.TARGETS,
+            isSettingsOpen = true,
+            activeSettingsSection = SettingsSection.APPEARANCE,
+        )
+
+        val (atHub, consumed1) = inSettingsFromTargets.navigateBack(UiDisplayMode.SIMPLE)
+        assertTrue(consumed1)
+        assertEquals(MainNavState(MainTab.TARGETS, isSettingsOpen = true, activeSettingsSection = null), atHub)
+
+        val (atTargets, consumed2) = atHub.navigateBack(UiDisplayMode.SIMPLE)
+        assertTrue(consumed2)
+        assertEquals(MainNavState(MainTab.TARGETS, isSettingsOpen = false, activeSettingsSection = null), atTargets)
+
+        val (atToday, consumed3) = atTargets.navigateBack(UiDisplayMode.SIMPLE)
+        assertTrue(consumed3)
+        assertEquals(MainNavState(MainTab.TODAY, isSettingsOpen = false, activeSettingsSection = null), atToday)
+
+        val (unchanged, consumed4) = atToday.navigateBack(UiDisplayMode.SIMPLE)
+        assertFalse(consumed4)
+        assertEquals(atToday, unchanged)
+    }
+
+    @Test
+    fun `simple mode converges hidden tabs and launch intents safely to today or targets`() {
+        val switchedInSettings = MainNavState(
+            selectedTab = MainTab.HISTORY,
+            isSettingsOpen = true,
+            activeSettingsSection = SettingsSection.APPEARANCE,
+        ).convergeForSimpleMode()
+        assertEquals(MainTab.TODAY, switchedInSettings.selectedTab)
+        assertTrue(switchedInSettings.isSettingsOpen)
+        assertEquals(SettingsSection.APPEARANCE, switchedInSettings.activeSettingsSection)
+
+        val base = MainNavState(MainTab.TODAY)
+        assertEquals(MainTab.TARGETS, base.selectTab(MainTab.TARGETS, UiDisplayMode.SIMPLE).selectedTab)
+        assertEquals(MainTab.TODAY, base.selectTab(MainTab.TEMPLATES, UiDisplayMode.SIMPLE).selectedTab)
+        assertEquals(MainTab.TODAY, base.selectTab(MainTab.HISTORY, UiDisplayMode.SIMPLE).selectedTab)
+
+        assertEquals(
+            MainNavState(MainTab.TARGETS),
+            base.applyLaunchIntent(MainNavState.SHORTCUT_TARGETS, false, UiDisplayMode.SIMPLE),
+        )
+        assertEquals(
+            MainNavState(MainTab.TARGETS),
+            base.applyLaunchIntent(UrgentCategory.SPARK_DETERIORATING.name, true, UiDisplayMode.SIMPLE),
+        )
+        assertEquals(
+            MainNavState(MainTab.TODAY),
+            base.applyLaunchIntent(MainNavState.SHORTCUT_TEMPLATES, false, UiDisplayMode.SIMPLE),
+        )
+        assertEquals(
+            MainNavState(MainTab.TODAY),
+            base.applyLaunchIntent(MainNavState.SHORTCUT_HISTORY, false, UiDisplayMode.SIMPLE),
+        )
     }
 }

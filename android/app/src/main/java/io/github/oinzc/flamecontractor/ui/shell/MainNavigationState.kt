@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.graphics.vector.ImageVector
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 
 enum class MainTab(
@@ -59,11 +60,33 @@ data class MainNavState(
     val activeSettingsSection: SettingsSection? = null,
     val returnToTabOnBack: Boolean = false,
 ) {
-    fun selectTab(tab: MainTab): MainNavState = copy(
-        selectedTab = tab,
-        isSettingsOpen = false,
-        activeSettingsSection = null,
-        returnToTabOnBack = false,
+    fun selectTab(
+        tab: MainTab,
+        displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    ): MainNavState {
+        val resolvedTab = if (displayMode == UiDisplayMode.SIMPLE) {
+            when (tab) {
+                MainTab.TODAY,
+                MainTab.TARGETS,
+                -> tab
+
+                MainTab.TEMPLATES,
+                MainTab.HISTORY,
+                -> MainTab.TODAY
+            }
+        } else {
+            tab
+        }
+        return copy(
+            selectedTab = resolvedTab,
+            isSettingsOpen = false,
+            activeSettingsSection = null,
+            returnToTabOnBack = false,
+        )
+    }
+
+    fun convergeForSimpleMode(): MainNavState = copy(
+        selectedTab = MainTab.TODAY,
     )
 
     fun openSettings(
@@ -75,7 +98,9 @@ data class MainNavState(
         returnToTabOnBack = section != null && returnToTabOnBack,
     )
 
-    fun navigateBack(): Pair<MainNavState, Boolean> = when {
+    fun navigateBack(
+        displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    ): Pair<MainNavState, Boolean> = when {
         isSettingsOpen && activeSettingsSection != null && returnToTabOnBack ->
             copy(
                 isSettingsOpen = false,
@@ -93,12 +118,16 @@ data class MainNavState(
                 returnToTabOnBack = false,
             ) to true
 
+        displayMode == UiDisplayMode.SIMPLE && selectedTab != MainTab.TODAY ->
+            copy(selectedTab = MainTab.TODAY) to true
+
         else -> this to false
     }
 
     fun applyLaunchIntent(
         category: String?,
         hasAccountTarget: Boolean,
+        displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
     ): MainNavState {
         val cleanCategory = category?.trim()?.takeIf { it.isNotEmpty() }
         return when {
@@ -108,8 +137,18 @@ data class MainNavState(
                     SHORTCUT_TARGETS,
                     -> MainTab.TARGETS
 
-                    SHORTCUT_TEMPLATES -> MainTab.TEMPLATES
-                    SHORTCUT_HISTORY -> MainTab.HISTORY
+                    SHORTCUT_TEMPLATES -> if (displayMode == UiDisplayMode.SIMPLE) {
+                        MainTab.TODAY
+                    } else {
+                        MainTab.TEMPLATES
+                    }
+
+                    SHORTCUT_HISTORY -> if (displayMode == UiDisplayMode.SIMPLE) {
+                        MainTab.TODAY
+                    } else {
+                        MainTab.HISTORY
+                    }
+
                     SHORTCUT_TODAY -> MainTab.TODAY
                     else -> MainTab.TODAY
                 }

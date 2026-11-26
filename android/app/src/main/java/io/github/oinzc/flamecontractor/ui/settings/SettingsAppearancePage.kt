@@ -35,8 +35,10 @@ import androidx.compose.material.icons.automirrored.outlined.AddToHomeScreen
 import androidx.compose.material.icons.outlined.BrightnessAuto
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -80,6 +82,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.oinzc.flamecontractor.core.theme.ThemeMode
 import io.github.oinzc.flamecontractor.core.theme.ThemePreference
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
@@ -139,6 +142,31 @@ private data class WidgetCenterFeedback(
 private const val PIN_DEBOUNCE_MS = 1_500L
 private const val INLINE_REFRESH_RECEIPT_MS = 1_600L
 
+private data class DisplayModeOption(
+    val mode: UiDisplayMode,
+    val title: String,
+    val badge: String,
+    val subtitle: String,
+    val icon: ImageVector,
+)
+
+private val DISPLAY_MODE_OPTIONS = listOf(
+    DisplayModeOption(
+        mode = UiDisplayMode.STANDARD,
+        title = "标准模式",
+        badge = "完整工作台",
+        subtitle = "保留底部 4 栏导航、执行动态时间线、消息模板库与 30 日发送记录",
+        icon = Icons.Outlined.Dashboard,
+    ),
+    DisplayModeOption(
+        mode = UiDisplayMode.SIMPLE,
+        title = "极简模式",
+        badge = "单页大圆",
+        subtitle = "隐藏底栏与复杂图表，保留超大一键续火圆钮、醒目异常拦截与好友快捷入口",
+        icon = Icons.Outlined.LocalFireDepartment,
+    ),
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SettingsAppearancePage(
@@ -146,6 +174,7 @@ internal fun SettingsAppearancePage(
     onSelectThemeMode: (ThemeMode) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onSelectDisplayMode: (UiDisplayMode) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -309,7 +338,7 @@ internal fun SettingsAppearancePage(
                             color = palette.ink,
                         )
                         Text(
-                            text = "${if (isDark) "深色碳黑" else "浅色模式"} · 中性单色 + 烈焰橙",
+                            text = "${if (isDark) "深色碳黑" else "浅色模式"} · ${displayModeLabel(themePreference.displayMode)} · 烈焰橙",
                             style = MaterialTheme.typography.bodySmall,
                             color = palette.inkSecondary,
                         )
@@ -330,7 +359,142 @@ internal fun SettingsAppearancePage(
                 }
             }
 
-            // 2. App 主题模式 3 选 1
+            // 2. 界面模式（标准模式 vs 极简模式，即时生效）
+            FlameGroupedSection(title = "界面模式") {
+                val modeHaptics = LocalHapticFeedback.current
+                val modeReducedMotion = rememberReducedMotion()
+                val modeAnimMs = if (modeReducedMotion) 0 else 160
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DISPLAY_MODE_OPTIONS.forEach { option ->
+                        val selected = themePreference.displayMode == option.mode
+                        val cardInteraction = remember(option.mode) { MutableInteractionSource() }
+                        val cardBorder by animateColorAsState(
+                            targetValue = if (selected) {
+                                if (option.mode == UiDisplayMode.SIMPLE) palette.ember else palette.monoCtaContainer
+                            } else {
+                                palette.hairline
+                            },
+                            animationSpec = tween(modeAnimMs, easing = FlameMotionSpec.easeOut),
+                            label = "display_mode_border_${option.mode.name}",
+                        )
+                        val cardBg by animateColorAsState(
+                            targetValue = if (selected) {
+                                if (option.mode == UiDisplayMode.SIMPLE) {
+                                    palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f)
+                                } else {
+                                    palette.surfaceSubtle
+                                }
+                            } else {
+                                palette.surface
+                            },
+                            animationSpec = tween(modeAnimMs, easing = FlameMotionSpec.easeOut),
+                            label = "display_mode_bg_${option.mode.name}",
+                        )
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .flamePressScale(interactionSource = cardInteraction)
+                                .clip(RoundedCornerShape(16.dp))
+                                .selectable(
+                                    selected = selected,
+                                    interactionSource = cardInteraction,
+                                    indication = LocalIndication.current,
+                                    role = Role.RadioButton,
+                                    onClick = {
+                                        if (!selected) {
+                                            modeHaptics.performFlameLightTick()
+                                            onSelectDisplayMode(option.mode)
+                                        }
+                                    },
+                                ),
+                            shape = RoundedCornerShape(16.dp),
+                            color = cardBg,
+                            contentColor = palette.ink,
+                            border = BorderStroke(
+                                width = if (selected) 1.8.dp else 1.dp,
+                                color = cardBorder,
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                FlameRowAvatar(
+                                    tone = if (option.mode == UiDisplayMode.SIMPLE) {
+                                        FlameTone.EMBER
+                                    } else {
+                                        FlameTone.NEUTRAL
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = option.icon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text(
+                                            text = option.title,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.ink,
+                                        )
+                                        FlameMiniTag(
+                                            text = if (selected) "当前使用" else option.badge,
+                                            tone = if (selected) {
+                                                if (option.mode == UiDisplayMode.SIMPLE) FlameTone.EMBER else FlameTone.HEALTHY
+                                            } else {
+                                                FlameTone.NEUTRAL
+                                            },
+                                        )
+                                    }
+                                    Text(
+                                        text = option.subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.inkSecondary,
+                                    )
+                                }
+                                RadioButton(
+                                    selected = selected,
+                                    onClick = null,
+                                    colors = RadioButtonDefaults.colors(
+                                        selectedColor = if (option.mode == UiDisplayMode.SIMPLE) {
+                                            palette.ember
+                                        } else {
+                                            palette.monoCtaContainer
+                                        },
+                                        unselectedColor = palette.hairlineStrong,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "切换即时生效且不影响已有好友、模板与续火记录；在极简模式下随时可通过右上角「设置」切回标准模式。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkTertiary,
+                    )
+                }
+            }
+
+            // 3. App 主题模式 3 选 1
             FlameGroupedSection(title = "应用主题模式") {
                 THEME_MODE_OPTIONS.forEachIndexed { index, option ->
                     val selected = themePreference.mode == option.mode

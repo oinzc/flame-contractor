@@ -114,6 +114,7 @@ import io.github.oinzc.flamecontractor.app.AppContainer
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.support.FeedbackKind
 import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.AttemptStatus
@@ -179,6 +180,7 @@ fun TodayRoute(
     modifier: Modifier = Modifier,
     urgentSignalNonce: Long = 0L,
     accountId: String = DEFAULT_ACCOUNT_ID,
+    displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -253,56 +255,94 @@ fun TodayRoute(
         }
     }
 
-    TodayScreen(
-        state = uiState,
-        snackbarHostState = snackbarHostState,
-        onReloginClick = viewModel::onReloginClick,
-        onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
-        onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
-        onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
-        onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
-        onDismissUnknownReview = viewModel::dismissUnknownReview,
-        onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
-        onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
-        onOpenCooldownDetail = viewModel::openCooldownDetail,
-        onDismissCooldownDetail = viewModel::dismissCooldownDetail,
-        onClearCooldown = viewModel::clearCooldown,
-        onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
-        onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
-        onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
-        onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
-        onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
-        onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
-        onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
-        onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
-        onToggleJobExpanded = viewModel::toggleJobExpanded,
-        onOpenTab = onOpenTab,
-        onOpenSettings = onOpenSettings,
-        onOpenFeedback = onOpenFeedback,
-        onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
-        onFeedbackIssue = { title, content ->
-            onOpenFeedbackWithDraft(
-                FeedbackPreFillDraft(
-                    kind = FeedbackKind.BUG,
-                    title = title,
-                    content = content,
-                    attachDiagnosticLog = true,
-                    nonce = System.currentTimeMillis(),
-                ),
-            )
-        },
-        onOpenAccountSwitcher = onOpenAccountSwitcher,
-        otherAccountAlertBadge = otherAccountAlertBadge,
-        setupReadiness = setupReadiness,
-        onStartOnboardingWizard = onStartOnboardingWizard,
-        resolveJobScreenshotFile = { jobId ->
-            container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
-        },
-        resolveAttemptScreenshotFile = { attemptId ->
-            container.diagnosticScreenshotStore.resolveAttemptFile(attemptId)
-        },
-        modifier = modifier,
-    )
+    val handleFeedbackIssue: (String, String) -> Unit = { title, content ->
+        onOpenFeedbackWithDraft(
+            FeedbackPreFillDraft(
+                kind = FeedbackKind.BUG,
+                title = title,
+                content = content,
+                attachDiagnosticLog = true,
+                nonce = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    if (displayMode == UiDisplayMode.SIMPLE) {
+        SimpleTodayScreen(
+            state = uiState,
+            snackbarHostState = snackbarHostState,
+            onReloginClick = viewModel::onReloginClick,
+            onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
+            onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
+            onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
+            onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
+            onDismissUnknownReview = viewModel::dismissUnknownReview,
+            onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
+            onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
+            onOpenCooldownDetail = viewModel::openCooldownDetail,
+            onDismissCooldownDetail = viewModel::dismissCooldownDetail,
+            onClearCooldown = viewModel::clearCooldown,
+            onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
+            onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
+            onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
+            onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
+            onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
+            onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
+            onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
+            onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
+            onOpenTab = onOpenTab,
+            onOpenSettings = onOpenSettings,
+            onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+            onFeedbackIssue = handleFeedbackIssue,
+            onOpenAccountSwitcher = onOpenAccountSwitcher,
+            otherAccountAlertBadge = otherAccountAlertBadge,
+            resolveJobScreenshotFile = { jobId ->
+                container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+            },
+            modifier = modifier,
+        )
+    } else {
+        TodayScreen(
+            state = uiState,
+            snackbarHostState = snackbarHostState,
+            onReloginClick = viewModel::onReloginClick,
+            onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
+            onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
+            onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
+            onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
+            onDismissUnknownReview = viewModel::dismissUnknownReview,
+            onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
+            onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
+            onOpenCooldownDetail = viewModel::openCooldownDetail,
+            onDismissCooldownDetail = viewModel::dismissCooldownDetail,
+            onClearCooldown = viewModel::clearCooldown,
+            onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
+            onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
+            onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
+            onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
+            onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
+            onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
+            onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
+            onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
+            onToggleJobExpanded = viewModel::toggleJobExpanded,
+            onOpenTab = onOpenTab,
+            onOpenSettings = onOpenSettings,
+            onOpenFeedback = onOpenFeedback,
+            onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+            onFeedbackIssue = handleFeedbackIssue,
+            onOpenAccountSwitcher = onOpenAccountSwitcher,
+            otherAccountAlertBadge = otherAccountAlertBadge,
+            setupReadiness = setupReadiness,
+            onStartOnboardingWizard = onStartOnboardingWizard,
+            resolveJobScreenshotFile = { jobId ->
+                container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+            },
+            resolveAttemptScreenshotFile = { attemptId ->
+                container.diagnosticScreenshotStore.resolveAttemptFile(attemptId)
+            },
+            modifier = modifier,
+        )
+    }
 }
 
 @Composable
@@ -2116,7 +2156,7 @@ private fun TaskTimelineSheet(
 }
 
 @Composable
-private fun ForceAllConfirmSheet(
+internal fun ForceAllConfirmSheet(
     succeededTodayCount: Int,
     localSucceededTodayCount: Int,
     officialLitOnlyTodayCount: Int,
@@ -2291,7 +2331,7 @@ private fun AttemptTimelineRow(
 }
 
 @Composable
-private fun ReloginChoiceSheet(
+internal fun ReloginChoiceSheet(
     onDismiss: () -> Unit,
     onPreserveSession: () -> Unit,
     onClearAndRelogin: () -> Unit,
@@ -2401,7 +2441,7 @@ private fun ReloginChoiceSheet(
 }
 
 @Composable
-private fun UnknownReviewSheet(
+internal fun UnknownReviewSheet(
     item: UnknownJobReviewItem,
     screenshotFile: File?,
     isResolving: Boolean,
@@ -2551,7 +2591,7 @@ private fun UnknownReviewSheet(
 }
 
 @Composable
-private fun CooldownDetailSheet(
+internal fun CooldownDetailSheet(
     account: AccountEntity,
     stats: List<SanitizedFailureStat>,
     isResolving: Boolean,
@@ -2619,7 +2659,7 @@ private fun CooldownDetailSheet(
 }
 
 @Composable
-private fun DomBrokenSheet(
+internal fun DomBrokenSheet(
     onOpenDiagnostics: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -2663,7 +2703,7 @@ private fun DomBrokenSheet(
 }
 
 @Composable
-private fun UrgentAuthPromptSheet(
+internal fun UrgentAuthPromptSheet(
     category: UrgentCategory,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
@@ -2718,7 +2758,7 @@ private fun UrgentAuthPromptSheet(
 }
 
 @Composable
-private fun ManualBatchFeedbackSheet(
+internal fun ManualBatchFeedbackSheet(
     feedback: ManualBatchFeedback,
     onDismiss: () -> Unit,
     onOpenUnknownReview: () -> Unit,

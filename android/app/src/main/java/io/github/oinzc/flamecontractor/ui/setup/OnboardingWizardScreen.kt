@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -22,8 +23,11 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,12 +47,14 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -56,6 +62,7 @@ import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Security
@@ -69,6 +76,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -77,16 +86,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,6 +106,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
@@ -101,6 +114,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.flamePressScale
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
@@ -149,6 +163,12 @@ internal enum class OnboardingStep(
         icon = Icons.Outlined.GroupAdd,
         isCorePermissionGate = false,
     ),
+    CHOOSE_MODE(
+        shortTitle = "界面模式",
+        headline = "选择适合你的界面模式",
+        icon = Icons.Outlined.Palette,
+        isCorePermissionGate = false,
+    ),
 }
 
 internal object OnboardingGatePolicy {
@@ -163,6 +183,7 @@ internal object OnboardingGatePolicy {
         OnboardingStep.OEM_BACKGROUND -> readiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART).completed
         OnboardingStep.DOUYIN_LOGIN -> readiness.itemById(SetupItemId.DOUYIN_LOGIN).completed
         OnboardingStep.SELECT_TARGETS -> readiness.itemById(SetupItemId.SELECT_TARGETS).completed
+        OnboardingStep.CHOOSE_MODE -> true
     }
 
     /**
@@ -222,6 +243,8 @@ fun OnboardingWizardScreen(
     onFinishToToday: () -> Unit,
     onSkip: () -> Unit,
     modifier: Modifier = Modifier,
+    selectedDisplayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    onSelectDisplayMode: (UiDisplayMode) -> Unit = {},
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -443,11 +466,15 @@ fun OnboardingWizardScreen(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     steps.forEachIndexed { idx, step ->
                         val isCurrent = idx == currentIndex
-                        val done = OnboardingGatePolicy.isStepCompleted(step, readiness)
+                        val done = if (step == OnboardingStep.CHOOSE_MODE) {
+                            false
+                        } else {
+                            OnboardingGatePolicy.isStepCompleted(step, readiness)
+                        }
                         val unlocked = OnboardingGatePolicy.canSelectStep(idx, readiness)
                         val dotColor = when {
                             isCurrent -> palette.monoCtaContainer
@@ -558,7 +585,7 @@ fun OnboardingWizardScreen(
                         OnboardingStepHeroHeader(
                             step = step,
                             completed = OnboardingGatePolicy.isStepCompleted(step, readiness),
-                            statusText = stepStatusLabel(step, readiness),
+                            statusText = stepStatusLabel(step, readiness, selectedDisplayMode),
                         )
 
                         when (step) {
@@ -739,6 +766,16 @@ fun OnboardingWizardScreen(
                                     )
                                 }
                             }
+
+                            OnboardingStep.CHOOSE_MODE -> {
+                                OnboardingChooseModeStepBody(
+                                    selectedDisplayMode = selectedDisplayMode,
+                                    onSelectDisplayMode = { mode ->
+                                        haptics.performFlameLightTick()
+                                        onSelectDisplayMode(mode)
+                                    },
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -911,6 +948,37 @@ fun OnboardingWizardScreen(
                                 }
                             }
 
+                            currentStep == OnboardingStep.SELECT_TARGETS -> {
+                                Button(
+                                    onClick = {
+                                        haptics.performFlameLightTick()
+                                        currentIndex += 1
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 46.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = palette.monoCtaContainer,
+                                        contentColor = palette.monoCtaContent,
+                                    ),
+                                ) {
+                                    Text(
+                                        text = if (stepCompleted) "已就绪，下一步" else "下一步：选择界面模式",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                            }
+
                             currentIndex < steps.lastIndex -> {
                                 Button(
                                     onClick = {
@@ -943,74 +1011,27 @@ fun OnboardingWizardScreen(
                             }
 
                             else -> {
-                                val targetsDone = readiness.itemById(SetupItemId.SELECT_TARGETS).completed
-                                if (!targetsDone) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            haptics.performFlameLightTick()
-                                            onFinishToToday()
-                                        },
-                                        modifier = Modifier.heightIn(min = 46.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = BorderStroke(1.dp, palette.hairlineStrong),
-                                        colors = ButtonDefaults.outlinedButtonColors(
-                                            containerColor = palette.surface,
-                                            contentColor = palette.ink,
-                                        ),
-                                    ) {
-                                        Text(
-                                            text = "进入首页",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                        )
-                                    }
-                                    Button(
-                                        onClick = {
-                                            haptics.performFlameLightTick()
-                                            onFinishAndOpenTargets()
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .heightIn(min = 46.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = palette.monoCtaContainer,
-                                            contentColor = palette.monoCtaContent,
-                                        ),
-                                    ) {
-                                        Text(
-                                            text = "去扫描选择好友",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                } else {
-                                    Button(
-                                        onClick = {
-                                            haptics.performFlameLightTick()
-                                            onFinishToToday()
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .heightIn(min = 46.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = palette.monoCtaContainer,
-                                            contentColor = palette.monoCtaContent,
-                                        ),
-                                    ) {
-                                        Text(
-                                            text = "完成并开始使用",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
+                                Button(
+                                    onClick = {
+                                        haptics.performFlameLightTick()
+                                        onFinishToToday()
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 46.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = palette.monoCtaContainer,
+                                        contentColor = palette.monoCtaContent,
+                                    ),
+                                ) {
+                                    Text(
+                                        text = "完成设置，进入应用",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
                             }
                         }
@@ -1027,6 +1048,20 @@ fun OnboardingWizardScreen(
                                 .clickable {
                                     haptics.performFlameLightTick()
                                     showSkipConfirmSheet = true
+                                }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    } else if (!readiness.itemById(SetupItemId.SELECT_TARGETS).completed) {
+                        Text(
+                            text = "完成并直接前往选择续火好友 ›",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.inkSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    haptics.performFlameLightTick()
+                                    onFinishAndOpenTargets()
                                 }
                                 .padding(horizontal = 10.dp, vertical = 4.dp),
                         )
@@ -1453,7 +1488,343 @@ private fun CompactSetupActionCard(
     }
 }
 
-private fun stepStatusLabel(step: OnboardingStep, readiness: SetupReadinessSnapshot): String = when (step) {
+@Composable
+private fun OnboardingChooseModeStepBody(
+    selectedDisplayMode: UiDisplayMode,
+    onSelectDisplayMode: (UiDisplayMode) -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
+    val reducedMotion = rememberReducedMotion()
+    val animMs = if (reducedMotion) 0 else 180
+
+    OnboardingWhyBox(
+        whyText = "如果你希望查看完整数据与模板管理，推荐「标准模式」；如果你只想打开应用点一下超大圆钮就能一键续火，推荐「极简模式」。两者随时可在设置中自由切换。",
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OnboardingDisplayModeCard(
+            mode = UiDisplayMode.STANDARD,
+            title = "标准模式",
+            badgeText = "全功能工作台",
+            summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
+            highlights = listOf(
+                "底部 4 栏快速切换：今日 / 好友 / 模板 / 记录",
+                "展示完整执行动态时间线、模板维护与火花统计",
+            ),
+            selected = selectedDisplayMode == UiDisplayMode.STANDARD,
+            accentColor = palette.monoCtaContainer,
+            selectedContainerColor = palette.surfaceSubtle,
+            animMs = animMs,
+            onClick = { onSelectDisplayMode(UiDisplayMode.STANDARD) },
+            previewContent = { StandardModeWireframePreview() },
+        )
+
+        OnboardingDisplayModeCard(
+            mode = UiDisplayMode.SIMPLE,
+            title = "极简模式",
+            badgeText = "大字单页",
+            summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
+            highlights = listOf(
+                "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
+                "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
+            ),
+            selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
+            accentColor = palette.ember,
+            selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
+            animMs = animMs,
+            onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
+            previewContent = { SimpleModeWireframePreview() },
+        )
+    }
+
+    Text(
+        text = "提示：两种模式共用同一套账号、好友与定时任务，后续随时可在「设置 → 外观与主题」中一键切换。",
+        style = MaterialTheme.typography.bodySmall,
+        color = palette.inkTertiary,
+    )
+}
+
+@Composable
+private fun OnboardingDisplayModeCard(
+    mode: UiDisplayMode,
+    title: String,
+    badgeText: String,
+    summary: String,
+    highlights: List<String>,
+    selected: Boolean,
+    accentColor: Color,
+    selectedContainerColor: Color,
+    animMs: Int,
+    onClick: () -> Unit,
+    previewContent: @Composable () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val interactionSource = remember(mode) { MutableInteractionSource() }
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) accentColor else palette.hairline,
+        animationSpec = tween(animMs, easing = FlameMotionSpec.easeOut),
+        label = "onboarding_mode_border_${mode.name}",
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (selected) selectedContainerColor else palette.surface,
+        animationSpec = tween(animMs, easing = FlameMotionSpec.easeOut),
+        label = "onboarding_mode_bg_${mode.name}",
+    )
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .flamePressScale(interactionSource = interactionSource)
+            .clip(RoundedCornerShape(20.dp))
+            .selectable(
+                selected = selected,
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                role = Role.RadioButton,
+                onClick = onClick,
+            ),
+        shape = RoundedCornerShape(20.dp),
+        color = bgColor,
+        contentColor = palette.ink,
+        border = BorderStroke(width = if (selected) 2.dp else 1.dp, color = borderColor),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            previewContent()
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink,
+                    )
+                    FlameMiniTag(
+                        text = if (selected) "已选择" else badgeText,
+                        tone = if (selected) {
+                            if (mode == UiDisplayMode.SIMPLE) FlameTone.EMBER else FlameTone.HEALTHY
+                        } else {
+                            FlameTone.NEUTRAL
+                        },
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    RadioButton(
+                        selected = selected,
+                        onClick = null,
+                        colors = RadioButtonDefaults.colors(
+                            selectedColor = accentColor,
+                            unselectedColor = palette.hairlineStrong,
+                        ),
+                    )
+                }
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    highlights.forEach { bullet ->
+                        Text(
+                            text = "· $bullet",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkTertiary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StandardModeWireframePreview() {
+    val palette = FlameThemeTokens.palette
+    Surface(
+        modifier = Modifier.size(width = 66.dp, height = 98.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.canvas,
+        border = BorderStroke(1.dp, palette.hairlineStrong),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            // 模拟卡片区
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(24.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(palette.surface)
+                        .border(0.8.dp, palette.hairline, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(palette.ember),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(16.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(palette.surface)
+                            .border(0.8.dp, palette.hairline, RoundedCornerShape(5.dp)),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(16.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(palette.surface)
+                            .border(0.8.dp, palette.hairline, RoundedCornerShape(5.dp)),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(palette.surface)
+                        .border(0.8.dp, palette.hairline, RoundedCornerShape(5.dp)),
+                )
+            }
+            // 模拟底部 4 栏胶囊
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(palette.surface)
+                    .border(0.8.dp, palette.hairlineStrong, RoundedCornerShape(999.dp))
+                    .padding(horizontal = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                repeat(4) { idx ->
+                    Box(
+                        modifier = Modifier
+                            .size(if (idx == 0) 6.dp else 4.dp)
+                            .clip(CircleShape)
+                            .background(if (idx == 0) palette.ink else palette.inkTertiary.copy(alpha = 0.5f)),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimpleModeWireframePreview() {
+    val palette = FlameThemeTokens.palette
+    Surface(
+        modifier = Modifier.size(width = 66.dp, height = 98.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.canvas,
+        border = BorderStroke(1.dp, palette.emberBorder),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 22.dp, height = 7.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(palette.surface)
+                        .border(0.7.dp, palette.hairlineStrong, RoundedCornerShape(999.dp)),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(width = 16.dp, height = 7.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(palette.surface)
+                        .border(0.7.dp, palette.hairlineStrong, RoundedCornerShape(999.dp)),
+                )
+            }
+            // 模拟中央超大圆钮
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(palette.ember.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(palette.ember),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.LocalFireDepartment,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+            // 模拟底部 2 个大快捷按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(palette.surface)
+                        .border(0.8.dp, palette.hairlineStrong, RoundedCornerShape(5.dp)),
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(palette.surface)
+                        .border(0.8.dp, palette.hairlineStrong, RoundedCornerShape(5.dp)),
+                )
+            }
+        }
+    }
+}
+
+private fun stepStatusLabel(
+    step: OnboardingStep,
+    readiness: SetupReadinessSnapshot,
+    selectedDisplayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+): String = when (step) {
     OnboardingStep.NOTIFICATIONS -> readiness.itemById(SetupItemId.NOTIFICATIONS).statusLabel
     OnboardingStep.AUTO_RETURN -> readiness.itemById(SetupItemId.AUTO_RETURN_OVERLAY).statusLabel
     OnboardingStep.BATTERY_AND_ALARM -> {
@@ -1469,6 +1840,8 @@ private fun stepStatusLabel(step: OnboardingStep, readiness: SetupReadinessSnaps
     OnboardingStep.OEM_BACKGROUND -> readiness.itemById(SetupItemId.OEM_BACKGROUND_AUTOSTART).statusLabel
     OnboardingStep.DOUYIN_LOGIN -> readiness.itemById(SetupItemId.DOUYIN_LOGIN).statusLabel
     OnboardingStep.SELECT_TARGETS -> readiness.itemById(SetupItemId.SELECT_TARGETS).statusLabel
+    OnboardingStep.CHOOSE_MODE ->
+        "当前选择：${if (selectedDisplayMode == UiDisplayMode.SIMPLE) "极简模式" else "标准模式"}"
 }
 
 @SuppressLint("BatteryLife")

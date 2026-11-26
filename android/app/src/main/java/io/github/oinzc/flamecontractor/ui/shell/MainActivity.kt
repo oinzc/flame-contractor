@@ -44,6 +44,7 @@ import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.setup.SetupOnboardingStore
 import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.core.update.AppUpdateInstallOutcome
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.JobStatus
@@ -122,9 +123,11 @@ class MainActivity : AppCompatActivity() {
             }
 
             FlameTheme(preference = themePreference) {
+                val isSimpleMode = themePreference.displayMode == UiDisplayMode.SIMPLE
                 var navState by rememberSaveable(stateSaver = MainNavStateSaver) {
                     mutableStateOf(MainNavState())
                 }
+                var lastDisplayMode by rememberSaveable { mutableStateOf(themePreference.displayMode) }
                 var isFullscreenEditorOpen by rememberSaveable { mutableStateOf(false) }
                 var showAccountManagerSheet by rememberSaveable { mutableStateOf(false) }
                 var showOnboardingWizard by rememberSaveable { mutableStateOf(false) }
@@ -201,6 +204,18 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
+                LaunchedEffect(themePreference.displayMode) {
+                    val currentMode = themePreference.displayMode
+                    if (currentMode == UiDisplayMode.SIMPLE) {
+                        if (lastDisplayMode != UiDisplayMode.SIMPLE ||
+                            (navState.selectedTab != MainTab.TODAY && navState.selectedTab != MainTab.TARGETS)
+                        ) {
+                            navState = navState.convergeForSimpleMode()
+                        }
+                    }
+                    lastDisplayMode = currentMode
+                }
+
                 LaunchedEffect(launchSignal, accounts) {
                     if (launchSignal != null && launchSignal.nonce != lastHandledLaunchNonce) {
                         val targetAccountId = launchSignal.accountId
@@ -212,6 +227,7 @@ class MainActivity : AppCompatActivity() {
                         navState = navState.applyLaunchIntent(
                             category = launchSignal.category,
                             hasAccountTarget = targetAccountId != null,
+                            displayMode = themePreference.displayMode,
                         )
                         isFullscreenEditorOpen = false
                         showAccountManagerSheet = false
@@ -225,8 +241,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                BackHandler(enabled = navState.isSettingsOpen && !showOnboardingWizard) {
-                    val (next, _) = navState.navigateBack()
+                BackHandler(
+                    enabled = !showOnboardingWizard && (
+                        navState.isSettingsOpen ||
+                            (isSimpleMode && navState.selectedTab != MainTab.TODAY)
+                        ),
+                ) {
+                    val (next, _) = navState.navigateBack(displayMode = themePreference.displayMode)
                     navState = next
                 }
 
@@ -353,10 +374,10 @@ class MainActivity : AppCompatActivity() {
                         selectedTab = navState.selectedTab,
                         onSelectTab = { tab ->
                             isFullscreenEditorOpen = false
-                            navState = navState.selectTab(tab)
+                            navState = navState.selectTab(tab, themePreference.displayMode)
                         },
                         todayAlertBadge = hasTodayAlert,
-                        hideNavigationChrome = navState.isSettingsOpen || isFullscreenEditorOpen || showOnboardingWizard,
+                        hideNavigationChrome = isSimpleMode || navState.isSettingsOpen || isFullscreenEditorOpen || showOnboardingWizard,
                         currentAccount = currentAccount,
                         totalAccountCount = accounts.size.coerceAtLeast(1),
                         otherAccountAlertBadge = hasOtherAccountAlert,
@@ -368,7 +389,7 @@ class MainActivity : AppCompatActivity() {
                                 container = container,
                                 onOpenTab = { targetTab ->
                                     isFullscreenEditorOpen = false
-                                    navState = navState.selectTab(targetTab)
+                                    navState = navState.selectTab(targetTab, themePreference.displayMode)
                                 },
                                 onOpenSettings = openSettings,
                                 onOpenFeedback = openFeedbackDirect,
@@ -381,6 +402,7 @@ class MainActivity : AppCompatActivity() {
                                 initialUrgentCategory = urgentCategoryForActive,
                                 urgentSignalNonce = urgentNonceForActive,
                                 accountId = activeAccountId,
+                                displayMode = themePreference.displayMode,
                             )
                         },
                         targetsContent = {
@@ -389,12 +411,20 @@ class MainActivity : AppCompatActivity() {
                                 scheduleCoordinator = container.scheduleCoordinator,
                                 onNavigateToTodayReview = {
                                     isFullscreenEditorOpen = false
-                                    navState = navState.selectTab(MainTab.TODAY)
+                                    navState = navState.selectTab(MainTab.TODAY, themePreference.displayMode)
                                 },
                                 onOpenSettings = openSettings,
                                 onOpenFeedback = openFeedbackDirect,
                                 accountId = activeAccountId,
                                 imageStore = container.templateImageStore,
+                                onBack = if (isSimpleMode) {
+                                    {
+                                        isFullscreenEditorOpen = false
+                                        navState = navState.selectTab(MainTab.TODAY, themePreference.displayMode)
+                                    }
+                                } else {
+                                    null
+                                },
                             )
                         },
                         templatesContent = {
@@ -412,7 +442,7 @@ class MainActivity : AppCompatActivity() {
                                 database = container.database,
                                 onNavigateToTodayReview = {
                                     isFullscreenEditorOpen = false
-                                    navState = navState.selectTab(MainTab.TODAY)
+                                    navState = navState.selectTab(MainTab.TODAY, themePreference.displayMode)
                                 },
                                 onOpenSettings = openSettings,
                                 onOpenFeedback = openFeedbackDirect,
@@ -484,11 +514,11 @@ class MainActivity : AppCompatActivity() {
                                 onOpenInspectWebViewForActiveAccount = { openInspectWebViewForAccount(activeAccountId) },
                                 onOpenTargetsTab = {
                                     isFullscreenEditorOpen = false
-                                    navState = navState.selectTab(MainTab.TARGETS)
+                                    navState = navState.selectTab(MainTab.TARGETS, themePreference.displayMode)
                                 },
                                 survivalRefreshNonce = survivalRefreshNonce,
                                 onBack = {
-                                    val (next, _) = navState.navigateBack()
+                                    val (next, _) = navState.navigateBack(displayMode = themePreference.displayMode)
                                     navState = next
                                 },
                                 backupManager = container.backupManager,
@@ -546,18 +576,20 @@ class MainActivity : AppCompatActivity() {
                                 container.setupOnboardingStore.markCompleted()
                                 showOnboardingWizard = false
                                 isFullscreenEditorOpen = false
-                                navState = navState.selectTab(MainTab.TARGETS)
+                                navState = navState.selectTab(MainTab.TARGETS, themePreference.displayMode)
                             },
                             onFinishToToday = {
                                 container.setupOnboardingStore.markCompleted()
                                 showOnboardingWizard = false
                                 isFullscreenEditorOpen = false
-                                navState = navState.selectTab(MainTab.TODAY)
+                                navState = navState.selectTab(MainTab.TODAY, themePreference.displayMode)
                             },
                             onSkip = {
                                 container.setupOnboardingStore.markCompleted()
                                 showOnboardingWizard = false
                             },
+                            selectedDisplayMode = themePreference.displayMode,
+                            onSelectDisplayMode = container.themePreferencesStore::setDisplayMode,
                         )
                     }
                 }

@@ -20,15 +20,30 @@ class ThemePreferencesStoreTest {
     }
 
     @Test
+    fun `invalid display mode storage value falls back to STANDARD`() {
+        assertEquals(UiDisplayMode.STANDARD, UiDisplayMode.fromStorageValue(null))
+        assertEquals(UiDisplayMode.STANDARD, UiDisplayMode.fromStorageValue(""))
+        assertEquals(UiDisplayMode.STANDARD, UiDisplayMode.fromStorageValue("UNKNOWN"))
+        assertEquals(UiDisplayMode.STANDARD, UiDisplayMode.fromStorageValue("standard"))
+        assertEquals(UiDisplayMode.SIMPLE, UiDisplayMode.fromStorageValue("SIMPLE"))
+        assertEquals(UiDisplayMode.SIMPLE, UiDisplayMode.fromStorageValue("  simple  "))
+    }
+
+    @Test
     fun `updates persist and emit new state`() {
         val persisted = mutableListOf<ThemePreference>()
         val store = ThemePreferencesStore(onPersist = { persisted += it })
 
         store.setThemeMode(ThemeMode.DARK)
+        store.setDisplayMode(UiDisplayMode.SIMPLE)
 
-        assertEquals(ThemePreference(ThemeMode.DARK), store.preference.value)
-        assertEquals(1, persisted.size)
-        assertEquals(ThemePreference(ThemeMode.DARK), persisted.last())
+        assertEquals(
+            ThemePreference(mode = ThemeMode.DARK, displayMode = UiDisplayMode.SIMPLE),
+            store.preference.value,
+        )
+        assertEquals(2, persisted.size)
+        assertEquals(ThemePreference(ThemeMode.DARK, UiDisplayMode.STANDARD), persisted[0])
+        assertEquals(ThemePreference(ThemeMode.DARK, UiDisplayMode.SIMPLE), persisted[1])
     }
 
     @Test
@@ -45,17 +60,22 @@ class ThemePreferencesStoreTest {
         fakeContext.prefs.edit().putBoolean("dynamic_color_enabled", true).apply()
 
         val initialStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.SYSTEM), initialStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.SYSTEM, UiDisplayMode.STANDARD), initialStore.preference.value)
         assertFalse(fakeContext.prefs.contains("dynamic_color_enabled"))
 
         initialStore.setThemeMode(ThemeMode.LIGHT)
+        initialStore.setDisplayMode(UiDisplayMode.SIMPLE)
 
         val reloadedStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.LIGHT), reloadedStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.LIGHT, UiDisplayMode.SIMPLE), reloadedStore.preference.value)
+        assertEquals("SIMPLE", fakeContext.prefs.getString("ui_display_mode", null))
 
-        fakeContext.prefs.edit().putString("theme_mode", "UNKNOWN_CORRUPTED").apply()
+        fakeContext.prefs.edit()
+            .putString("theme_mode", "UNKNOWN_CORRUPTED")
+            .putString("ui_display_mode", "INVALID_MODE")
+            .apply()
         val recoveredStore = ThemePreferencesStore.fromContext(fakeContext)
-        assertEquals(ThemePreference(ThemeMode.SYSTEM), recoveredStore.preference.value)
+        assertEquals(ThemePreference(ThemeMode.SYSTEM, UiDisplayMode.STANDARD), recoveredStore.preference.value)
     }
 
     private class FakeSharedPrefsContext : ContextWrapper(null) {

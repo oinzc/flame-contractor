@@ -236,7 +236,7 @@ class SetupReadinessModelsTest {
         assertFalse(OnboardingGatePolicy.canSelectStep(3, firstTwoReady))
         assertEquals(2, OnboardingGatePolicy.completedCoreStepCount(firstTwoReady))
 
-        // 前 4 步核心权限全部就绪后，解锁登录与选择好友步（索引 5）
+        // 前 4 步核心权限全部就绪后，解锁登录、选择好友与界面模式（索引 6）
         val allCoreReady = SetupReadinessBuilder.build(
             survivalSnapshot = RomSurvivalChecker.buildSnapshot(
                 checkedAtEpochMs = 3_000L,
@@ -252,9 +252,18 @@ class SetupReadinessModelsTest {
             accountStatus = AccountStatus.PENDING_LOGIN,
             enabledTargetCount = 0,
         )
+        assertEquals(7, OnboardingStep.entries.size)
+        assertEquals(OnboardingStep.CHOOSE_MODE, OnboardingStep.entries.last())
+        assertEquals("界面模式", OnboardingStep.CHOOSE_MODE.shortTitle)
+        assertEquals("选择适合你的界面模式", OnboardingStep.CHOOSE_MODE.headline)
+        assertFalse(OnboardingStep.CHOOSE_MODE.isCorePermissionGate)
+        assertEquals(4, OnboardingGatePolicy.totalCoreStepCount())
         assertEquals(OnboardingStep.entries.lastIndex, OnboardingGatePolicy.maxUnlockedStepIndex(allCoreReady))
         assertTrue(OnboardingGatePolicy.canSelectStep(4, allCoreReady))
         assertTrue(OnboardingGatePolicy.canSelectStep(5, allCoreReady))
+        assertTrue(OnboardingGatePolicy.canSelectStep(6, allCoreReady))
+        assertFalse(OnboardingGatePolicy.canSelectStep(6, noneReady))
+        assertTrue(OnboardingGatePolicy.isStepCompleted(OnboardingStep.CHOOSE_MODE, allCoreReady))
         assertEquals(4, OnboardingGatePolicy.completedCoreStepCount(allCoreReady))
         assertTrue(OnboardingGatePolicy.missingCorePermissionTitles(allCoreReady).isEmpty())
     }

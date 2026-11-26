@@ -93,6 +93,7 @@ import io.github.oinzc.flamecontractor.core.support.FeedbackKind
 import io.github.oinzc.flamecontractor.core.support.FeedbackPreFillDraft
 import io.github.oinzc.flamecontractor.core.theme.ThemeMode
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
 import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -498,11 +499,15 @@ fun SettingsRoute(
                 onBack = onBack,
                 updateUiState = updateUiState,
                 onOpenUpdateDialog = { appUpdateManager?.reopenUpdateDialog() },
+                onSwitchToStandardMode = {
+                    resolvedThemeStore.setDisplayMode(UiDisplayMode.STANDARD)
+                },
             )
 
             SettingsSection.APPEARANCE -> SettingsAppearancePage(
                 themePreference = themePreference,
                 onSelectThemeMode = resolvedThemeStore::setThemeMode,
+                onSelectDisplayMode = resolvedThemeStore::setDisplayMode,
                 onBack = onBack,
             )
 
@@ -892,6 +897,11 @@ internal fun themeModeLabel(mode: ThemeMode): String = when (mode) {
     ThemeMode.SYSTEM -> "跟随系统"
     ThemeMode.LIGHT -> "浅色模式"
     ThemeMode.DARK -> "深色碳黑"
+}
+
+internal fun displayModeLabel(mode: UiDisplayMode): String = when (mode) {
+    UiDisplayMode.STANDARD -> "标准模式"
+    UiDisplayMode.SIMPLE -> "极简模式"
 }
 
 internal fun scanRunStatusLabel(status: ScanRunStatus): String = when (status) {
