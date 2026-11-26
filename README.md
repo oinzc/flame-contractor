@@ -277,7 +277,7 @@ npm test         # node --test 领域纯函数单测
 npm run build    # tsc --noEmit && vite build
 ```
 
-测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（332 项，无需真实浏览器）。
+测试：`cd backend && .venv/Scripts/python.exe -m pytest -q`（338 项，无需真实浏览器）。
 
 ## 目录结构
 
