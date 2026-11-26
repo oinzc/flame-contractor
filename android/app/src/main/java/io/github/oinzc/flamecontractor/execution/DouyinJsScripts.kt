@@ -550,6 +550,16 @@ object DouyinJsScripts {
 
                 var PROTO_BRIDGE_CHUNK_SIZE = 96 * 1024;
                 var protoTxSeq = 0;
+                window.__flameProtoInFlight = 0;
+                window.__flameLastProtoAt = 0;
+
+                function markProtoStart() {
+                  window.__flameProtoInFlight = (window.__flameProtoInFlight || 0) + 1;
+                }
+                function markProtoEnd() {
+                  window.__flameProtoInFlight = Math.max(0, (window.__flameProtoInFlight || 1) - 1);
+                  window.__flameLastProtoAt = Date.now();
+                }
 
                 function emitProtoBuffer(buffer) {
                   try {
@@ -589,6 +599,7 @@ object DouyinJsScripts {
                       lower.indexOf('imagex') !== -1 ||
                       lower.indexOf('/im/') !== -1 ||
                       lower.indexOf('imapi') !== -1 ||
+                      lower.indexOf('conversation') !== -1 ||
                       lower.indexOf('message') !== -1 ||
                       lower.indexOf('send') !== -1 ||
                       lower.indexOf('media') !== -1;
@@ -636,7 +647,15 @@ object DouyinJsScripts {
                     var qrCodeMatch = matchPath(path, QR_CODE_PATHS);
                     var qrStatusMatch = matchPath(path, QR_STATUS_PATHS);
                     var netEntry = recordNetStart('fetch', method, rawUrl);
+                    if (protoMatch) markProtoStart();
                     var promise = origFetch.apply(this, arguments);
+                    if (protoMatch) {
+                      try {
+                        promise.then(function () { markProtoEnd(); }, function () { markProtoEnd(); });
+                      } catch (_) {
+                        markProtoEnd();
+                      }
+                    }
                     if (netEntry) {
                       try {
                         promise.then(function (resp) {
@@ -709,6 +728,19 @@ object DouyinJsScripts {
                       }
                       if ((idMatch || protoMatch || qrCodeMatch || qrStatusMatch) && !this.__flameBridgeHooked) {
                         this.__flameBridgeHooked = true;
+                        if (protoMatch) {
+                          markProtoStart();
+                          var protoDone = false;
+                          var finishProtoXhr = function () {
+                            if (!protoDone) {
+                              protoDone = true;
+                              markProtoEnd();
+                            }
+                          };
+                          this.addEventListener('loadend', finishProtoXhr);
+                          this.addEventListener('error', finishProtoXhr);
+                          this.addEventListener('abort', finishProtoXhr);
+                        }
                         this.addEventListener('load', function () {
                           try {
                             if (idMatch) {
@@ -1599,6 +1631,83 @@ object DouyinJsScripts {
         """.trimIndent()
     }
 
+    private const val CONVERSATION_SCROLLER_HELPER_JS = """
+        function __flameIsScrollableY(el) {
+          if (!el) return false;
+          var ch = el.clientHeight || 0;
+          var sh = el.scrollHeight || 0;
+          if (ch <= 0 || sh <= ch + 5) return false;
+          try {
+            var st = window.getComputedStyle ? window.getComputedStyle(el) : null;
+            var oy = st ? String(st.overflowY || '') : '';
+            if (oy === 'hidden' || oy === 'clip') return false;
+          } catch (_) {}
+          return true;
+        }
+        function __flameResolveConversationScroller(listEl) {
+          if (!listEl) return { el: null, source: 'none' };
+          if (__flameIsScrollableY(listEl)) {
+            return { el: listEl, source: 'list' };
+          }
+          try {
+            var best = null;
+            var bestOverflow = 0;
+            var nodes = listEl.querySelectorAll('div, ul, section');
+            var limit = Math.min(nodes.length, 60);
+            for (var i = 0; i < limit; i++) {
+              var cand = nodes[i];
+              if (!__flameIsScrollableY(cand)) continue;
+              var overflow = (cand.scrollHeight || 0) - (cand.clientHeight || 0);
+              if (overflow > bestOverflow) {
+                bestOverflow = overflow;
+                best = cand;
+              }
+            }
+            if (best) return { el: best, source: 'descendant' };
+          } catch (_) {}
+          try {
+            var parent = listEl.parentElement;
+            for (var p = 0; p < 4 && parent && parent !== document.body; p++) {
+              if (__flameIsScrollableY(parent)) {
+                return { el: parent, source: 'ancestor' };
+              }
+              parent = parent.parentElement;
+            }
+          } catch (_) {}
+          return { el: listEl, source: 'fallback' };
+        }
+        function __flameDispatchScrollSignals(scroller, listEl, wheelDeltaY) {
+          try { scroller.dispatchEvent(new Event('scroll', { bubbles: false })); } catch (_) {}
+          if (listEl && listEl !== scroller) {
+            try { listEl.dispatchEvent(new Event('scroll', { bubbles: false })); } catch (_) {}
+          }
+          if (wheelDeltaY && wheelDeltaY !== 0) {
+            try {
+              var rect = scroller.getBoundingClientRect ? scroller.getBoundingClientRect() : null;
+              var cx = rect ? (rect.left + rect.width / 2) : 160;
+              var cy = rect ? (rect.top + rect.height / 2) : 300;
+              var target = (document.elementFromPoint && rect && rect.width > 0 && rect.height > 0)
+                ? (document.elementFromPoint(cx, cy) || scroller)
+                : scroller;
+              var wheelOpts = {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                deltaX: 0,
+                deltaY: wheelDeltaY,
+                deltaMode: 0,
+                clientX: cx,
+                clientY: cy
+              };
+              target.dispatchEvent(new WheelEvent('wheel', wheelOpts));
+              if (target !== scroller) {
+                scroller.dispatchEvent(new WheelEvent('wheel', wheelOpts));
+              }
+            } catch (_) {}
+          }
+        }
+    """
+
     fun buildScrollAndCollectChatsJs(bundle: SelectorBundle): String {
         val listLit = jsStringLiteral(bundle.conversationList)
         val itemLit = jsStringLiteral(bundle.conversationItem)
@@ -1609,10 +1718,13 @@ object DouyinJsScripts {
             (function () {
               $DOM_HELPERS_JS
               $DOM_REACT_GROUP_INSPECTOR_JS
+              $CONVERSATION_SCROLLER_HELPER_JS
               var listEl = document.querySelector($listLit);
               if (!listEl) {
                 return { listFound: false, atBottom: true, items: [] };
               }
+              var resolvedScroller = __flameResolveConversationScroller(listEl);
+              var scroller = resolvedScroller.el || listEl;
               var rows = document.querySelectorAll($itemLit);
               var items = [];
               for (var i = 0; i < rows.length; i++) {
@@ -1627,18 +1739,29 @@ object DouyinJsScripts {
                 var streakLabel = null;
                 var streakIconVariant = null;
                 var streakLitToday = null;
+                var hasStreakIcon = false;
                 var streakEl = row.querySelector($streakLit);
                 if (streakEl) {
                   var daysEl = streakEl.querySelector($streakDaysLit);
-                  var daysText = daysEl ? String(daysEl.innerText || daysEl.textContent || '').trim() : '';
-                  if (/^\d+$/.test(daysText)) {
-                    streakDays = parseInt(daysText, 10);
-                  } else if (daysText) {
-                    streakLabel = daysText;
+                  var rawStreakText = daysEl
+                    ? String(daysEl.innerText || daysEl.textContent || '')
+                    : String(streakEl.innerText || streakEl.textContent || '');
+                  rawStreakText = rawStreakText.replace(/\s+/g, ' ').trim();
+                  if (!rawStreakText && daysEl) {
+                    rawStreakText = String(streakEl.innerText || streakEl.textContent || '').replace(/\s+/g, ' ').trim();
+                  }
+                  if (/^\d+$/.test(rawStreakText)) {
+                    var parsedDays = parseInt(rawStreakText, 10);
+                    if (parsedDays > 0) {
+                      streakDays = parsedDays;
+                    }
+                  } else if (rawStreakText) {
+                    streakLabel = rawStreakText;
                   }
                   var icon = streakEl.querySelector("img[src*='flame_icon']");
-                  var src = icon ? String(icon.getAttribute('src') || '') : '';
+                  var src = icon ? String(icon.getAttribute('src') || '').trim() : '';
                   if (src) {
+                    hasStreakIcon = true;
                     var lowerSrc = src.toLowerCase();
                     if (lowerSrc.indexOf('/couple/') !== -1) streakKind = 'couple';
                     else if (lowerSrc.indexOf('/family/') !== -1) streakKind = 'family';
@@ -1649,7 +1772,7 @@ object DouyinJsScripts {
                     try {
                       var cleanSrc = src.split(/[?#]/, 1)[0];
                       var marker = 'flame_icon/';
-                      var mIdx = cleanSrc.indexOf(marker);
+                      var mIdx = cleanSrc.toLowerCase().indexOf(marker);
                       if (mIdx !== -1) {
                         var tail = cleanSrc.slice(mIdx + marker.length).replace(/^\/+/, '');
                         if (tail && tail.length <= 80 && tail.indexOf('..') === -1 && /^[a-zA-Z0-9._\/-]+$/.test(tail)) {
@@ -1666,28 +1789,11 @@ object DouyinJsScripts {
                       streakLitToday = false;
                     } else if (iconFileName &&
                         typeof streakDays === 'number' && streakDays > 0 &&
-                        (!streakLabel || (streakLabel.indexOf('重燃') === -1 && streakLabel.indexOf('消失') === -1))) {
+                        (!streakLabel || (streakLabel.indexOf('重燃') === -1 && streakLabel.indexOf('消失') === -1 && streakLabel.indexOf('点亮中') === -1))) {
                       streakLitToday = true;
                     }
                   }
                 }
-
-                var hasSparkInPreview = false;
-                try {
-                  var lines = String(row.innerText || '').split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-                  var markDays = streakDays !== null ? String(streakDays) : '';
-                  var markLabel = streakLabel || '';
-                  var rest = [];
-                  for (var l = 1; l < lines.length; l++) {
-                    if (lines[l] !== markDays && lines[l] !== markLabel) {
-                      rest.push(lines[l]);
-                    }
-                  }
-                  var previewText = rest.length > 1 ? rest.slice(1).join(' ') : '';
-                  if (previewText.indexOf('火花') !== -1) {
-                    hasSparkInPreview = true;
-                  }
-                } catch (_) {}
 
                 var reactMeta = __flameInspectRowReactGroup(row, title);
 
@@ -1698,43 +1804,178 @@ object DouyinJsScripts {
                   streakLabel: streakLabel,
                   streakIconVariant: streakIconVariant,
                   streakLitToday: streakLitToday,
-                  hasSparkInPreview: hasSparkInPreview,
+                  hasStreakIcon: hasStreakIcon,
                   domConversationType: reactMeta ? reactMeta.domConversationType : null,
                   domGroupId: reactMeta ? reactMeta.domGroupId : null,
                   domGroupTitle: reactMeta ? reactMeta.domGroupTitle : null
                 });
               }
 
-              var atBottom = (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 5);
+              var sTop = Math.round(scroller.scrollTop || 0);
+              var sHeight = Math.round(scroller.scrollHeight || 0);
+              var cHeight = Math.round(scroller.clientHeight || 0);
+              var atBottom = (sTop + cHeight >= sHeight - 5);
+              var protoInFlight = typeof window.__flameProtoInFlight === 'number' ? Math.max(0, window.__flameProtoInFlight) : 0;
+              var lastProtoAt = typeof window.__flameLastProtoAt === 'number' ? window.__flameLastProtoAt : 0;
+              var protoQuietMs = lastProtoAt > 0 ? Math.max(0, Date.now() - lastProtoAt) : -1;
               return {
                 listFound: true,
                 atBottom: atBottom,
-                scrollTop: listEl.scrollTop || 0,
-                scrollHeight: listEl.scrollHeight || 0,
-                clientHeight: listEl.clientHeight || 0,
+                scrollerSource: resolvedScroller.source,
+                visibleRowCount: rows.length,
+                scrollTop: sTop,
+                scrollHeight: sHeight,
+                clientHeight: cHeight,
+                protoInFlight: protoInFlight,
+                protoQuietMs: protoQuietMs,
                 items: items
               };
             })();
         """.trimIndent()
     }
 
-    fun buildScrollConversationListStepJs(bundle: SelectorBundle, deltaPx: Int = 900): String {
+    fun buildReadConversationSyncStateJs(bundle: SelectorBundle): String {
         val listLit = jsStringLiteral(bundle.conversationList)
+        val itemLit = jsStringLiteral(bundle.conversationItem)
         return """
             (function () {
+              $CONVERSATION_SCROLLER_HELPER_JS
               var listEl = document.querySelector($listLit);
-              if (!listEl) return { listFound: false, atBottom: true };
-              var delta = $deltaPx;
-              if (delta === 0) {
-                listEl.scrollTop = 0;
-              } else {
-                listEl.scrollTop = (listEl.scrollTop || 0) + delta;
+              if (!listEl) {
+                return { listFound: false, scrollHeight: 0, clientHeight: 0, visibleRowCount: 0, protoInFlight: 0, protoQuietMs: -1 };
               }
+              var resolvedScroller = __flameResolveConversationScroller(listEl);
+              var scroller = resolvedScroller.el || listEl;
+              var protoInFlight = typeof window.__flameProtoInFlight === 'number' ? Math.max(0, window.__flameProtoInFlight) : 0;
+              var lastProtoAt = typeof window.__flameLastProtoAt === 'number' ? window.__flameLastProtoAt : 0;
+              var protoQuietMs = lastProtoAt > 0 ? Math.max(0, Date.now() - lastProtoAt) : -1;
               return {
                 listFound: true,
-                atBottom: (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 5),
-                scrollTop: listEl.scrollTop || 0
+                scrollHeight: Math.round(scroller.scrollHeight || 0),
+                clientHeight: Math.round(scroller.clientHeight || 0),
+                visibleRowCount: document.querySelectorAll($itemLit).length,
+                protoInFlight: protoInFlight,
+                protoQuietMs: protoQuietMs
               };
+            })();
+        """.trimIndent()
+    }
+
+    fun buildScrollConversationListStepJs(
+        bundle: SelectorBundle,
+        deltaPx: Int = 900,
+        nudgeBottom: Boolean = false,
+    ): String {
+        val listLit = jsStringLiteral(bundle.conversationList)
+        val nudgeExpr = if (nudgeBottom) "true" else "false"
+        return """
+            (function () {
+              $CONVERSATION_SCROLLER_HELPER_JS
+              var listEl = document.querySelector($listLit);
+              if (!listEl) return { listFound: false, atBottom: true };
+              var resolvedScroller = __flameResolveConversationScroller(listEl);
+              var scroller = resolvedScroller.el || listEl;
+              var delta = $deltaPx;
+              var nudge = $nudgeExpr;
+              var beforeTop = scroller.scrollTop || 0;
+              var maxTop = Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
+              if (delta === 0) {
+                scroller.scrollTop = 0;
+                __flameDispatchScrollSignals(scroller, listEl, 0);
+              } else if (nudge) {
+                var pullBack = Math.max(0, maxTop - Math.min(96, Math.max(32, Math.floor((scroller.clientHeight || 400) * 0.12))));
+                if (maxTop > 0 && pullBack < maxTop) {
+                  scroller.scrollTop = pullBack;
+                  __flameDispatchScrollSignals(scroller, listEl, 0);
+                }
+                scroller.scrollTop = scroller.scrollHeight || (beforeTop + delta);
+                __flameDispatchScrollSignals(scroller, listEl, Math.max(240, delta));
+              } else {
+                var nextTop = Math.max(0, beforeTop + delta);
+                scroller.scrollTop = nextTop;
+                __flameDispatchScrollSignals(scroller, listEl, delta);
+              }
+              var afterTop = Math.round(scroller.scrollTop || 0);
+              var sHeight = Math.round(scroller.scrollHeight || 0);
+              var cHeight = Math.round(scroller.clientHeight || 0);
+              return {
+                listFound: true,
+                scrollerSource: resolvedScroller.source,
+                atBottom: (afterTop + cHeight >= sHeight - 5),
+                scrollTop: afterTop,
+                beforeScrollTop: Math.round(beforeTop),
+                scrollHeight: sHeight,
+                clientHeight: cHeight
+              };
+            })();
+        """.trimIndent()
+    }
+
+    private const val TITLE_MATCH_HELPER_JS = """
+        function __flameNormalizeMatchTitle(raw) {
+          var s = String(raw || '')
+            .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          s = s.replace(/\s*[(（]\d+\+?[)）]$/, '').trim();
+          return s;
+        }
+    """
+
+    fun buildClearSearchInputIfNonEmptyJs(bundle: SelectorBundle): String {
+        val selectorsLit = jsStringArrayLiteral(searchInputSelectors(bundle))
+        return """
+            (function () {
+              $DOM_HELPERS_JS
+              var hit = __flameFirstVisible($selectorsLit);
+              if (!hit) {
+                var all = $selectorsLit;
+                for (var i = 0; i < all.length; i++) {
+                  var fallback = document.querySelector(all[i]);
+                  if (fallback) { hit = { selector: all[i], el: fallback }; break; }
+                }
+              }
+              if (!hit || !hit.el) return { found: false, cleared: false };
+              var input = hit.el;
+              var curVal = String(input.value || '');
+              var hasSearchRows = false;
+              try { hasSearchRows = document.querySelectorAll('[class*="SearchPanelitem"]').length > 0; } catch (_) {}
+              if (!curVal && !hasSearchRows) {
+                return { found: true, cleared: false };
+              }
+              try {
+                var wrap = input.closest ? (input.closest('.semi-input-wrapper') || input.parentElement) : input.parentElement;
+                if (wrap) {
+                  var clearBtn = wrap.querySelector('.semi-input-clearbtn, [class*="clearBtn"], [aria-label*="清除"], [aria-label*="清空"]');
+                  if (clearBtn && __flameIsVisible(clearBtn)) {
+                    __flameDispatchClick(clearBtn);
+                  }
+                }
+              } catch (_) {}
+              try { input.focus(); } catch (_) {}
+              try {
+                var prev = String(input.value || '');
+                var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (desc && typeof desc.set === 'function') {
+                  desc.set.call(input, '');
+                } else {
+                  input.value = '';
+                }
+                var tracker = input._valueTracker;
+                if (tracker && typeof tracker.setValue === 'function') {
+                  tracker.setValue(prev || ' ');
+                }
+              } catch (_) {
+                input.value = '';
+              }
+              try {
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'deleteContentBackward', data: null }));
+              } catch (_) {
+                try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (__) {}
+              }
+              try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+              try { input.blur(); } catch (_) {}
+              return { found: true, cleared: true };
             })();
         """.trimIndent()
     }
@@ -1755,19 +1996,50 @@ object DouyinJsScripts {
               }
               if (!hit || !hit.el) return { found: false };
               var input = hit.el;
+              var nextVal = $queryLit;
+              if (!nextVal) {
+                try {
+                  var wrap = input.closest ? (input.closest('.semi-input-wrapper') || input.parentElement) : input.parentElement;
+                  if (wrap) {
+                    var clearBtn = wrap.querySelector('.semi-input-clearbtn, [class*="clearBtn"], [aria-label*="清除"], [aria-label*="清空"]');
+                    if (clearBtn && __flameIsVisible(clearBtn)) {
+                      __flameDispatchClick(clearBtn);
+                    }
+                  }
+                } catch (_) {}
+              } else {
+                try { __flameDispatchClick(input); } catch (_) {}
+              }
               try { input.focus(); } catch (_) {}
               try {
+                var prev = String(input.value || '');
                 var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
                 if (desc && typeof desc.set === 'function') {
-                  desc.set.call(input, $queryLit);
+                  desc.set.call(input, nextVal);
                 } else {
-                  input.value = $queryLit;
+                  input.value = nextVal;
+                }
+                var tracker = input._valueTracker;
+                if (tracker && typeof tracker.setValue === 'function') {
+                  tracker.setValue(prev === nextVal ? (nextVal ? '' : ' ') : prev);
                 }
               } catch (_) {
-                input.value = $queryLit;
+                input.value = nextVal;
               }
-              try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+              try {
+                input.dispatchEvent(new InputEvent('input', {
+                  bubbles: true,
+                  cancelable: true,
+                  inputType: nextVal ? 'insertText' : 'deleteContentBackward',
+                  data: nextVal || null
+                }));
+              } catch (_) {
+                try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (__) {}
+              }
               try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+              if (!nextVal) {
+                try { input.blur(); } catch (_) {}
+              }
               return { found: true, selector: hit.selector };
             })();
         """.trimIndent()
@@ -1788,7 +2060,9 @@ object DouyinJsScripts {
         return """
             (function () {
               $DOM_HELPERS_JS
+              $TITLE_MATCH_HELPER_JS
               var targetName = $targetLit;
+              var normTarget = __flameNormalizeMatchTitle(targetName);
               var wantIdx = $candidateIndex;
               var exactNameSels = $exactNameSelectorsLit;
               var nameSels = $nameSelectorsLit;
@@ -1814,15 +2088,24 @@ object DouyinJsScripts {
                 return __flameFirstNonEmptyLine(item.innerText || item.textContent || '');
               }
 
+              function isTitleMatch(rawTitle) {
+                if (!rawTitle) return false;
+                if (rawTitle === targetName) return true;
+                var norm = __flameNormalizeMatchTitle(rawTitle);
+                return !!norm && !!normTarget && norm === normTarget;
+              }
+
               var matches = [];
               var visibleRows = 0;
+              var searchPanelRows = 0;
               var searchRows = [];
               try { searchRows = Array.from(document.querySelectorAll($searchResultItemLit)); } catch (_) {}
               for (var s = 0; s < searchRows.length; s++) {
                 var sr = searchRows[s];
                 if (!__flameIsVisible(sr)) continue;
                 visibleRows++;
-                if (titleOf(sr) === targetName) {
+                searchPanelRows++;
+                if (isTitleMatch(titleOf(sr))) {
                   var btn = null;
                   try { btn = sr.querySelector($searchChatBtnLit); } catch (_) {}
                   matches.push(btn || sr);
@@ -1836,7 +2119,7 @@ object DouyinJsScripts {
                   var cr = convRows[c];
                   if (!__flameIsVisible(cr)) continue;
                   visibleRows++;
-                  if (titleOf(cr) === targetName) {
+                  if (isTitleMatch(titleOf(cr))) {
                     matches.push(cr);
                   }
                 }
@@ -1847,7 +2130,8 @@ object DouyinJsScripts {
                 for (var d = 0; d < divs.length; d++) {
                   var el = divs[d];
                   var txt = String(el.textContent || '').trim();
-                  if (txt !== targetName && txt.indexOf(targetName + '\n') !== 0) continue;
+                  var firstLine = __flameFirstNonEmptyLine(txt);
+                  if (!isTitleMatch(firstLine) && txt.indexOf(targetName + '\n') !== 0) continue;
                   if (!__flameIsVisible(el)) continue;
                   var row = el.closest('[class*="Search"], [class*="search"]') || el;
                   var sendMsgBtn = Array.from(row.querySelectorAll('*')).find(function (n) {
@@ -1858,11 +2142,40 @@ object DouyinJsScripts {
                 }
               }
 
+              var searchNoResult = false;
+              if (!matches.length && searchPanelRows === 0) {
+                try {
+                  var panels = document.querySelectorAll('[class*="SearchPanel"], [class*="searchPanel"], [class*="search-panel"]');
+                  for (var p = 0; p < panels.length; p++) {
+                    if (!__flameIsVisible(panels[p])) continue;
+                    var pText = String(panels[p].innerText || panels[p].textContent || '');
+                    if (pText.indexOf('无搜索结果') !== -1 || pText.indexOf('暂无相关结果') !== -1 || pText.indexOf('没有找到') !== -1 || pText.indexOf('暂无搜索结果') !== -1) {
+                      searchNoResult = true;
+                      break;
+                    }
+                  }
+                } catch (_) {}
+              }
+
               if (wantIdx >= 0 && wantIdx < matches.length) {
                 __flameDispatchClick(matches[wantIdx]);
-                return { clicked: true, totalMatches: matches.length, visibleRows: visibleRows, candidateIndex: wantIdx };
+                return {
+                  clicked: true,
+                  totalMatches: matches.length,
+                  visibleRows: visibleRows,
+                  searchPanelRows: searchPanelRows,
+                  searchNoResult: searchNoResult,
+                  candidateIndex: wantIdx
+                };
               }
-              return { clicked: false, totalMatches: matches.length, visibleRows: visibleRows, candidateIndex: wantIdx };
+              return {
+                clicked: false,
+                totalMatches: matches.length,
+                visibleRows: visibleRows,
+                searchPanelRows: searchPanelRows,
+                searchNoResult: searchNoResult,
+                candidateIndex: wantIdx
+              };
             })();
         """.trimIndent()
     }
@@ -1872,14 +2185,26 @@ object DouyinJsScripts {
         targetName: String,
         candidateIndex: Int = 0,
     ): String {
+        val listLit = jsStringLiteral(bundle.conversationList)
         val convItemLit = jsStringLiteral(bundle.conversationItem)
         val convTitleLit = jsStringLiteral(bundle.conversationTitle)
         val targetLit = jsStringLiteral(targetName)
         return """
             (function () {
               $DOM_HELPERS_JS
+              $CONVERSATION_SCROLLER_HELPER_JS
+              $TITLE_MATCH_HELPER_JS
               var targetName = $targetLit;
+              var normTarget = __flameNormalizeMatchTitle(targetName);
               var wantIdx = $candidateIndex;
+              var listEl = document.querySelector($listLit);
+              var resolvedScroller = listEl ? __flameResolveConversationScroller(listEl) : { el: null, source: 'none' };
+              var scroller = resolvedScroller.el || listEl;
+              var sTop = scroller ? Math.round(scroller.scrollTop || 0) : 0;
+              var cHeight = scroller ? Math.round(scroller.clientHeight || 0) : 0;
+              var sHeight = scroller ? Math.round(scroller.scrollHeight || 0) : 0;
+              var atBottom = scroller ? (sTop + cHeight >= sHeight - 5) : true;
+
               var rows = Array.from(document.querySelectorAll($convItemLit));
               var matches = [];
               var visibleRows = 0;
@@ -1891,7 +2216,8 @@ object DouyinJsScripts {
                 var t = titleEl
                   ? __flameFirstNonEmptyLine(titleEl.innerText || titleEl.textContent || '')
                   : __flameFirstNonEmptyLine(row.innerText || row.textContent || '');
-                if (t === targetName) {
+                var norm = __flameNormalizeMatchTitle(t);
+                if (t === targetName || (!!norm && !!normTarget && norm === normTarget)) {
                   matches.push(row);
                 }
               }
@@ -1899,9 +2225,27 @@ object DouyinJsScripts {
                 var targetRow = matches[wantIdx];
                 var clickNode = targetRow.querySelector($convTitleLit) || targetRow;
                 __flameDispatchClick(clickNode);
-                return { clicked: true, totalMatches: matches.length, visibleRows: visibleRows };
+                return {
+                  clicked: true,
+                  totalMatches: matches.length,
+                  visibleRows: visibleRows,
+                  listFound: !!listEl,
+                  atBottom: atBottom,
+                  scrollTop: sTop,
+                  clientHeight: cHeight,
+                  scrollHeight: sHeight
+                };
               }
-              return { clicked: false, totalMatches: matches.length, visibleRows: visibleRows };
+              return {
+                clicked: false,
+                totalMatches: matches.length,
+                visibleRows: visibleRows,
+                listFound: !!listEl,
+                atBottom: atBottom,
+                scrollTop: sTop,
+                clientHeight: cHeight,
+                scrollHeight: sHeight
+              };
             })();
         """.trimIndent()
     }

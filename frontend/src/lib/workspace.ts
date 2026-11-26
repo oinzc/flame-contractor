@@ -21,6 +21,7 @@ import {
   JOB_STATUS_LIGHT_TONES,
   type StatusTone,
 } from './format.ts'
+import { sparkKindDisplayName } from './spark.ts'
 
 export type SingleSendGuard = 'ready' | 'blocked_disabled' | 'blocked_review' | 'confirm_repeat'
 
@@ -580,7 +581,7 @@ export function hasObservedSpark(
   if (label === '无火花') return false
   if (state.days != null && state.days > 0) return true
   if (label) return true
-  if (state.kind) return true
+  if (state.kind?.trim()) return true
   return false
 }
 
@@ -655,6 +656,8 @@ export function filterScanReconciliationItems(
     if (entry?.platformHandle?.toLowerCase().includes(q)) return true
     if (item.current.label?.toLowerCase().includes(q)) return true
     if (item.previous.label?.toLowerCase().includes(q)) return true
+    if (sparkKindDisplayName(item.current.kind)?.toLowerCase().includes(q)) return true
+    if (sparkKindDisplayName(item.previous.kind)?.toLowerCase().includes(q)) return true
     if (item.current.days != null && `${item.current.days}天`.includes(q)) return true
     if (item.previous.days != null && `${item.previous.days}天`.includes(q)) return true
     if (item.conversationType === 'group' && (q === '群' || q === '群聊')) return true

@@ -277,4 +277,36 @@ class SparkDeteriorationDetectorTest {
             result.alerts.map { it.targetId },
         )
     }
+
+    @Test
+    fun handlesLightingProgressIconOnlyLossAndZeroDaysSafely() {
+        val nowMs = 1_700_000_500_000L
+        val existing = listOf(
+            target(id = "t-lighting", nickname = "点亮中好友", sparkKind = "normal", sparkLabel = "点亮中 1/3"),
+            target(id = "t-icon-only", nickname = "仅图标好友", sparkDays = null, sparkKind = "unknown", sparkLabel = null),
+            target(id = "t-zero", nickname = "零天异常", sparkDays = null, sparkKind = null, sparkLabel = "无火花"),
+        )
+        val scanned = listOf(
+            candidate(displayName = "点亮中好友", sparkKind = "normal", sparkLabel = "点亮中 2/3", platformUserId = "uid_t-lighting"),
+            candidate(displayName = "仅图标好友", sparkDays = null, sparkKind = null, sparkLabel = null, platformUserId = "uid_t-icon-only"),
+            candidate(displayName = "零天异常", sparkDays = 0, sparkKind = "normal", sparkLabel = null, platformUserId = "uid_t-zero"),
+        )
+
+        val result = SparkDeteriorationDetector.evaluate(existing, scanned, nowMs)
+
+        assertEquals(3, result.updates.size)
+        val lightingUpdate = result.updates.first { it.targetId == "t-lighting" }
+        assertEquals("点亮中 2/3", lightingUpdate.sparkLabel)
+
+        val iconOnlyUpdate = result.updates.first { it.targetId == "t-icon-only" }
+        assertEquals("无火花", iconOnlyUpdate.sparkLabel)
+
+        val zeroUpdate = result.updates.first { it.targetId == "t-zero" }
+        assertEquals(null, zeroUpdate.sparkDays)
+        assertEquals("normal", zeroUpdate.sparkKind)
+
+        // 点亮中进度推进不告警；仅图标真实官方火花丢失触发一次告警
+        assertEquals(listOf("t-icon-only"), result.alerts.map { it.targetId })
+        assertEquals("无火花", result.alerts.single().summary)
+    }
 }

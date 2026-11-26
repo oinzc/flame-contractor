@@ -42,6 +42,7 @@ from ..scan_reconciliation import (
     empty_reconciliation,
     match_scan_entry_to_target,
     parse_reconciliation,
+    spark_label_for_scan_entry,
     target_snapshot,
 )
 from ..services import create_targets_batch
@@ -2026,15 +2027,7 @@ class BrowserManager:
 
     @staticmethod
     def _spark_label_for_scan_entry(entry: dict) -> str | None:
-        label = entry.get("streak_label")
-        if isinstance(label, str) and label.strip():
-            return label.strip()
-        if entry.get("streak_days") is not None:
-            return None
-        preview = entry.get("preview")
-        if isinstance(preview, str) and "火花" in preview:
-            return preview.strip()[:64]
-        return "无火花"
+        return spark_label_for_scan_entry(entry)
 
     def _sync_existing_scan_entries(self, account_id: str, entries: list[dict]) -> dict:
         """自动扫描只刷新已有契约对象，绝不把新会话静默导入好友列表。"""
@@ -2054,6 +2047,12 @@ class BrowserManager:
                     self._scan_entry_matches_target(entry, target) for target in targets
                 ):
                     continue
+                raw_days = entry.get("streak_days")
+                clean_days = (
+                    raw_days
+                    if isinstance(raw_days, int) and not isinstance(raw_days, bool) and raw_days > 0
+                    else None
+                )
                 items.append(
                     BatchTargetItem(
                         nickname=title,
@@ -2063,8 +2062,8 @@ class BrowserManager:
                         conversation_type=entry.get("conversation_type"),
                         identity_status=entry.get("identity_status") or "not_observed",
                         conversation_status=entry.get("conversation_status") or "not_observed",
-                        streak_days=entry.get("streak_days"),
-                        spark_days=entry.get("streak_days"),
+                        streak_days=clean_days,
+                        spark_days=clean_days,
                         spark_kind=entry.get("streak_kind"),
                         spark_label=self._spark_label_for_scan_entry(entry),
                     )

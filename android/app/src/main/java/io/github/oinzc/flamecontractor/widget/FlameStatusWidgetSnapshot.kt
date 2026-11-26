@@ -7,6 +7,8 @@ import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.domain.SendGuard
+import io.github.oinzc.flamecontractor.domain.SparkDeteriorationDetector
+import io.github.oinzc.flamecontractor.execution.ScanReconciliationBuilder
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.ui.shell.MainNavState
 import java.time.Instant
@@ -402,15 +404,23 @@ object FlameStatusWidgetCalculator {
         succeededTodayIds: Set<String>,
     ): List<WidgetFriendItem> {
         val sorted = targets.sortedWith(
-            compareByDescending<ContractTargetEntity> { it.sparkDays ?: -1 }
-                .thenByDescending { !it.sparkLabel.isNullOrBlank() }
+            compareByDescending<ContractTargetEntity> { it.sparkDays?.takeIf { d -> d > 0 } ?: -1 }
+                .thenByDescending {
+                    ScanReconciliationBuilder.hasOfficialSpark(
+                        sparkDays = it.sparkDays,
+                        sparkKind = it.sparkKind,
+                        sparkLabel = it.sparkLabel,
+                    )
+                }
                 .thenByDescending { it.streakDays }
                 .thenBy { it.nicknameSnapshot },
         )
         return sorted.take(MAX_TOP_FRIENDS).map { target ->
             val sent = target.id in succeededTodayIds
             val isGroup = target.conversationType == "group"
-            val cleanLabel = target.sparkLabel?.trim()?.takeIf { it.isNotEmpty() }
+            val cleanLabel = target.sparkLabel?.trim()?.takeIf {
+                it.isNotEmpty() && it != SparkDeteriorationDetector.NO_SPARK_LABEL
+            }
             val (badgeText, isSpark) = when {
                 target.sparkDays != null && target.sparkDays > 0 -> "🔥 ${target.sparkDays}天" to true
                 cleanLabel != null -> (if (sent) cleanLabel else "待续 · $cleanLabel") to false

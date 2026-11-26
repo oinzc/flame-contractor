@@ -137,11 +137,246 @@ def test_scan_snapshot_label_does_not_confuse_missing_icon_with_no_spark(setting
             {"streak_days": 515, "streak_kind": None, "streak_label": None, "preview": ""}
         ) is None
         assert manager._spark_label_for_scan_entry(
-            {"streak_days": None, "streak_label": None, "preview": "2 天后火花将消失"}
-        ) == "2 天后火花将消失"
+            {"streak_days": None, "streak_kind": "soulmate", "streak_label": None, "preview": ""}
+        ) is None
         assert manager._spark_label_for_scan_entry(
-            {"streak_days": None, "streak_label": None, "preview": "[比心]"}
+            {"streak_days": None, "streak_kind": "normal", "streak_label": "重燃中 1/3", "preview": ""}
+        ) == "重燃中 1/3"
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": None, "streak_kind": "mate", "streak_label": "点亮中 1/3", "preview": ""}
+        ) == "点亮中 1/3"
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": None, "streak_kind": "normal", "streak_label": "2 天后消失", "preview": ""}
+        ) == "2 天后消失"
+        # 严格边界：无官方火花容器时，即使 preview 含「火花」或「[续火花]」也绝不误判为官方火花
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": None, "streak_kind": None, "streak_label": None, "preview": "已读 · [续火花]"}
         ) == "无火花"
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": None, "streak_kind": None, "streak_label": None, "preview": "2 天后火花将消失"}
+        ) == "无火花"
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": 0, "streak_kind": None, "streak_label": None, "preview": "已读 · [续火花]"}
+        ) == "无火花"
+        assert manager._spark_label_for_scan_entry(
+            {"streak_days": None, "streak_kind": None, "streak_label": None, "preview": "[比心]"}
+        ) == "无火花"
+
+
+def test_scan_all_chats_extracts_all_flame_kinds_and_never_infers_spark_from_preview():
+    from app.execution.douyin_chat import DouyinChat, parse_flame_icon_kind
+    from app.execution.selectors import (
+        CONVERSATION_ITEM,
+        CONVERSATION_STREAK,
+        CONVERSATION_STREAK_DAYS,
+        CONVERSATION_TITLE,
+    )
+
+    class _IconEl:
+        def __init__(self, src: str | None):
+            self._src = src
+
+        async def get_attribute(self, name: str):
+            return self._src if name == "src" else None
+
+    class _TextEl:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def inner_text(self) -> str:
+            return self._text
+
+    class _StreakEl:
+        def __init__(
+            self,
+            *,
+            days_text: str | None = None,
+            container_text: str = "",
+            icon_src: str | None = None,
+            has_icon: bool = False,
+        ):
+            self._days_text = days_text
+            self._container_text = container_text
+            self._icon_src = icon_src
+            self._has_icon = has_icon or icon_src is not None
+
+        async def query_selector(self, selector: str):
+            if selector == CONVERSATION_STREAK_DAYS:
+                return _TextEl(self._days_text) if self._days_text is not None else None
+            if selector == "img[src*='flame_icon']":
+                return _IconEl(self._icon_src) if self._has_icon else None
+            return None
+
+        async def inner_text(self) -> str:
+            return self._container_text
+
+    class _RichItem:
+        def __init__(self, title: str, full_text: str, streak_el: _StreakEl | None = None):
+            self._title = title
+            self._full_text = full_text
+            self._streak_el = streak_el
+
+        async def query_selector(self, selector: str):
+            if selector == CONVERSATION_TITLE:
+                return _TextEl(self._title)
+            if selector == CONVERSATION_STREAK:
+                return self._streak_el
+            return None
+
+        async def inner_text(self) -> str:
+            return self._full_text
+
+    class _RichScanPage(FakePage):
+        def __init__(self, items):
+            super().__init__(logged_in=True, conversation_titles=())
+            self._rich_items = items
+
+        async def query_selector_all(self, selector: str):
+            if selector == CONVERSATION_ITEM:
+                return list(self._rich_items)
+            return []
+
+        async def evaluate(self, expression: str, target=None, *args, **kwargs):
+            if "indexedDB" in expression:
+                return []
+            if "atBottom" in expression:
+                return {"scrollTop": 0, "clientHeight": 500, "scrollHeight": 500, "atBottom": True}
+            return None
+
+    # 覆盖全部 6 类官方图标目录、大小写/查询串及未知 flame_icon 兜底
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/couple/level_1.png?a=1") == "couple"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/family/gray_1.png") == "family"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/SOULMATE/level_2.png") == "soulmate"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/mate/level_1.png") == "mate"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/bosom/level_3.png") == "bosom"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/normal/level_1.png") == "normal"
+    assert parse_flame_icon_kind("https://cdn.example/flame_icon/new_type/level_1.png") == "normal"
+    assert parse_flame_icon_kind("https://cdn.example/avatar/couple/1.png") is None
+    assert parse_flame_icon_kind(None) is None
+
+    items = [
+        _RichItem("预览误导好友", "预览误导好友\n昨天\n已读 · [续火花]", streak_el=None),
+        _RichItem(
+            "密友仅图标",
+            "密友仅图标\n今天\n早安",
+            streak_el=_StreakEl(icon_src="https://cdn.example/flame_icon/soulmate/level_1.png"),
+        ),
+        _RichItem(
+            "搭子点亮中",
+            "搭子点亮中\n点亮中 1/3\n今天\n你好",
+            streak_el=_StreakEl(
+                days_text=None,
+                container_text="点亮中\n1/3",
+                icon_src="https://cdn.example/flame_icon/mate/level_1.png",
+            ),
+        ),
+        _RichItem(
+            "挚友重燃中",
+            "挚友重燃中\n重燃中 1/3\n今天\n续一下",
+            streak_el=_StreakEl(
+                days_text="重燃中 1/3",
+                icon_src="https://cdn.example/flame_icon/bosom/gray_1.png",
+            ),
+        ),
+        _RichItem(
+            "情侣倒计时",
+            "情侣倒计时\n2 天后消失\n昨天\n晚安",
+            streak_el=_StreakEl(
+                days_text="2 天后消失",
+                icon_src="https://cdn.example/flame_icon/couple/gray_2.png",
+            ),
+        ),
+        _RichItem(
+            "家人数字火花",
+            "家人数字火花\n88\n今天\n吃了没",
+            streak_el=_StreakEl(
+                days_text="88",
+                icon_src="https://cdn.example/flame_icon/family/level_2.png",
+            ),
+        ),
+        _RichItem(
+            "未知目录图标兜底",
+            "未知目录图标兜底\n今天\n在吗",
+            streak_el=_StreakEl(
+                icon_src="https://cdn.example/flame_icon/future_badge/v1.png",
+            ),
+        ),
+    ]
+
+    async def scenario():
+        chat = DouyinChat(_RichScanPage(items), sleep=lambda _: asyncio.sleep(0))
+        return await chat.scan_all_chats()
+
+    by_title = {row["title"]: row for row in asyncio.run(scenario())}
+
+    assert by_title["预览误导好友"]["preview"] == "已读 · [续火花]"
+    assert by_title["预览误导好友"]["streak_days"] is None
+    assert by_title["预览误导好友"]["streak_kind"] is None
+    assert by_title["预览误导好友"]["streak_label"] is None
+
+    assert by_title["密友仅图标"]["streak_days"] is None
+    assert by_title["密友仅图标"]["streak_kind"] == "soulmate"
+    assert by_title["密友仅图标"]["streak_label"] is None
+
+    assert by_title["搭子点亮中"]["streak_days"] is None
+    assert by_title["搭子点亮中"]["streak_kind"] == "mate"
+    assert by_title["搭子点亮中"]["streak_label"] == "点亮中 1/3"
+
+    assert by_title["挚友重燃中"]["streak_days"] is None
+    assert by_title["挚友重燃中"]["streak_kind"] == "bosom"
+    assert by_title["挚友重燃中"]["streak_label"] == "重燃中 1/3"
+
+    assert by_title["情侣倒计时"]["streak_days"] is None
+    assert by_title["情侣倒计时"]["streak_kind"] == "couple"
+    assert by_title["情侣倒计时"]["streak_label"] == "2 天后消失"
+
+    assert by_title["家人数字火花"]["streak_days"] == 88
+    assert by_title["家人数字火花"]["streak_kind"] == "family"
+    assert by_title["家人数字火花"]["streak_label"] is None
+
+    assert by_title["未知目录图标兜底"]["streak_days"] is None
+    assert by_title["未知目录图标兜底"]["streak_kind"] == "normal"
+    assert by_title["未知目录图标兜底"]["streak_label"] is None
+
+
+def test_auto_scan_with_spark_preview_marks_no_spark_and_preserves_local_streak_days(settings):
+    """无官方容器但 preview 含「已读 · [续火花]」：自动同步记为无火花且绝不覆写本地 streakDays。"""
+    app = make_app(settings, [FakePage(logged_in=True)])
+    with TestClient(app) as client:
+        account = _account_with_targets(client)
+        manager = app.state.browser_manager
+
+        async def fake_scan(_account_id, progress=None):
+            return {
+                "overall": "ok",
+                "detail": None,
+                "entries": [
+                    {
+                        "title": "好友A",
+                        "preview": "已读 · [续火花]",
+                        "streak_days": None,
+                        "streak_kind": None,
+                        "streak_label": None,
+                    }
+                ],
+            }
+
+        manager._scan_chats_impl = fake_scan
+        result = asyncio.run(manager.run_auto_scan(account["id"]))
+
+        assert result["overall"] == "ok"
+        assert result["reconciliation"]["counts"]["no_spark"] == 1
+        assert result["reconciliation"]["entries"][0]["current"] == {
+            "days": None,
+            "kind": None,
+            "label": "无火花",
+            "scannedAt": None,
+        }
+        target = client.get("/api/targets", params={"accountId": account["id"]}).json()[0]
+        assert target["sparkDays"] is None
+        assert target["sparkKind"] is None
+        assert target["sparkLabel"] == "无火花"
+        assert target["streakDays"] == 5
 
 
 def test_cancel_scan_preserves_discovered_entries(settings):

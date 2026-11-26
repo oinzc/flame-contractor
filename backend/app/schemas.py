@@ -771,8 +771,10 @@ class SelectorProbeRead(APIBase):
 
 
 class ScanChatItem(APIBase):
-    """扫描到的单个会话。streak_days 为抖音官方火花天数；streak_label 为特殊态
-    文字标记（如「重燃中 1/3」「5 天后消失」）；两者都为空且消息未提及火花 = 无火花。"""
+    """扫描到的单个会话。官方火花仅以抖音官方火花容器（CONVERSATION_STREAK）为准：
+    streak_days 为官方正整数火花天数；streak_label 为容器内特殊态文字标记（如「重燃中 1/3」
+    「点亮中 1/3」「5 天后消失」）；streak_kind 为容器内官方 flame_icon 图标种类；
+    三者均为空即视为无火花，绝不根据 preview 消息预览文本推断官方火花。"""
 
     title: str
     platform_user_id: str | None = None

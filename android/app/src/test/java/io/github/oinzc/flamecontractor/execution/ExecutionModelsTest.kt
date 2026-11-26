@@ -98,6 +98,21 @@ class ExecutionModelsTest {
         )
         assertNull(
             ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
+                iconVariant = "normal/normal_normal.png",
+                sparkDays = 12,
+                sparkLabel = "点亮中 1/3",
+            ),
+        )
+        assertEquals(
+            false,
+            ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
+                iconVariant = "normal/gray_normal.png",
+                sparkDays = null,
+                sparkLabel = "点亮中 1/3",
+            ),
+        )
+        assertNull(
+            ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
                 iconVariant = "https://example.com/no_marker/normal.png",
                 sparkDays = 12,
                 sparkLabel = null,
@@ -128,6 +143,18 @@ class ExecutionModelsTest {
         assertEquals("mate", ScanReconciliationBuilder.inferSparkKindFromIconVariant("mate/gray_mate.png"))
         assertEquals("bosom", ScanReconciliationBuilder.inferSparkKindFromIconVariant("bosom/gray_bosom.png"))
         assertNull(ScanReconciliationBuilder.inferSparkKindFromIconVariant("unknown/icon.png"))
+
+        // hasOfficialSpark 严格边界：仅正整数天数 / 官方状态文案 / 容器内火花类型（含仅图标占位）成立
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(1, null, null))
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(null, null, "重燃中 1/3"))
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(null, null, "点亮中 1/3"))
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(null, null, "3天后消失"))
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(null, "couple", null))
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(null, ScanReconciliationBuilder.UNKNOWN_SPARK_KIND, null))
+        assertFalse(ScanReconciliationBuilder.hasOfficialSpark(null, null, null))
+        assertFalse(ScanReconciliationBuilder.hasOfficialSpark(0, null, null))
+        assertFalse(ScanReconciliationBuilder.hasOfficialSpark(null, null, "无火花"))
+        assertFalse(ScanReconciliationBuilder.hasOfficialSpark(10, "normal", "无火花"))
     }
 
     @Test
@@ -188,6 +215,7 @@ class ExecutionModelsTest {
         val activeTarget1 = target("t1", "好友A")
         val activeTarget2 = target("t2", "好友B")
         val activeTarget3 = target("t3", "同名好友")
+        val activeTarget4 = target("t4", "无官方火花好友")
         val deletedTarget = target("t_del", "已删好友", deletedAt = 999L)
 
         val candidates = listOf(
@@ -202,15 +230,24 @@ class ExecutionModelsTest {
                 alreadyImported = true,
                 existingTargetId = "t3",
             ),
+            candidate(
+                name = "无官方火花好友",
+                sparkKind = null,
+                sparkDays = null,
+                sparkLabel = null,
+                litToday = true,
+                alreadyImported = true,
+                existingTargetId = "t4",
+            ),
             candidate(name = "未导入好友", sparkKind = "bosom", sparkDays = 5, litToday = true, alreadyImported = false, existingTargetId = null),
             candidate(name = "已删好友", sparkKind = "mate", sparkDays = 5, litToday = true, alreadyImported = true, existingTargetId = "t_del"),
         )
 
         val updates = ExecutionServiceStoreOps.extractOfficialSparkLitUpdates(
-            existingTargets = listOf(activeTarget1, activeTarget2, activeTarget3, deletedTarget),
+            existingTargets = listOf(activeTarget1, activeTarget2, activeTarget3, activeTarget4, deletedTarget),
             candidates = candidates,
         )
-        assertEquals(mapOf("t1" to true, "t2" to false), updates)
+        assertEquals(mapOf("t1" to true, "t2" to false, "t4" to null), updates)
     }
 
     @Test

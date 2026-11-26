@@ -346,7 +346,10 @@ fun FlameOfficialSparkBadge(
                 else -> Icons.Filled.LocalFireDepartment
             }
             val displayLabel = when {
-                isGrayUnlit && !cleanLabel.contains("待续") && !cleanLabel.contains("重燃") ->
+                isGrayUnlit &&
+                    !cleanLabel.contains("待续") &&
+                    !cleanLabel.contains("重燃") &&
+                    !cleanLabel.contains("点亮中") ->
                     "$cleanLabel · 待续"
                 !isExpiring && litToday == true ->
                     "$cleanLabel · ${if (compact) "已亮" else "今日已亮"}"

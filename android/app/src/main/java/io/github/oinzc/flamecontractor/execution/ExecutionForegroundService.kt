@@ -3042,7 +3042,11 @@ internal object ExecutionServiceStoreOps {
             if (!candidate.alreadyImported) continue
             val targetId = candidate.existingTargetId?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             if (targetId !in activeIds || updates.containsKey(targetId)) continue
-            updates[targetId] = candidate.sparkLitToday
+            updates[targetId] = if (ScanReconciliationBuilder.hasOfficialSpark(candidate)) {
+                candidate.sparkLitToday
+            } else {
+                null
+            }
         }
         return updates
     }

@@ -1613,23 +1613,26 @@ class DouyinWebExecutor(
         }
 
         val bundle = selectorBundleStore.current()
+        waitForInitialConversationSyncSettle(session, bundle)
         evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
-        delay(300L)
+        delay(250L)
 
         data class RawScannedRow(
             val title: String,
-            val sparkDays: Int?,
-            val sparkKind: String?,
-            val sparkLabel: String?,
-            val sparkLitToday: Boolean?,
-            val hasSparkInPreview: Boolean,
+            val spark: ParsedScannedRowSpark,
             val domConversationType: String?,
         )
 
         val discovered = LinkedHashMap<String, RawScannedRow>()
         val iconVariants = LinkedHashSet<String>()
-        var idleRounds = 0
+        var scrollState = ScanScrollState()
         var roundsCompleted = 0
+        var stopReason = "max_rounds"
+        var lastClientHeight = 0
+        var lastScrollerSource = "unknown"
+        var sawMidScanGrowth = false
+        var didTopRescanAfterGrowth = false
+        val scanStartMs = SystemClock.elapsedRealtime()
         val accountTag = DiagnosticLogStore.safeAccountTag(session.accountId)
 
         for (round in 1..SCAN_MAX_ROUNDS) {
@@ -1650,6 +1653,7 @@ class DouyinWebExecutor(
                         detail = "未找到左侧会话列表容器",
                     )
                 }
+                stopReason = "list_missing"
                 break
             }
 
@@ -1657,8 +1661,8 @@ class DouyinWebExecutor(
             for (raw in rawItems) {
                 @Suppress("UNCHECKED_CAST")
                 val row = raw as? Map<String, Any?> ?: continue
-                val iconVariant = sanitizeFlameIconVariant(row.stringOrNull("streakIconVariant"))
-                iconVariant?.let { variant ->
+                val parsedSpark = parseScannedRowSpark(row)
+                parsedSpark.iconVariant?.let { variant ->
                     if (iconVariants.size < MAX_LOGGED_ICON_VARIANTS) {
                         iconVariants.add(variant)
                     }
@@ -1677,45 +1681,101 @@ class DouyinWebExecutor(
                 val title = row.stringOrNull("title") ?: continue
                 val existingRow = discovered[title]
                 if (existingRow == null) {
-                    val sparkDays = row.intOrNull("streakDays")
-                    val sparkLabel = row.stringOrNull("streakLabel")
-                    val sparkKind = row.stringOrNull("streakKind")
-                        ?: ScanReconciliationBuilder.inferSparkKindFromIconVariant(iconVariant)
-                    val sparkLitToday = if (iconVariant != null) {
-                        ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
-                            iconVariant = iconVariant,
-                            sparkDays = sparkDays,
-                            sparkLabel = sparkLabel,
-                        )
-                    } else {
-                        row.boolOrNull("streakLitToday")
-                    }
                     discovered[title] = RawScannedRow(
                         title = title,
-                        sparkDays = sparkDays,
-                        sparkKind = sparkKind,
-                        sparkLabel = sparkLabel,
-                        sparkLitToday = sparkLitToday,
-                        hasSparkInPreview = row.boolOrDefault("hasSparkInPreview", false),
+                        spark = parsedSpark,
                         domConversationType = domConversationType,
                     )
-                } else if (existingRow.domConversationType == null && domConversationType != null) {
-                    discovered[title] = existingRow.copy(domConversationType = domConversationType)
+                } else {
+                    val mergedSpark = mergeScannedRowSpark(existingRow.spark, parsedSpark)
+                    val mergedType = existingRow.domConversationType ?: domConversationType
+                    if (mergedSpark != existingRow.spark || mergedType != existingRow.domConversationType) {
+                        discovered[title] = existingRow.copy(
+                            spark = mergedSpark,
+                            domConversationType = mergedType,
+                        )
+                    }
                 }
             }
 
             onProgress?.invoke(discovered.size)
 
-            idleRounds = if (discovered.size == countBefore) idleRounds + 1 else 0
+            val newItemsAdded = discovered.size - countBefore
             val atBottom = pageObj.boolOrDefault("atBottom", false)
-            if (atBottom || idleRounds >= SCAN_IDLE_ROUNDS) {
+            val scrollTop = pageObj.intOrNull("scrollTop") ?: 0
+            val scrollHeight = pageObj.intOrNull("scrollHeight") ?: 0
+            val clientHeight = pageObj.intOrNull("clientHeight") ?: 0
+            val protoInFlight = pageObj.intOrNull("protoInFlight") ?: 0
+            val protoQuietMs = pageObj.intOrNull("protoQuietMs") ?: -1
+            if (clientHeight > 0) lastClientHeight = clientHeight
+            pageObj.stringOrNull("scrollerSource")?.let { lastScrollerSource = it }
+
+            val prevGrowths = scrollState.scrollHeightGrowths
+            val elapsedMs = SystemClock.elapsedRealtime() - scanStartMs
+            val decision = decideNextScanScrollStep(
+                state = scrollState,
+                round = round,
+                newItemsAdded = newItemsAdded,
+                atBottom = atBottom,
+                scrollTop = scrollTop,
+                scrollHeight = scrollHeight,
+                clientHeight = clientHeight,
+                elapsedMs = elapsedMs,
+                protoInFlight = protoInFlight,
+                protoQuietMs = protoQuietMs,
+            )
+            scrollState = decision.nextState
+            if (scrollState.scrollHeightGrowths > prevGrowths && scrollTop > 0) {
+                sawMidScanGrowth = true
+            }
+            if (!decision.shouldContinue) {
+                if (decision.stopReason == "bottom_settled" && sawMidScanGrowth && !didTopRescanAfterGrowth &&
+                    round < SCAN_MAX_ROUNDS - 4 && elapsedMs < SCAN_MAX_DURATION_MS - 10_000L
+                ) {
+                    didTopRescanAfterGrowth = true
+                    scrollState = scrollState.copy(
+                        bottomStagnantRounds = 0,
+                        midIdleRounds = 0,
+                        noNewItemRounds = 0,
+                        lastScrollTop = -1,
+                    )
+                    evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
+                    delay(SCAN_STEP_DELAY_MS)
+                    continue
+                }
+                stopReason = decision.stopReason ?: "stopped"
                 break
             }
-            evalObject(
-                session.webView,
-                DouyinJsScripts.buildScrollConversationListStepJs(bundle, SCAN_SCROLL_STEP_PX),
-            )
-            delay(800L)
+            if (decision.nudgeBottom) {
+                // 跨帧先上拉一小段再滚到底，避免同步赋值被浏览器合并导致翻页监听器不触发
+                evalObject(
+                    session.webView,
+                    DouyinJsScripts.buildScrollConversationListStepJs(
+                        bundle = bundle,
+                        deltaPx = -SCAN_BOTTOM_PULLBACK_PX,
+                        nudgeBottom = false,
+                    ),
+                )
+                delay(SCAN_BOTTOM_PULLBACK_DELAY_MS)
+                evalObject(
+                    session.webView,
+                    DouyinJsScripts.buildScrollConversationListStepJs(
+                        bundle = bundle,
+                        deltaPx = maxOf(decision.stepPx, SCAN_BOTTOM_PULLBACK_PX * 2),
+                        nudgeBottom = false,
+                    ),
+                )
+            } else {
+                evalObject(
+                    session.webView,
+                    DouyinJsScripts.buildScrollConversationListStepJs(
+                        bundle = bundle,
+                        deltaPx = decision.stepPx,
+                        nudgeBottom = false,
+                    ),
+                )
+            }
+            delay(decision.delayMs)
         }
 
         session.bridge.awaitPendingJobs(2_000L)
@@ -1753,15 +1813,12 @@ class DouyinWebExecutor(
                 null
             }
 
-            val finalLabel = row.sparkLabel
-                ?: if (row.sparkDays == null && row.hasSparkInPreview) "火花" else null
-
             ScannedChatCandidate(
                 displayName = row.title,
                 conversationType = convType,
-                sparkDays = row.sparkDays,
-                sparkKind = row.sparkKind,
-                sparkLabel = finalLabel,
+                sparkDays = row.spark.sparkDays,
+                sparkKind = row.spark.sparkKind,
+                sparkLabel = row.spark.sparkLabel,
                 matchStatus = matchStatus,
                 platformUserId = pUserId,
                 platformHandle = pHandle,
@@ -1770,7 +1827,7 @@ class DouyinWebExecutor(
                 alreadyImported = activeMatch != null,
                 existingTargetId = activeMatch?.id ?: deletedMatch?.id,
                 preselected = false,
-                sparkLitToday = row.sparkLitToday,
+                sparkLitToday = row.spark.sparkLitToday,
             )
         }
 
@@ -1791,7 +1848,7 @@ class DouyinWebExecutor(
             category = "SCAN",
             event = "scan_done",
             level = "INFO",
-            detail = "rounds=$roundsCompleted discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount users=${idStats.users} groups=${idStats.groups} protoHits=${idStats.protoHits} idbGroups=${idStats.idbGroups} domGroups=${idStats.domGroups} iconVariants=$variantsSummary",
+            detail = "rounds=$roundsCompleted stop=$stopReason scroller=$lastScrollerSource ch=$lastClientHeight maxSh=${scrollState.maxScrollHeight} growths=${scrollState.scrollHeightGrowths} bottomWaits=${scrollState.bottomWaitHits} discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount users=${idStats.users} groups=${idStats.groups} protoHits=${idStats.protoHits} idbGroups=${idStats.idbGroups} domGroups=${idStats.domGroups} iconVariants=$variantsSummary",
             accountTag = accountTag,
         )
         return ScanExecutionResult.Success(
@@ -1799,6 +1856,42 @@ class DouyinWebExecutor(
             selfUid = auth.selfUid,
             douyinNickname = auth.douyinNickname,
         )
+    }
+
+    /**
+     * 抖音网页端 `get_message_by_init` 会分多包异步拉取会话（常见第 1 包 ~20 条先挂 DOM，
+     * 第 2 包 1–2MB 晚 1–3 秒到达）。开扫前做短时静置等待，确保初始化多包落稳再从顶到底扫描。
+     */
+    private suspend fun waitForInitialConversationSyncSettle(
+        session: SessionHandle,
+        bundle: SelectorBundle,
+        timeoutMs: Long = SCAN_INIT_SETTLE_TIMEOUT_MS,
+    ) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var lastHeight = -1
+        var stablePolls = 0
+        val probeJs = DouyinJsScripts.buildReadConversationSyncStateJs(bundle)
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val state = evalObject(session.webView, probeJs)
+            val listFound = state?.boolOrDefault("listFound", false) == true
+            val scrollHeight = state?.intOrNull("scrollHeight") ?: 0
+            val protoInFlight = state?.intOrNull("protoInFlight") ?: 0
+            val protoQuietMs = state?.intOrNull("protoQuietMs") ?: -1
+            val protoSettled = protoInFlight == 0 && (protoQuietMs < 0 || protoQuietMs >= SCAN_PROTO_QUIET_MS)
+            if (listFound && scrollHeight > 0 && protoSettled) {
+                if (lastHeight > 0 && kotlin.math.abs(scrollHeight - lastHeight) <= 5) {
+                    stablePolls += 1
+                    if (stablePolls >= 2) return
+                } else {
+                    stablePolls = 1
+                }
+                lastHeight = scrollHeight
+            } else {
+                stablePolls = 0
+                if (scrollHeight > 0) lastHeight = scrollHeight
+            }
+            delay(SCAN_INIT_SETTLE_POLL_MS)
+        }
     }
 
     private suspend fun probeStructureInSession(
@@ -2032,30 +2125,28 @@ class DouyinWebExecutor(
         }
 
         if (!session.warmedUp) {
-            for (i in 0 until WARMUP_SCROLLS) {
-                val res = evalObject(
-                    session.webView,
-                    DouyinJsScripts.buildScrollConversationListStepJs(bundle, SCAN_SCROLL_STEP_PX),
-                )
-                if (res?.boolOrDefault("listFound", false) != true ||
-                    res.boolOrDefault("atBottom", false)
-                ) {
-                    break
-                }
-                delay(700L)
-            }
+            waitForInitialConversationSyncSettle(
+                session = session,
+                bundle = bundle,
+                timeoutMs = OPEN_INITIAL_SYNC_SETTLE_TIMEOUT_MS,
+            )
             evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
+            delay(200L)
             session.warmedUp = true
         }
 
-        // 1) 优先通过搜索框精确搜索
-        val searchFilled = evalObject(
+        // 先清零可能残留的上一轮搜索框内容（仅当非空或搜索面板开启时操作，不打扰空白状态）
+        val preClear = evalObject(
             session.webView,
-            DouyinJsScripts.buildFillSearchInputJs(bundle, targetName),
-        )?.boolOrDefault("found", false) == true
+            DouyinJsScripts.buildClearSearchInputIfNonEmptyJs(bundle),
+        )
+        if (preClear?.boolOrDefault("cleared", false) == true) {
+            delay(350L)
+        }
 
         var sawMismatch = false
         var sawAmbiguous = false
+        var searchFilled = false
         var searchHit = false
         var maxVisibleRows = 0
         var totalMatchCount = 0
@@ -2078,9 +2169,57 @@ class DouyinWebExecutor(
             )
         }
 
+        suspend fun probeVisibleListRows(): Pair<Map<String, Any?>?, OpenConversationResult?> {
+            val firstProbe = evalObject(
+                session.webView,
+                DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, 0),
+            )
+            val probeRows = firstProbe?.intOrNull("visibleRows") ?: 0
+            if (probeRows > maxVisibleRows) maxVisibleRows = probeRows
+            val totalMatches = firstProbe?.intOrNull("totalMatches") ?: 0
+            if (totalMatches > 0) {
+                totalMatchCount = maxOf(totalMatchCount, totalMatches)
+                val outcome = verifyAndTryRemainingCandidates(
+                    session = session,
+                    bundle = bundle,
+                    targetName = targetName,
+                    expectedUserId = expectedUserId,
+                    expectedConversationId = expectedConversationId,
+                    totalMatches = totalMatches,
+                    firstClicked = firstProbe?.boolOrDefault("clicked", false) == true,
+                ) { nextIdx ->
+                    evalObject(
+                        session.webView,
+                        DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, nextIdx),
+                    )?.boolOrDefault("clicked", false) == true
+                }
+                if (outcome.reason.isNotBlank()) lastConfirmReason = outcome.reason
+                if (outcome.opened && outcome.exact) {
+                    return firstProbe to outcome
+                }
+                if (outcome.opened) sawMismatch = true
+                if (outcome.ambiguous) sawAmbiguous = true
+            }
+            return firstProbe to null
+        }
+
+        // 1) 秒查当前已渲染的可见列表行（高频续火好友往往就在顶部，免去搜索框延迟与残留）
+        val (_, fastHit) = probeVisibleListRows()
+        if (fastHit != null) {
+            logLookupResult(fastHit, via = "list_fast")
+            return fastHit
+        }
+
+        // 2) 搜索框精确搜索（支持历史窗口外的老好友，命中明确无结果时提前结束，避免干等 12s）
+        searchFilled = evalObject(
+            session.webView,
+            DouyinJsScripts.buildFillSearchInputJs(bundle, targetName),
+        )?.boolOrDefault("found", false) == true
+
         if (searchFilled) {
-            delay(2_000L)
-            val searchDeadline = SystemClock.elapsedRealtime() + SEARCH_RESULTS_TIMEOUT_MS
+            delay(SEARCH_INITIAL_WAIT_MS)
+            val searchStart = SystemClock.elapsedRealtime()
+            val searchDeadline = searchStart + SEARCH_RESULTS_TIMEOUT_MS
             while (SystemClock.elapsedRealtime() < searchDeadline) {
                 val firstProbe = evalObject(
                     session.webView,
@@ -2115,55 +2254,75 @@ class DouyinWebExecutor(
                     if (outcome.ambiguous) sawAmbiguous = true
                     break
                 }
-                delay(900L)
+                val searchNoResult = firstProbe?.boolOrDefault("searchNoResult", false) == true
+                if (searchNoResult && (SystemClock.elapsedRealtime() - searchStart) >= SEARCH_NO_RESULT_MIN_WAIT_MS) {
+                    break
+                }
+                delay(SEARCH_POLL_INTERVAL_MS)
             }
-            // 清空搜索框恢复列表
+            // 清空搜索框恢复左侧会话列表
             evalObject(session.webView, DouyinJsScripts.buildFillSearchInputJs(bundle, ""))
-            delay(800L)
+            delay(500L)
         }
 
-        // 2) 兜底滚动左侧会话列表查找精确标题行
+        // 3) 动态 60% 重叠步长全量兜底扫描（严格先检测触底屏再退出，彻底消除最后一屏漏检与跳行盲区）
         evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
-        delay(300L)
+        delay(250L)
+        var listScrollState = OpenListScrollState()
         for (scrollRound in 0 until MAX_LIST_SCROLLS) {
             scrollSteps = scrollRound + 1
-            val firstProbe = evalObject(
-                session.webView,
-                DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, 0),
-            )
-            val probeRows = firstProbe?.intOrNull("visibleRows") ?: 0
-            if (probeRows > maxVisibleRows) maxVisibleRows = probeRows
-            val totalMatches = firstProbe?.intOrNull("totalMatches") ?: 0
-            if (totalMatches > 0) {
-                totalMatchCount = maxOf(totalMatchCount, totalMatches)
-                val outcome = verifyAndTryRemainingCandidates(
-                    session = session,
-                    bundle = bundle,
-                    targetName = targetName,
-                    expectedUserId = expectedUserId,
-                    expectedConversationId = expectedConversationId,
-                    totalMatches = totalMatches,
-                    firstClicked = firstProbe?.boolOrDefault("clicked", false) == true,
-                ) { nextIdx ->
-                    evalObject(
-                        session.webView,
-                        DouyinJsScripts.buildClickListItemByTitleJs(bundle, targetName, nextIdx),
-                    )?.boolOrDefault("clicked", false) == true
-                }
-                if (outcome.reason.isNotBlank()) lastConfirmReason = outcome.reason
-                if (outcome.opened && outcome.exact) {
-                    logLookupResult(outcome, via = "list")
-                    return outcome
-                }
-                if (outcome.opened) sawMismatch = true
-                if (outcome.ambiguous) sawAmbiguous = true
+            val (probeObj, hit) = probeVisibleListRows()
+            if (hit != null) {
+                logLookupResult(hit, via = "list")
+                return hit
             }
-            val step = evalObject(
-                session.webView,
-                DouyinJsScripts.buildScrollConversationListStepJs(bundle, SCAN_SCROLL_STEP_PX),
+            val listFound = probeObj?.boolOrDefault("listFound", true) != false
+            if (!listFound) break
+            val probedAtBottom = probeObj?.boolOrDefault("atBottom", false) == true
+            val scrollTop = probeObj?.intOrNull("scrollTop") ?: 0
+            val clientHeight = probeObj?.intOrNull("clientHeight") ?: 0
+            val scrollHeight = probeObj?.intOrNull("scrollHeight") ?: 0
+
+            val decision = decideNextOpenListScrollStep(
+                state = listScrollState,
+                scrollRound = scrollRound,
+                probedAtBottom = probedAtBottom,
+                scrollTop = scrollTop,
+                clientHeight = clientHeight,
+                scrollHeight = scrollHeight,
+                maxScrolls = MAX_LIST_SCROLLS,
             )
-            if (step?.boolOrDefault("atBottom", false) == true) break
-            delay(800L)
+            listScrollState = decision.nextState
+            if (!decision.shouldContinue) break
+
+            evalObject(
+                session.webView,
+                DouyinJsScripts.buildScrollConversationListStepJs(bundle, decision.stepPx),
+            )
+            delay(OPEN_LIST_SCROLL_STEP_DELAY_MS)
+        }
+
+        // 4) 防实时新消息/回复顶置漏检：仅在纯 not_found（无身份冲突/同名歧义）时回顶补查前两屏
+        if (!sawMismatch && !sawAmbiguous) {
+            evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
+            delay(300L)
+            for (recheckRound in 0 until OPEN_LIST_TOP_RECHECK_STEPS) {
+                scrollSteps += 1
+                val (probeObj, hit) = probeVisibleListRows()
+                if (hit != null) {
+                    logLookupResult(hit, via = "list_recheck")
+                    return hit
+                }
+                if (recheckRound + 1 >= OPEN_LIST_TOP_RECHECK_STEPS) break
+                val probedAtBottom = probeObj?.boolOrDefault("atBottom", false) == true
+                if (probedAtBottom) break
+                val stepPx = computeScanScrollStepPx(probeObj?.intOrNull("clientHeight") ?: 0)
+                evalObject(
+                    session.webView,
+                    DouyinJsScripts.buildScrollConversationListStepJs(bundle, stepPx),
+                )
+                delay(OPEN_LIST_SCROLL_STEP_DELAY_MS)
+            }
         }
 
         val missResult = OpenConversationResult(
@@ -2649,6 +2808,46 @@ class DouyinWebExecutor(
         UNAUTHENTICATED,
     }
 
+    internal data class ParsedScannedRowSpark(
+        val sparkDays: Int? = null,
+        val sparkKind: String? = null,
+        val sparkLabel: String? = null,
+        val sparkLitToday: Boolean? = null,
+        val iconVariant: String? = null,
+    )
+
+    internal data class ScanScrollState(
+        val bottomStagnantRounds: Int = 0,
+        val midIdleRounds: Int = 0,
+        val noNewItemRounds: Int = 0,
+        val lastScrollTop: Int = -1,
+        val maxScrollHeight: Int = 0,
+        val scrollHeightGrowths: Int = 0,
+        val bottomWaitHits: Int = 0,
+    )
+
+    internal data class ScanScrollDecision(
+        val shouldContinue: Boolean,
+        val stepPx: Int = 0,
+        val nudgeBottom: Boolean = false,
+        val delayMs: Long = 0L,
+        val stopReason: String? = null,
+        val nextState: ScanScrollState,
+    )
+
+    internal data class OpenListScrollState(
+        val lastScrollTop: Int = -1,
+        val maxScrollHeight: Int = 0,
+        val stuckRounds: Int = 0,
+    )
+
+    internal data class OpenListScrollDecision(
+        val shouldContinue: Boolean,
+        val stepPx: Int = 0,
+        val stopReason: String? = null,
+        val nextState: OpenListScrollState,
+    )
+
     internal data class MediaSettleSample(
         val totalBoxes: Int,
         val pendingImgCount: Int,
@@ -2745,8 +2944,14 @@ class DouyinWebExecutor(
         }
         private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
         private const val CONVERSATION_LIST_HYDRATION_DELAY_MS = 1_000L
-        private const val SEARCH_RESULTS_TIMEOUT_MS = 12_000L
+        private const val OPEN_INITIAL_SYNC_SETTLE_TIMEOUT_MS = 2_500L
+        private const val SEARCH_INITIAL_WAIT_MS = 1_200L
+        private const val SEARCH_RESULTS_TIMEOUT_MS = 8_000L
+        private const val SEARCH_NO_RESULT_MIN_WAIT_MS = 2_500L
+        private const val SEARCH_POLL_INTERVAL_MS = 650L
         private const val OPEN_CONFIRM_TIMEOUT_MS = 8_000L
+        private const val OPEN_LIST_SCROLL_STEP_DELAY_MS = 300L
+        private const val OPEN_LIST_TOP_RECHECK_STEPS = 2
         private const val EDITOR_READY_TIMEOUT_MS = 8_000L
         private const val STICKER_PANEL_TIMEOUT_MS = 5_000L
         private const val STICKER_POST_CLICK_SETTLE_MS = 800L
@@ -2761,16 +2966,237 @@ class DouyinWebExecutor(
         private const val MESSAGE_LIST_MAX_SETTLE_MS = 2_500L
         private const val MESSAGE_LIST_EMPTY_MIN_WAIT_MS = 1_500L
         private const val JS_EVAL_TIMEOUT_MS = 5_000L
-        private const val WARMUP_SCROLLS = 5
-        private const val MAX_LIST_SCROLLS = 8
-        private const val SCAN_MAX_ROUNDS = 15
-        private const val SCAN_IDLE_ROUNDS = 3
-        private const val SCAN_SCROLL_STEP_PX = 900
+        internal const val MAX_LIST_SCROLLS = 40
+        internal const val OPEN_LIST_STUCK_LIMIT = 2
+        internal const val SCAN_MAX_ROUNDS = 160
+        internal const val SCAN_BOTTOM_SETTLE_ROUNDS = 3
+        internal const val SCAN_MID_IDLE_ROUNDS = 4
+        internal const val SCAN_NO_NEW_ITEMS_ROUNDS = 12
+        internal const val SCAN_MAX_DURATION_MS = 120_000L
+        internal const val SCAN_STEP_DELAY_MS = 350L
+        internal const val SCAN_BOTTOM_SETTLE_DELAY_MS = 1_000L
+        internal const val SCAN_INIT_SETTLE_TIMEOUT_MS = 4_500L
+        internal const val SCAN_INIT_SETTLE_POLL_MS = 350L
+        internal const val SCAN_PROTO_QUIET_MS = 900
+        internal const val SCAN_BOTTOM_PULLBACK_PX = 160
+        internal const val SCAN_BOTTOM_PULLBACK_DELAY_MS = 220L
+        internal const val SCAN_DEFAULT_STEP_PX = 450
+        internal const val SCAN_MIN_STEP_PX = 240
+        internal const val SCAN_MAX_STEP_PX = 520
         private const val MAX_LOGGED_ICON_VARIANTS = 20
         private val SAFE_UPLOAD_NAME_REGEX = Regex("""^[A-Za-z0-9._-]{1,64}$""")
         private val SAFE_FLAME_ICON_VARIANT_REGEX = Regex("""^[A-Za-z0-9._/-]{1,80}$""")
+        private val PURE_ZERO_REGEX = Regex("""^0+$""")
         private val SAFE_ROUTE_SEGMENT_REGEX = Regex("""^[A-Za-z0-9._-]{1,20}$""")
         private val LONG_DIGIT_SEGMENT_REGEX = Regex("""\d{6,}""")
+
+        /**
+         * 打开指定会话时的兜底滚动决策（纯函数便于单测）：
+         * - 必须在**完成当前屏探测后**才检查 `probedAtBottom`，杜绝旧逻辑「滚动触底立即 break 跳过最后一屏」；
+         * - 始终按可见高度 60% 重叠步长推进（`computeScanScrollStepPx`），防止虚拟列表跳行与新消息重排漏检。
+         */
+        internal fun decideNextOpenListScrollStep(
+            state: OpenListScrollState,
+            scrollRound: Int,
+            probedAtBottom: Boolean,
+            scrollTop: Int,
+            clientHeight: Int,
+            scrollHeight: Int,
+            maxScrolls: Int = MAX_LIST_SCROLLS,
+            stuckLimit: Int = OPEN_LIST_STUCK_LIMIT,
+        ): OpenListScrollDecision {
+            val heightGrew = state.maxScrollHeight > 0 && scrollHeight > state.maxScrollHeight + 5
+            val newMaxHeight = maxOf(state.maxScrollHeight, scrollHeight)
+            val advanced = state.lastScrollTop >= 0 && scrollTop > state.lastScrollTop + 2
+            val nextStuck = if (scrollRound == 0 || advanced || heightGrew) 0 else state.stuckRounds + 1
+            val nextState = OpenListScrollState(
+                lastScrollTop = scrollTop,
+                maxScrollHeight = newMaxHeight,
+                stuckRounds = nextStuck,
+            )
+            val stopReason = when {
+                scrollRound >= maxScrolls - 1 -> "max_scrolls"
+                probedAtBottom && !heightGrew -> "bottom_probed"
+                nextStuck >= stuckLimit -> "scroll_stuck"
+                else -> null
+            }
+            if (stopReason != null) {
+                return OpenListScrollDecision(
+                    shouldContinue = false,
+                    stopReason = stopReason,
+                    nextState = nextState,
+                )
+            }
+            return OpenListScrollDecision(
+                shouldContinue = true,
+                stepPx = computeScanScrollStepPx(clientHeight),
+                nextState = nextState,
+            )
+        }
+
+        /**
+         * 从单条会话扫描行提取官方火花信号：
+         * - 严格只接受来自抖音官方火花 DOM 容器（`CONVERSATION_STREAK`）内的确定信号：
+         *   正整数天数（`streakDays > 0`）、容器内官方状态文案（`streakLabel`）、或容器内 `img[src*="flame_icon"]` 图标；
+         * - 严禁以最后一条消息预览文本（如 `已读 · [续火花]` / `记得续火花`）作为官方火花判定依据；
+         * - 容器内仅命中未知种类 `flame_icon` 图标且无天数/文案时，使用 [ScanReconciliationBuilder.UNKNOWN_SPARK_KIND]
+         *   占位以保证真实仅图标火花可识别且展示为「官方火花」。
+         */
+        internal fun parseScannedRowSpark(row: Map<String, Any?>): ParsedScannedRowSpark {
+            val sparkDays = row.intOrNull("streakDays")?.takeIf { it > 0 }
+            val sparkLabel = row.stringOrNull("streakLabel")
+                ?.trim()
+                ?.takeIf {
+                    it.isNotEmpty() &&
+                        it != "无火花" &&
+                        !PURE_ZERO_REGEX.matches(it)
+                }
+            val iconVariant = sanitizeFlameIconVariant(row.stringOrNull("streakIconVariant"))
+            val hasStreakIcon = row.boolOrDefault("hasStreakIcon", false) || iconVariant != null
+            val resolvedKind = row.stringOrNull("streakKind")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: ScanReconciliationBuilder.inferSparkKindFromIconVariant(iconVariant)
+            val sparkKind = resolvedKind ?: if (hasStreakIcon && sparkDays == null && sparkLabel == null) {
+                ScanReconciliationBuilder.UNKNOWN_SPARK_KIND
+            } else {
+                null
+            }
+            val sparkLitToday = if (iconVariant != null) {
+                ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
+                    iconVariant = iconVariant,
+                    sparkDays = sparkDays,
+                    sparkLabel = sparkLabel,
+                )
+            } else {
+                null
+            }
+            return ParsedScannedRowSpark(
+                sparkDays = sparkDays,
+                sparkKind = sparkKind,
+                sparkLabel = sparkLabel,
+                sparkLitToday = sparkLitToday,
+                iconVariant = iconVariant,
+            )
+        }
+
+        internal fun mergeScannedRowSpark(
+            existing: ParsedScannedRowSpark,
+            incoming: ParsedScannedRowSpark,
+        ): ParsedScannedRowSpark {
+            val existingHas = ScanReconciliationBuilder.hasOfficialSpark(
+                sparkDays = existing.sparkDays,
+                sparkKind = existing.sparkKind,
+                sparkLabel = existing.sparkLabel,
+            )
+            val incomingHas = ScanReconciliationBuilder.hasOfficialSpark(
+                sparkDays = incoming.sparkDays,
+                sparkKind = incoming.sparkKind,
+                sparkLabel = incoming.sparkLabel,
+            )
+            if (!existingHas) {
+                return if (incomingHas) incoming else existing
+            }
+            if (!incomingHas) {
+                return existing
+            }
+            val mergedDays = existing.sparkDays ?: incoming.sparkDays
+            val mergedLabel = existing.sparkLabel ?: incoming.sparkLabel
+            val mergedKind = when {
+                existing.sparkKind != null && existing.sparkKind != ScanReconciliationBuilder.UNKNOWN_SPARK_KIND ->
+                    existing.sparkKind
+                incoming.sparkKind != null && incoming.sparkKind != ScanReconciliationBuilder.UNKNOWN_SPARK_KIND ->
+                    incoming.sparkKind
+                else -> existing.sparkKind ?: incoming.sparkKind
+            }
+            val mergedVariant = existing.iconVariant ?: incoming.iconVariant
+            val mergedLitToday = if (mergedVariant != null) {
+                ScanReconciliationBuilder.inferSparkLitTodayFromIconVariant(
+                    iconVariant = mergedVariant,
+                    sparkDays = mergedDays,
+                    sparkLabel = mergedLabel,
+                )
+            } else {
+                existing.sparkLitToday ?: incoming.sparkLitToday
+            }
+            return ParsedScannedRowSpark(
+                sparkDays = mergedDays,
+                sparkKind = mergedKind,
+                sparkLabel = mergedLabel,
+                sparkLitToday = mergedLitToday,
+                iconVariant = mergedVariant,
+            )
+        }
+
+        internal fun computeScanScrollStepPx(clientHeight: Int): Int {
+            if (clientHeight <= 0) return SCAN_DEFAULT_STEP_PX
+            return (clientHeight * 0.60).toInt().coerceIn(SCAN_MIN_STEP_PX, SCAN_MAX_STEP_PX)
+        }
+
+        internal fun decideNextScanScrollStep(
+            state: ScanScrollState,
+            round: Int,
+            newItemsAdded: Int,
+            atBottom: Boolean,
+            scrollTop: Int,
+            scrollHeight: Int,
+            clientHeight: Int,
+            elapsedMs: Long,
+            protoInFlight: Int = 0,
+            protoQuietMs: Int = -1,
+            maxRounds: Int = SCAN_MAX_ROUNDS,
+            bottomSettleRounds: Int = SCAN_BOTTOM_SETTLE_ROUNDS,
+            midIdleLimit: Int = SCAN_MID_IDLE_ROUNDS,
+            noNewItemsLimit: Int = SCAN_NO_NEW_ITEMS_ROUNDS,
+            maxDurationMs: Long = SCAN_MAX_DURATION_MS,
+        ): ScanScrollDecision {
+            val prevMaxHeight = state.maxScrollHeight
+            val scrollHeightGrew = prevMaxHeight > 0 && scrollHeight > prevMaxHeight + 5
+            val newMaxHeight = maxOf(prevMaxHeight, scrollHeight)
+            val newGrowths = state.scrollHeightGrowths + if (scrollHeightGrew) 1 else 0
+            val scrollAdvanced = state.lastScrollTop >= 0 && scrollTop > state.lastScrollTop + 2
+            val protoBusy = protoInFlight > 0 || (protoQuietMs in 0 until SCAN_PROTO_QUIET_MS)
+            val madeProgress = newItemsAdded > 0 || scrollHeightGrew || protoBusy
+
+            val nextNoNewItemRounds = if (madeProgress) 0 else state.noNewItemRounds + 1
+            val nextBottomStagnantRounds = if (!atBottom || madeProgress) 0 else state.bottomStagnantRounds + 1
+            val nextMidIdleRounds = if (atBottom || madeProgress || scrollAdvanced) 0 else state.midIdleRounds + 1
+            val nextBottomWaitHits = state.bottomWaitHits + if (atBottom) 1 else 0
+
+            val nextState = ScanScrollState(
+                bottomStagnantRounds = nextBottomStagnantRounds,
+                midIdleRounds = nextMidIdleRounds,
+                noNewItemRounds = nextNoNewItemRounds,
+                lastScrollTop = scrollTop,
+                maxScrollHeight = newMaxHeight,
+                scrollHeightGrowths = newGrowths,
+                bottomWaitHits = nextBottomWaitHits,
+            )
+
+            val stopReason = when {
+                round >= maxRounds -> "max_rounds"
+                elapsedMs >= maxDurationMs -> "timeout"
+                atBottom && nextBottomStagnantRounds >= bottomSettleRounds -> "bottom_settled"
+                !atBottom && nextMidIdleRounds >= midIdleLimit -> "scroll_stuck"
+                nextNoNewItemRounds >= noNewItemsLimit -> "idle_limit"
+                else -> null
+            }
+            if (stopReason != null) {
+                return ScanScrollDecision(
+                    shouldContinue = false,
+                    stopReason = stopReason,
+                    nextState = nextState,
+                )
+            }
+
+            return ScanScrollDecision(
+                shouldContinue = true,
+                stepPx = computeScanScrollStepPx(clientHeight),
+                nudgeBottom = atBottom,
+                delayMs = if (atBottom || newItemsAdded == 0 || protoBusy) SCAN_BOTTOM_SETTLE_DELAY_MS else SCAN_STEP_DELAY_MS,
+                nextState = nextState,
+            )
+        }
 
         private fun safeLogInfo(message: String) {
             try {

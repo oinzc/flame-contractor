@@ -17,15 +17,54 @@ logger = logging.getLogger(__name__)
 _BLANK_RE = re.compile(r"[\s\u200b\u200c\u200d\ufeff]+")
 _UNREAD_COUNT_SUFFIX_RE = re.compile(r"\(\d+\)$")
 
-MAX_LIST_SCROLLS = 8
+MAX_LIST_SCROLLS = 40
 WARMUP_SCROLLS = 5
+OPEN_LIST_TOP_RECHECK_STEPS = 2
 # 会话页只等 DOM 就绪（不等全部静态资源），慢网络下也留有足够余量
 CHAT_PAGE_TIMEOUT_MS = 60_000
 SEARCH_RESULTS_TIMEOUT = 12.0
 OPEN_CONFIRM_TIMEOUT = 8.0
 EDITOR_READY_TIMEOUT = 8.0
-# 全量扫描会话列表：滚动轮数上限 + 连续无新增即判定到底
-SCAN_MAX_ROUNDS = 80
+# 全量扫描会话列表：滚动轮数上限 + 触底多轮静置防漏扫
+SCAN_MAX_ROUNDS = 160
+SCAN_BOTTOM_SETTLE_ROUNDS = 3
+SCAN_MID_IDLE_ROUNDS = 4
+SCAN_NO_NEW_ITEMS_ROUNDS = 12
+SCAN_DEFAULT_STEP_PX = 450
+SCAN_MIN_STEP_PX = 240
+SCAN_MAX_STEP_PX = 520
+SCAN_BOTTOM_PULLBACK_PX = 160
+
+
+def compute_scan_scroll_step(client_height: int | float | None) -> int:
+    """按可见列表高度 60% 计算重叠滚动步长，防止虚拟列表跨屏跳漏行。"""
+    if not isinstance(client_height, (int, float)) or client_height <= 0:
+        return SCAN_DEFAULT_STEP_PX
+    return max(SCAN_MIN_STEP_PX, min(SCAN_MAX_STEP_PX, int(client_height * 0.60)))
+
+
+# 抖音官方火花图标路径目录覆盖的全部 6 种关系类型
+KNOWN_SPARK_KINDS = ("couple", "family", "soulmate", "mate", "bosom", "normal")
+
+
+def parse_flame_icon_kind(src: str | None) -> str | None:
+    """从抖音官方火花图标 URL 解析种类；命中 flame_icon 但未匹配已知目录时兜底 normal。"""
+    if not isinstance(src, str):
+        return None
+    cleaned = src.strip()
+    if not cleaned:
+        return None
+    path = cleaned.split("?", 1)[0].split("#", 1)[0].lower()
+    if "flame_icon" not in path:
+        return None
+    for kind in KNOWN_SPARK_KINDS:
+        if f"/{kind}/" in path:
+            return kind
+    tail = path.split("flame_icon/", 1)[1] if "flame_icon/" in path else ""
+    for segment in tail.split("/"):
+        if segment in KNOWN_SPARK_KINDS:
+            return segment
+    return "normal"
 # 「身份验证」风控弹窗里已知的验证方式文案（2026-10-14 真实弹窗截图核准，
 # 注意不是想当然的「手机发送验证码/邮箱验证码」——抖音实际文案如下）。
 # 点击按可见文案匹配，抖音改版后新增方式不会被点（UI 只展示检测到的）。
@@ -903,12 +942,12 @@ class DouyinChat:
         platform_user_id: str | None = None,
         platform_conversation_id: str | None = None,
     ) -> ConversationOpen:
-        # 0) 预热：先滚动列表，让懒加载数据与搜索索引就绪
+        # 0) 预热：先滚动列表，让懒加载数据与搜索索引就绪，并归零滚动位置
         try:
             await self.warm_up_list()
         except Exception:
             pass
-        # 1) 搜索优先：直接搜索昵称，从结果中精确匹配
+        # 1) 搜索优先：直接搜索昵称，从结果中精确匹配（若上一轮搜索框有残留，fill 会直接覆写）
         try:
             await self.search(name)
             result = await self._search_and_open(
@@ -920,12 +959,21 @@ class DouyinChat:
                 return result
         except Exception:
             pass
-        # 2) 清空搜索，滚动加载列表兜底（会话列表可能是懒加载）
+        # 2) 清空搜索，回到顶部并用动态 60% 重叠步长兜底扫描列表（严格先检测触底屏再退出）
         try:
             await self._fill_first(_s.SEARCH_INPUTS, "")
-            await self._sleep(0.8)
+            await self._sleep(0.5)
         except Exception:
             pass
+        scroll_element = await self.page.query_selector(_s.CONVERSATION_LIST)
+        if scroll_element is not None:
+            try:
+                await self.page.evaluate("(el) => { el.scrollTop = 0; }", scroll_element)
+                await self._sleep(0.25)
+            except Exception:
+                pass
+        last_scroll_top = -1
+        stuck_rounds = 0
         for _ in range(MAX_LIST_SCROLLS):
             result = await self._scan_items(
                 name,
@@ -937,8 +985,66 @@ class DouyinChat:
             scroll_element = await self.page.query_selector(_s.CONVERSATION_LIST)
             if scroll_element is None:
                 break
-            await self.page.evaluate("(el) => { el.scrollTop += 900 }", scroll_element)
-            await self._sleep(0.8)
+            metrics = await self.page.evaluate(
+                """(el) => ({
+                    scrollTop: Math.round(el.scrollTop || 0),
+                    clientHeight: Math.round(el.clientHeight || 0),
+                    scrollHeight: Math.round(el.scrollHeight || 0),
+                    atBottom: (el.scrollTop + el.clientHeight >= el.scrollHeight - 5)
+                })""",
+                scroll_element,
+            )
+            if isinstance(metrics, dict):
+                cur_top = int(metrics.get("scrollTop") or 0)
+                cur_ch = int(metrics.get("clientHeight") or 0)
+                probed_at_bottom = bool(metrics.get("atBottom"))
+                if probed_at_bottom:
+                    break
+                if last_scroll_top >= 0 and cur_top <= last_scroll_top + 2:
+                    stuck_rounds += 1
+                    if stuck_rounds >= 2:
+                        break
+                else:
+                    stuck_rounds = 0
+                last_scroll_top = cur_top
+                step_px = compute_scan_scroll_step(cur_ch)
+                await self.page.evaluate(
+                    f"(el) => {{ el.scrollTop = (el.scrollTop || 0) + {step_px}; el.dispatchEvent(new Event('scroll')); }}",
+                    scroll_element,
+                )
+                await self._sleep(0.35)
+            else:
+                await self.page.evaluate(
+                    f"(el) => {{ el.scrollTop += {SCAN_DEFAULT_STEP_PX} }}",
+                    scroll_element,
+                )
+                await self._sleep(0.8)
+        # 3) 防实时新消息/回复把目标会话顶置到顶部导致兜底漏找：回顶补查前两屏
+        scroll_element = await self.page.query_selector(_s.CONVERSATION_LIST)
+        if scroll_element is not None:
+            try:
+                await self.page.evaluate("(el) => { el.scrollTop = 0; }", scroll_element)
+                await self._sleep(0.3)
+            except Exception:
+                pass
+            for recheck_idx in range(OPEN_LIST_TOP_RECHECK_STEPS):
+                result = await self._scan_items(
+                    name,
+                    platform_user_id,
+                    platform_conversation_id,
+                )
+                if result.opened:
+                    return result
+                if recheck_idx + 1 >= OPEN_LIST_TOP_RECHECK_STEPS:
+                    break
+                try:
+                    await self.page.evaluate(
+                        f"(el) => {{ el.scrollTop += {SCAN_DEFAULT_STEP_PX} }}",
+                        scroll_element,
+                    )
+                    await self._sleep(0.3)
+                except Exception:
+                    break
         return ConversationOpen(opened=False, title=None, exact=False)
 
     async def _try_click_exact_by_text(self, name: str) -> bool:
@@ -1230,8 +1336,10 @@ class DouyinChat:
 
         只读操作——不点击任何会话、不发送任何消息；供好友批量导入挑选候选。
         返回结构化条目：title=会话名，preview=最后一条消息，
-        streak_days=抖音官方火花天数（无火花标记为 None——这就是续火对象的判定信号），
-        streak_kind=火花类型（normal 普通 / couple 情侣 / family 家人，取自图标路径）。
+        streak_days=抖音官方火花正整数天数（仅来自官方火花 DOM 容器 CONVERSATION_STREAK），
+        streak_kind=火花类型（normal / couple / family / soulmate / mate / bosom，取自容器内 flame_icon 图标），
+        streak_label=容器内特殊态官方文字（如「重燃中 1/3」「点亮中 1/3」「N 天后消失」）。
+        绝不根据 preview 消息预览文本推断官方火花。
 
         progress_callback 只报告已发现数量、当前滚动轮次、最近发现的标题和结果快照。
         全量列表在滚动到底前无法知道最终总数，因此调用方不应把轮次上限当作百分比。
@@ -1242,6 +1350,13 @@ class DouyinChat:
         if scroll_element is None:
             return entries
         idle = 0
+        bottom_stagnant = 0
+        mid_idle = 0
+        no_new_rounds = 0
+        max_scroll_height = 0
+        last_scroll_top = -1
+        saw_mid_scan_growth = False
+        did_top_rescan = False
         last_round = 0
         for round_no in range(1, SCAN_MAX_ROUNDS + 1):
             last_round = round_no
@@ -1264,20 +1379,23 @@ class DouyinChat:
                 if streak_el is not None:
                     days_el = await streak_el.query_selector(_s.CONVERSATION_STREAK_DAYS)
                     days_text = ((await days_el.inner_text()) or "").strip() if days_el else ""
+                    if not days_text and hasattr(streak_el, "inner_text"):
+                        raw_streak_text = (await streak_el.inner_text()) or ""
+                        days_text = " ".join(raw_streak_text.split())
                     if days_text.isdigit():
-                        # 正常态：纯数字 = 火花天数
-                        streak_days = int(days_text)
+                        # 正常态：正整数 = 火花天数（0 视为无有效数字火花）
+                        parsed_days = int(days_text)
+                        if parsed_days > 0:
+                            streak_days = parsed_days
                     elif days_text:
-                        # 特殊态：「重燃中 1/3」「N 天后消失」等文字标签
+                        # 特殊态：「重燃中 1/3」「点亮中 1/3」「N 天后消失」等官方容器内文字标签
                         streak_label = days_text
                     icon = await streak_el.query_selector("img[src*='flame_icon']")
                     src = (await icon.get_attribute("src")) if icon else None
-                    if src:
-                        # 图标路径形如 /flame_icon/<kind>/<variant>.png
-                        for kind in ("couple", "family", "normal"):
-                            if f"/{kind}/" in src:
-                                streak_kind = kind
-                                break
+                    streak_kind = parse_flame_icon_kind(src)
+                    if streak_kind is None and icon is not None:
+                        # 容器内确已命中官方 flame_icon 节点，但 src 形态特殊/未提供时兜底为 normal
+                        streak_kind = "normal"
 
                 lines = [line.strip() for line in ((await item.inner_text()) or "").splitlines() if line.strip()]
                 # 行结构：[名字, (火花标记), 时间, 最后消息…]；滤掉名字与火花标记行后取消息
@@ -1295,15 +1413,79 @@ class DouyinChat:
                 )
                 if progress_callback is not None:
                     await progress_callback(len(entries), round_no, title, list(entries))
-            idle = idle + 1 if len(entries) == count_before else 0
-            at_bottom = await self.page.evaluate(
-                "(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 5",
+
+            new_added = len(entries) - count_before
+            idle = idle + 1 if new_added == 0 else 0
+            scroll_metrics = await self.page.evaluate(
+                """(el) => ({
+                    scrollTop: Math.round(el.scrollTop || 0),
+                    clientHeight: Math.round(el.clientHeight || 0),
+                    scrollHeight: Math.round(el.scrollHeight || 0),
+                    atBottom: (el.scrollTop + el.clientHeight >= el.scrollHeight - 5)
+                })""",
                 scroll_element,
             )
-            if at_bottom or idle >= SCAN_IDLE_ROUNDS:
-                break
-            await self.page.evaluate("(el) => { el.scrollTop += 900 }", scroll_element)
-            await self._sleep(0.8)
+
+            if isinstance(scroll_metrics, dict):
+                scroll_top = int(scroll_metrics.get("scrollTop") or 0)
+                client_height = int(scroll_metrics.get("clientHeight") or 0)
+                scroll_height = int(scroll_metrics.get("scrollHeight") or 0)
+                at_bottom = bool(scroll_metrics.get("atBottom"))
+
+                height_grew = max_scroll_height > 0 and scroll_height > max_scroll_height + 5
+                if height_grew and scroll_top > 0:
+                    saw_mid_scan_growth = True
+                max_scroll_height = max(max_scroll_height, scroll_height)
+                scroll_advanced = last_scroll_top >= 0 and scroll_top > last_scroll_top + 2
+                last_scroll_top = scroll_top
+                made_progress = new_added > 0 or height_grew
+
+                no_new_rounds = 0 if made_progress else no_new_rounds + 1
+                bottom_stagnant = 0 if (not at_bottom or made_progress) else bottom_stagnant + 1
+                mid_idle = 0 if (at_bottom or made_progress or scroll_advanced) else mid_idle + 1
+
+                if at_bottom and bottom_stagnant >= SCAN_BOTTOM_SETTLE_ROUNDS:
+                    if saw_mid_scan_growth and not did_top_rescan and round_no < SCAN_MAX_ROUNDS - 4:
+                        did_top_rescan = True
+                        bottom_stagnant = 0
+                        mid_idle = 0
+                        no_new_rounds = 0
+                        last_scroll_top = -1
+                        await self.page.evaluate("(el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); }", scroll_element)
+                        await self._sleep(0.35)
+                        continue
+                    break
+                if (not at_bottom and mid_idle >= SCAN_MID_IDLE_ROUNDS) or no_new_rounds >= SCAN_NO_NEW_ITEMS_ROUNDS:
+                    break
+
+                step_px = compute_scan_scroll_step(client_height)
+                if at_bottom:
+                    push_step = max(step_px, SCAN_BOTTOM_PULLBACK_PX * 2)
+                    await self.page.evaluate(
+                        f"(el) => {{ el.scrollTop = Math.max(0, (el.scrollTop || 0) - {SCAN_BOTTOM_PULLBACK_PX}); el.dispatchEvent(new Event('scroll')); }}",
+                        scroll_element,
+                    )
+                    await self._sleep(0.22)
+                    await self.page.evaluate(
+                        f"(el) => {{ el.scrollTop = Math.max(el.scrollHeight || 0, (el.scrollTop || 0) + {push_step}); el.dispatchEvent(new Event('scroll')); }}",
+                        scroll_element,
+                    )
+                    await self._sleep(1.0)
+                else:
+                    await self.page.evaluate(
+                        f"(el) => {{ el.scrollTop = (el.scrollTop || 0) + {step_px}; el.dispatchEvent(new Event('scroll')); }}",
+                        scroll_element,
+                    )
+                    await self._sleep(0.35 if new_added > 0 else 0.9)
+            else:
+                at_bottom = bool(scroll_metrics)
+                if at_bottom or idle >= SCAN_IDLE_ROUNDS:
+                    break
+                await self.page.evaluate(
+                    f"(el) => {{ el.scrollTop += {SCAN_DEFAULT_STEP_PX} }}",
+                    scroll_element,
+                )
+                await self._sleep(0.8)
         await self._wait_for_identity_updates()
         await self._load_cached_identities()
         for entry in entries:

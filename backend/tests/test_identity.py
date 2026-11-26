@@ -506,3 +506,176 @@ def test_scan_all_chats_uses_indexeddb_identity_when_network_skips_request():
         assert entries[0]["platform_handle"] == "cached_handle"
 
     asyncio.run(scenario())
+
+
+def test_compute_scan_scroll_step_clamps_overlap_ratio():
+    from app.execution.douyin_chat import compute_scan_scroll_step
+
+    assert compute_scan_scroll_step(454) == 272
+    assert compute_scan_scroll_step(200) == 240
+    assert compute_scan_scroll_step(1000) == 520
+    assert compute_scan_scroll_step(None) == 450
+    assert compute_scan_scroll_step(0) == 450
+
+
+def test_scan_all_chats_waits_at_bottom_for_late_arriving_page_instead_of_breaking():
+    class _PaginatedVirtualPage(FakePage):
+        def __init__(self):
+            super().__init__(logged_in=True, conversation_titles=())
+            self._page1 = [f"好友{i:02d}" for i in range(1, 21)]
+            self._page2 = [f"好友{i:02d}" for i in range(21, 44)]
+            self._loaded = list(self._page1)
+            self._scroll_top = 0
+            self._client_height = 454
+            self._row_height = 67
+            self._bottom_nudges = 0
+            self.step_deltas: list[int] = []
+
+        @property
+        def _scroll_height(self) -> int:
+            return len(self._loaded) * self._row_height
+
+        async def query_selector_all(self, selector: str):
+            from app.execution.selectors import CONVERSATION_ITEM
+            from tests.fakes import FakeItem
+
+            if selector != CONVERSATION_ITEM:
+                return []
+            start = max(0, self._scroll_top // self._row_height)
+            end = min(len(self._loaded), start + 11)
+            return [FakeItem(self, title) for title in self._loaded[start:end]]
+
+        async def evaluate(self, expression: str, target=None, *args, **kwargs):
+            if "indexedDB" in expression:
+                return []
+            if "atBottom" in expression:
+                return {
+                    "scrollTop": self._scroll_top,
+                    "clientHeight": self._client_height,
+                    "scrollHeight": self._scroll_height,
+                    "atBottom": self._scroll_top + self._client_height >= self._scroll_height - 5,
+                }
+            if "scrollTop = 0" in expression:
+                self._scroll_top = 0
+                return None
+            if "- 160" in expression:
+                self._scroll_top = max(0, self._scroll_top - 160)
+                return None
+            if "Math.max(el.scrollHeight" in expression:
+                self._bottom_nudges += 1
+                if self._bottom_nudges == 2 and len(self._loaded) == 20:
+                    self._loaded.extend(self._page2)
+                max_top = max(0, self._scroll_height - self._client_height)
+                self._scroll_top = min(max_top, self._scroll_top + 320)
+                return None
+            import re
+
+            m = re.search(r"\+\s*(\d+)", expression)
+            delta = int(m.group(1)) if m else 272
+            self.step_deltas.append(delta)
+            max_top = max(0, self._scroll_height - self._client_height)
+            self._scroll_top = min(max_top, self._scroll_top + delta)
+            return None
+
+    async def scenario():
+        page = _PaginatedVirtualPage()
+        chat = DouyinChat(page, sleep=lambda _: asyncio.sleep(0))
+
+        entries = await chat.scan_all_chats()
+
+        assert len(entries) == 43
+        assert entries[0]["title"] == "好友01"
+        assert entries[-1]["title"] == "好友43"
+        assert all(delta == 272 for delta in page.step_deltas)
+
+    asyncio.run(scenario())
+
+
+def test_open_conversation_probes_bottom_screen_and_handles_live_top_reorder():
+    from tests.fakes import FakeItem
+
+    class _ClickingRow(FakeItem):
+        async def click(self, timeout: int | None = None) -> None:
+            await super().click(timeout=timeout)
+            self._page.right_title = self._title
+
+    class _LiveReorderVirtualPage(FakePage):
+        def __init__(self, *, jump_target_to_top_on_scroll: bool):
+            super().__init__(logged_in=True, conversation_titles=())
+            self._rows = [f"好友{i:02d}" for i in range(1, 35)]
+            self._scroll_top = 0
+            self._client_height = 454
+            self._row_height = 67
+            self._jump_on_scroll = jump_target_to_top_on_scroll
+            self._jumped = False
+            self._search_empty = False
+            self.step_deltas: list[int] = []
+
+        @property
+        def _scroll_height(self) -> int:
+            return len(self._rows) * self._row_height
+
+        async def fill(self, selector: str, value: str) -> None:
+            # 模拟搜索框未命中（走左侧列表兜底）
+            self._search_empty = bool(value.strip())
+
+        async def query_selector_all(self, selector: str):
+            from app.execution.selectors import CONVERSATION_ITEM, SEARCH_RESULT_ITEM
+
+            if self._search_empty:
+                return []
+            if selector == SEARCH_RESULT_ITEM:
+                return []
+            if selector != CONVERSATION_ITEM:
+                return []
+            start = max(0, self._scroll_top // self._row_height)
+            end = min(len(self._rows), start + 11)
+            return [_ClickingRow(self, title) for title in self._rows[start:end]]
+
+        async def evaluate(self, expression: str, target=None, *args, **kwargs):
+            if "indexedDB" in expression:
+                return []
+            if "atBottom" in expression:
+                return {
+                    "scrollTop": self._scroll_top,
+                    "clientHeight": self._client_height,
+                    "scrollHeight": self._scroll_height,
+                    "atBottom": self._scroll_top + self._client_height >= self._scroll_height - 5,
+                }
+            if "scrollTop = 0" in expression:
+                self._scroll_top = 0
+                return None
+            import re
+
+            m = re.search(r"\+\s*(\d+)", expression)
+            delta = int(m.group(1)) if m else 272
+            self.step_deltas.append(delta)
+            max_top = max(0, self._scroll_height - self._client_height)
+            self._scroll_top = min(max_top, self._scroll_top + delta)
+            if self._jump_on_scroll and not self._jumped and self._scroll_top >= 500:
+                # 模拟用户回复或好友发来新消息：目标好友「好友28」在滚动中途瞬间顶置到第 0 行
+                self._jumped = True
+                self._rows.remove("好友28")
+                self._rows.insert(0, "好友28")
+            return None
+
+    async def scenario():
+        # 1) 位于最底屏的「好友34」：旧逻辑滚到底直接 break 必失败，现必须先探测底屏并成功打开
+        page_bottom = _LiveReorderVirtualPage(jump_target_to_top_on_scroll=False)
+        chat_bottom = DouyinChat(page_bottom, sleep=lambda _: asyncio.sleep(0), search_timeout=0.05, confirm_timeout=0.1)
+        res_bottom = await chat_bottom.open_conversation("好友34")
+        assert res_bottom.opened is True
+        assert res_bottom.exact is True
+        assert res_bottom.title == "好友34"
+        assert page_bottom.step_deltas and all(d == 272 for d in page_bottom.step_deltas)
+
+        # 2) 滚动中途被新消息顶置到第 0 行的「好友28」：通过回顶补查成功找回
+        page_jump = _LiveReorderVirtualPage(jump_target_to_top_on_scroll=True)
+        chat_jump = DouyinChat(page_jump, sleep=lambda _: asyncio.sleep(0), search_timeout=0.05, confirm_timeout=0.1)
+        res_jump = await chat_jump.open_conversation("好友28")
+        assert page_jump._jumped is True
+        assert res_jump.opened is True
+        assert res_jump.exact is True
+        assert res_jump.title == "好友28"
+
+    asyncio.run(scenario())

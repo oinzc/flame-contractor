@@ -13,7 +13,16 @@ import re
 from typing import Any, Iterable
 
 _DISAPPEAR_DAYS_RE = re.compile(r"(\d+)\s*天后(?:火花(?:将)?)?消失")
-_REKINDLE_PROGRESS_RE = re.compile(r"重燃中\s*(\d+)\s*/\s*(\d+)")
+_REKINDLE_PROGRESS_RE = re.compile(r"重燃中\s*\(?\s*(\d+)\s*/\s*(\d+)\s*\)?")
+
+_SPARK_KIND_LABELS = {
+    "couple": "情侣火花",
+    "family": "家人火花",
+    "soulmate": "密友火花",
+    "mate": "搭子火花",
+    "bosom": "挚友火花",
+    "normal": "官方火花",
+}
 
 
 RECONCILIATION_CATEGORIES = (
@@ -172,31 +181,44 @@ def match_scan_entry_to_target(
     return None
 
 
-def _scan_label(entry: dict[str, Any]) -> str | None:
+def _has_official_spark(entry: dict[str, Any]) -> bool:
+    """严格基于抖音官方火花容器字段判定是否存在官方火花，绝不读取聊天 preview。"""
+    label = _clean_text(entry.get("streak_label"))
+    if label == "无火花":
+        return False
+    days = _clean_days(entry.get("streak_days"))
+    if days is not None and days > 0:
+        return True
+    if label:
+        return True
+    return bool(_clean_text(entry.get("streak_kind")))
+
+
+def spark_label_for_scan_entry(entry: dict[str, Any]) -> str | None:
+    """仅根据抖音官方火花容器字段推导快照标签，严禁从 preview 文本兜底。"""
     label = _clean_text(entry.get("streak_label"))
     if label:
         return label
-    if _clean_days(entry.get("streak_days")) is not None:
+    days = _clean_days(entry.get("streak_days"))
+    if days is not None and days > 0:
         return None
-    preview = _clean_text(entry.get("preview"))
-    if preview and "火花" in preview:
-        return preview[:64]
+    if _clean_text(entry.get("streak_kind")):
+        return None
     return "无火花"
 
 
-def _has_official_spark(entry: dict[str, Any]) -> bool:
-    return (
-        _clean_days(entry.get("streak_days")) is not None
-        or bool(_clean_text(entry.get("streak_label")))
-        or "火花" in (_clean_text(entry.get("preview")) or "")
-    )
+def _scan_label(entry: dict[str, Any]) -> str | None:
+    return spark_label_for_scan_entry(entry)
 
 
 def current_scan_state(entry: dict[str, Any]) -> dict[str, Any]:
+    if not _has_official_spark(entry):
+        return _state(label="无火花")
+    days = _clean_days(entry.get("streak_days"))
     return _state(
-        days=entry.get("streak_days"),
+        days=days if days is not None and days > 0 else None,
         kind=entry.get("streak_kind"),
-        label=_scan_label(entry),
+        label=spark_label_for_scan_entry(entry),
     )
 
 
@@ -308,11 +330,15 @@ def parse_reconciliation(value: str | None) -> dict[str, Any]:
     return normalized
 
 
-def _format_spark_state(days: int | None, label: str | None) -> str | None:
+def _format_spark_state(
+    days: int | None, label: str | None, kind: str | None = None
+) -> str | None:
     if days is not None:
         return f"{days}天"
     if label:
         return label
+    if kind:
+        return _SPARK_KIND_LABELS.get(kind.lower(), "官方火花")
     return None
 
 
@@ -398,8 +424,9 @@ def collect_spark_deteriorations(
             continue
 
         title = _clean_text(row.get("title")) or "未命名好友"
-        prev_desc = _format_spark_state(prev_days, prev_label)
-        curr_desc = _format_spark_state(curr_days, curr_label) or "无火花"
+        curr_kind = _clean_text(curr.get("kind"))
+        prev_desc = _format_spark_state(prev_days, prev_label, prev_kind)
+        curr_desc = _format_spark_state(curr_days, curr_label, curr_kind) or "无火花"
         summary = f"{prev_desc} → {curr_desc}" if prev_desc else curr_desc
         alerts.append(
             {

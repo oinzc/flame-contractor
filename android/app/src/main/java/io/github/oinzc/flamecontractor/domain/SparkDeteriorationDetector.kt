@@ -235,7 +235,7 @@ object SparkDeteriorationDetector {
         else -> null
     }
 
-    private fun cleanDays(days: Int?): Int? = days?.takeIf { it >= 0 }
+    private fun cleanDays(days: Int?): Int? = days?.takeIf { it > 0 }
 
     private fun cleanText(raw: String?): String? = raw?.trim()?.takeIf { it.isNotEmpty() }
 }

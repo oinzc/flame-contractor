@@ -60,6 +60,7 @@ object ScanReconciliationBuilder {
 
     private val SAFE_ICON_VARIANT_REGEX = Regex("""^[A-Za-z0-9._/-]{1,80}$""")
     private val KNOWN_SPARK_KINDS = setOf("couple", "family", "normal", "soulmate", "mate", "bosom")
+    const val UNKNOWN_SPARK_KIND = "unknown"
 
     fun hasOfficialSpark(candidate: ScannedChatCandidate): Boolean =
         hasOfficialSpark(candidate.sparkDays, candidate.sparkKind, candidate.sparkLabel)
@@ -80,7 +81,7 @@ object ScanReconciliationBuilder {
     /**
      * 基于抖音网页端 `flame_icon` 图标路径尾段与火花文本纯函数判定今日官方亮/灰态：
      * - 尾段文件名含 `gray_`（大小写不敏感）-> `false`（灰火：今日未点亮）；
-     * - 有效 `flame_icon` 路径尾段不含 `gray_`，且 `sparkDays > 0`，且 `sparkLabel` 不含 `重燃`/`消失` -> `true`（亮火：今日已点亮）；
+     * - 有效 `flame_icon` 路径尾段不含 `gray_`，且 `sparkDays > 0`，且 `sparkLabel` 不含 `重燃`/`消失`/`点亮中` -> `true`（亮火：今日已点亮）；
      * - 其余情形（无图标、异常标签、天数缺失等）保守返回 `null`（未知）。
      */
     fun inferSparkLitTodayFromIconVariant(
@@ -96,7 +97,9 @@ object ScanReconciliationBuilder {
             return false
         }
         val cleanedLabel = sparkLabel?.trim().orEmpty()
-        val hasAbnormalLabel = cleanedLabel.contains("重燃") || cleanedLabel.contains("消失")
+        val hasAbnormalLabel = cleanedLabel.contains("重燃") ||
+            cleanedLabel.contains("消失") ||
+            cleanedLabel.contains("点亮中")
         if (sparkDays != null && sparkDays > 0 && !hasAbnormalLabel) {
             return true
         }

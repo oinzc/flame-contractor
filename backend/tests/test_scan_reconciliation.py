@@ -434,7 +434,132 @@ def test_collect_spark_deteriorations_avoids_false_positives_on_chat_previews_an
                 "previous": {"days": None, "kind": None, "label": "聊聊火花"},
                 "current": {"days": None, "kind": None, "label": "无火花"},
             },
+            # 7) 原先无火花进入「点亮中 1/3」（正向新建火花，不应告警）
+            {
+                "targetId": "t-igniting",
+                "title": "新建点亮中",
+                "category": "changed",
+                "previous": {"days": None, "kind": None, "label": "无火花"},
+                "current": {"days": None, "kind": "mate", "label": "点亮中 1/3"},
+            },
+            # 8) 仅图标官方火花熄灭 -> 应告警并展示种类摘要
+            {
+                "targetId": "t-icon-only-lost",
+                "title": "情侣仅图标断火",
+                "category": "no_spark",
+                "previous": {"days": None, "kind": "couple", "label": None},
+                "current": {"days": None, "kind": None, "label": "无火花"},
+            },
         ]
     }
     alerts = collect_spark_deteriorations(reconciliation)
-    assert [item["targetId"] for item in alerts] == ["t-long-shorter"]
+    assert [item["targetId"] for item in alerts] == ["t-long-shorter", "t-icon-only-lost"]
+    assert alerts[1]["summary"] == "情侣火花 → 无火花"
+
+
+def test_reconciliation_rejects_spark_preview_false_positive_and_classifies_all_official_states():
+    targets = [
+        _target("t-preview-only", "预览含续火花好友", days=None),
+        _target("t-rekindle", "重燃好友", days=20),
+        _target("t-ignite", "点亮好友", days=None),
+        _target("t-disappear", "消失倒计时好友", days=30),
+        _target("t-icon-only", "仅图标密友", days=None),
+    ]
+    entries = [
+        # 无官方火花容器，仅最后一条消息预览含 [续火花] -> 必须归类为 no_spark / 无火花
+        {
+            "title": "预览含续火花好友",
+            "streak_days": None,
+            "streak_kind": None,
+            "streak_label": None,
+            "preview": "已读 · [续火花]",
+        },
+        # 新会话同理：preview 含 [续火花] 绝不带官方火花状态
+        {
+            "title": "新会话预览续火花",
+            "streak_days": None,
+            "streak_kind": None,
+            "streak_label": None,
+            "preview": "已读 · [续火花]",
+        },
+        {
+            "title": "重燃好友",
+            "streak_days": None,
+            "streak_kind": "normal",
+            "streak_label": "重燃中 1/3",
+            "preview": "早安",
+        },
+        {
+            "title": "点亮好友",
+            "streak_days": None,
+            "streak_kind": "mate",
+            "streak_label": "点亮中 1/3",
+            "preview": "你好",
+        },
+        {
+            "title": "消失倒计时好友",
+            "streak_days": None,
+            "streak_kind": "couple",
+            "streak_label": "3 天后消失",
+            "preview": "晚安",
+        },
+        {
+            "title": "仅图标密友",
+            "streak_days": None,
+            "streak_kind": "soulmate",
+            "streak_label": None,
+            "preview": "",
+        },
+        {
+            "title": "新会话挚友仅图标",
+            "streak_days": None,
+            "streak_kind": "bosom",
+            "streak_label": None,
+            "preview": "",
+        },
+    ]
+
+    result = build_reconciliation(targets, entries)
+    by_title = {item["title"]: item for item in result["entries"]}
+
+    assert result["counts"] == {
+        "changed": 4,
+        "no_spark": 1,
+        "new": 2,
+        "not_observed": 0,
+        "unchanged": 0,
+    }
+    assert by_title["预览含续火花好友"]["category"] == "no_spark"
+    assert by_title["预览含续火花好友"]["current"] == {
+        "days": None,
+        "kind": None,
+        "label": "无火花",
+        "scannedAt": None,
+    }
+    assert by_title["新会话预览续火花"]["category"] == "new"
+    assert by_title["新会话预览续火花"]["current"] == {
+        "days": None,
+        "kind": None,
+        "label": "无火花",
+        "scannedAt": None,
+    }
+    assert by_title["重燃好友"]["category"] == "changed"
+    assert by_title["重燃好友"]["current"]["label"] == "重燃中 1/3"
+    assert by_title["点亮好友"]["category"] == "changed"
+    assert by_title["点亮好友"]["current"]["label"] == "点亮中 1/3"
+    assert by_title["消失倒计时好友"]["category"] == "changed"
+    assert by_title["消失倒计时好友"]["current"]["label"] == "3 天后消失"
+    assert by_title["仅图标密友"]["category"] == "changed"
+    assert by_title["仅图标密友"]["current"] == {
+        "days": None,
+        "kind": "soulmate",
+        "label": None,
+        "scannedAt": None,
+    }
+    assert by_title["新会话挚友仅图标"]["category"] == "new"
+    assert by_title["新会话挚友仅图标"]["current"] == {
+        "days": None,
+        "kind": "bosom",
+        "label": None,
+        "scannedAt": None,
+    }

@@ -1441,6 +1441,106 @@ class ScanReconcileViewModelTest {
         }
     }
 
+    @Test
+    fun reconcileRecognizesAllOfficialSparkStatesAndExcludesNoSparkCandidatesFromPreselectionAndSyncCount() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val vmScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val repo = FakeTargetsRepository().apply {
+                targetsState.value = listOf(
+                    ContractTargetEntity(
+                        id = "t-existing-none",
+                        nicknameSnapshot = "已有无火花",
+                        platformUserId = "sec_已有无火花",
+                        conversationType = "friend",
+                        streakDays = 9,
+                    ),
+                )
+            }
+            val gateway = FakeExecutionGateway()
+            val scheduler = FakeScheduleGateway()
+            val litStore = OfficialSparkLitStore()
+            val fixedNow = Instant.parse("2026-11-26T10:00:00Z")
+
+            val vm = TargetsViewModel(
+                repository = repo,
+                executionGateway = gateway,
+                scheduleGateway = scheduler,
+                officialSparkLitStore = litStore,
+                nowInstant = { fixedNow },
+                ioDispatcher = dispatcher,
+                externalScope = vmScope,
+            )
+
+            val candidates = listOf(
+                candidate(name = "仅消息提火花", sparkDays = null, sparkKind = null, sparkLabel = null, sparkLitToday = null),
+                candidate(name = "重燃好友", sparkDays = null, sparkKind = "normal", sparkLabel = "重燃中 1/3", sparkLitToday = false),
+                candidate(name = "点亮中好友", sparkDays = null, sparkKind = "mate", sparkLabel = "点亮中 1/3", sparkLitToday = null),
+                candidate(name = "倒计时好友", sparkDays = null, sparkKind = "couple", sparkLabel = "2天后消失", sparkLitToday = null),
+                candidate(name = "仅图标好友", sparkDays = null, sparkKind = "unknown", sparkLabel = null, sparkLitToday = null),
+                candidate(
+                    name = "已有无火花",
+                    sparkDays = null,
+                    sparkKind = null,
+                    sparkLabel = "无火花",
+                    alreadyImported = true,
+                    sparkLitToday = true,
+                ),
+            )
+
+            gateway.mutableLiveState.value = ExecutionLiveState(
+                latestScanSnapshotAccountId = DEFAULT_ACCOUNT_ID,
+                latestScanSnapshot = ScanReconciliationSnapshot(
+                    scanRunId = "scan-official-boundary",
+                    scannedAtEpochMs = fixedNow.toEpochMilli(),
+                    discoveredCount = candidates.size,
+                    sparkCount = 4,
+                    candidates = candidates,
+                ),
+            )
+            advanceUntilIdle()
+
+            val reconcile = vm.uiState.value.reconcileState
+            assertEquals(4, reconcile.importableSparkCount)
+            assertEquals(0, reconcile.alreadyImportedWithSparkCount)
+
+            val byNameUi = reconcile.allCandidates.associateBy { it.candidate.displayName }
+            assertFalse(byNameUi.getValue("仅消息提火花").hasOfficialSpark)
+            assertFalse(byNameUi.getValue("仅消息提火花").selected)
+            assertFalse(byNameUi.getValue("已有无火花").hasOfficialSpark)
+
+            for (officialName in listOf("重燃好友", "点亮中好友", "倒计时好友", "仅图标好友")) {
+                val ui = byNameUi.getValue(officialName)
+                assertTrue("Expected $officialName to have official spark", ui.hasOfficialSpark)
+                assertTrue("Expected $officialName to be preselected", ui.selected)
+            }
+
+            // 导入预选的 4 位真实官方火花好友：保留官方快照且绝不改写本地 streakDays（新建为 0）
+            vm.importSelectedCandidates()
+            advanceUntilIdle()
+
+            val importedByName = repo.targetsState.value.associateBy { it.nicknameSnapshot }
+            assertEquals("重燃中 1/3", importedByName.getValue("重燃好友").sparkLabel)
+            assertEquals(0, importedByName.getValue("重燃好友").streakDays)
+            assertEquals("点亮中 1/3", importedByName.getValue("点亮中好友").sparkLabel)
+            assertEquals("2天后消失", importedByName.getValue("倒计时好友").sparkLabel)
+            assertEquals("unknown", importedByName.getValue("仅图标好友").sparkKind)
+            assertNull(importedByName.getValue("仅图标好友").sparkLabel)
+            assertFalse(importedByName.containsKey("仅消息提火花"))
+
+            // 同步已有无火花好友：落库「无火花」且绝不写入今日已点亮，同时不改写 streakDays=9
+            vm.syncExistingOfficialSparks()
+            advanceUntilIdle()
+
+            val existingAfter = repo.targetsState.value.first { it.id == "t-existing-none" }
+            assertEquals("无火花", existingAfter.sparkLabel)
+            assertEquals(9, existingAfter.streakDays)
+            assertNull(litStore.getTodayLitState("t-existing-none", "2026-11-26"))
+        } finally {
+            vmScope.cancel()
+        }
+    }
+
     private class FakeTargetsImageStorage(
         private val existingPaths: MutableSet<String> = mutableSetOf(),
     ) : TemplateImageStorage {

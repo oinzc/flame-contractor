@@ -256,8 +256,9 @@ export function ScanReconcileDrawer({
           conversationType: entry.conversationType,
           identityStatus: entry.identityStatus,
           conversationStatus: entry.conversationStatus,
-          streakDays: entry.streakDays ?? undefined,
-          sparkDays: entry.streakDays,
+          streakDays:
+            entry.streakDays != null && entry.streakDays > 0 ? entry.streakDays : undefined,
+          sparkDays: entry.streakDays != null && entry.streakDays > 0 ? entry.streakDays : null,
           sparkKind: entry.streakKind,
           sparkLabel: sparkLabelForSnapshot(entry),
         })),

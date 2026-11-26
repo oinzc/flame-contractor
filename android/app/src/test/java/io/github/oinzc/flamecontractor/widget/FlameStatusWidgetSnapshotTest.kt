@@ -514,4 +514,26 @@ class FlameStatusWidgetSnapshotTest {
         assertEquals("✓ 已刷新", receiptFallback.statusHintText)
         assertEquals("✓ 已刷新", receiptFallback.compactStatusHintText)
     }
+
+    @Test
+    fun `topFriends does not render no-spark label as spark status and ranks real official sparks higher`() {
+        val now = instantAt(2026, 11, 26, 18, 0)
+        val targets = listOf(
+            sampleTarget("t_none", nickname = "无火花好友").copy(sparkLabel = "无火花", streakDays = 10),
+            sampleTarget("t_rekindle", nickname = "重燃中好友").copy(sparkLabel = "重燃中 2/3", streakDays = 1),
+            sampleTarget("t_days", nickname = "天数好友").copy(sparkDays = 50, streakDays = 2),
+        )
+        val snapshot = FlameStatusWidgetCalculator.calculate(
+            account = sampleAccount(status = AccountStatus.HEALTHY),
+            enabledTargets = targets,
+            todayJobs = emptyList(),
+            unknownReviewCount = 0,
+            now = now,
+        )
+
+        assertEquals(listOf("天数好友", "重燃中好友", "无火花好友"), snapshot.topFriends.map { it.displayName })
+        assertEquals("🔥 50天", snapshot.topFriends[0].badgeText)
+        assertEquals("待续 · 重燃中 2/3", snapshot.topFriends[1].badgeText)
+        assertEquals("待发送", snapshot.topFriends[2].badgeText)
+    }
 }

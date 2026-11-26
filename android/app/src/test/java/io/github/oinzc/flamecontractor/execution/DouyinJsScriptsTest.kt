@@ -908,6 +908,7 @@ class DouyinJsScriptsTest {
         val scanJs = DouyinJsScripts.buildScrollAndCollectChatsJs(bundle)
         assertTrue(scanJs.contains("streakIconVariant"))
         assertTrue(scanJs.contains("streakLitToday"))
+        assertTrue(scanJs.contains("hasStreakIcon"))
         assertTrue(scanJs.contains("flame_icon/"))
         assertTrue(scanJs.contains("'/couple/'"))
         assertTrue(scanJs.contains("'/family/'"))
@@ -918,6 +919,182 @@ class DouyinJsScriptsTest {
         assertTrue(scanJs.contains("'gray_'"))
         assertTrue(scanJs.contains("'重燃'"))
         assertTrue(scanJs.contains("'消失'"))
+        assertTrue(scanJs.contains("'点亮中'"))
+        // 严禁读取消息预览文本兜底制造官方火花
+        assertFalse(scanJs.contains("hasSparkInPreview"))
+        assertFalse(scanJs.contains("previewText"))
+        assertFalse(scanJs.contains("indexOf('火花')"))
+        assertFalse(scanJs.contains("indexOf(\"火花\")"))
+    }
+
+    @Test
+    fun officialSparkParsingNeverUsesMessagePreviewAndRecognizesAllRealContainerSignals() {
+        // (a) 无 StreakstreakContainer，即使消息预览含「已读 · [续火花]」/「记得续火花」或旧式 hasSparkInPreview=true，绝不识别为官方火花
+        val previewOnlyCases = listOf(
+            mapOf<String, Any?>(
+                "title" to "仅预览续火花表情好友",
+                "streakDays" to null,
+                "streakKind" to null,
+                "streakLabel" to null,
+                "streakIconVariant" to null,
+                "streakLitToday" to null,
+                "hasStreakIcon" to false,
+                "hasSparkInPreview" to true,
+                "preview" to "已读 · [续火花]",
+            ),
+            mapOf<String, Any?>(
+                "title" to "仅预览文字续火花好友",
+                "hasSparkInPreview" to true,
+                "preview" to "记得续火花",
+            ),
+            mapOf<String, Any?>(
+                "title" to "空容器零天异常行",
+                "streakDays" to 0,
+                "streakKind" to null,
+                "streakLabel" to "0",
+                "hasStreakIcon" to false,
+            ),
+            mapOf<String, Any?>(
+                "title" to "明确无火花行",
+                "streakDays" to null,
+                "streakKind" to null,
+                "streakLabel" to "无火花",
+                "hasStreakIcon" to false,
+            ),
+        )
+        for (rawRow in previewOnlyCases) {
+            val parsed = DouyinWebExecutor.parseScannedRowSpark(rawRow)
+            assertNull("preview-only row must have null sparkDays: $rawRow", parsed.sparkDays)
+            assertNull("preview-only row must have null sparkKind: $rawRow", parsed.sparkKind)
+            assertNull("preview-only row must have null sparkLabel: $rawRow", parsed.sparkLabel)
+            assertNull("preview-only row must have null sparkLitToday: $rawRow", parsed.sparkLitToday)
+            assertFalse(
+                "preview-only row must not have official spark: $rawRow",
+                ScanReconciliationBuilder.hasOfficialSpark(parsed.sparkDays, parsed.sparkKind, parsed.sparkLabel),
+            )
+            val candidate = ScannedChatCandidate(
+                displayName = rawRow["title"] as String,
+                conversationType = "friend",
+                sparkDays = parsed.sparkDays,
+                sparkKind = parsed.sparkKind,
+                sparkLabel = parsed.sparkLabel,
+                matchStatus = MatchStatus.BOUND,
+                platformUserId = "uid_${rawRow["title"]}",
+                platformHandle = null,
+                platformConversationId = null,
+                matchDetail = null,
+                alreadyImported = false,
+                existingTargetId = null,
+                preselected = false,
+                sparkLitToday = parsed.sparkLitToday,
+            )
+            val sorted = ScanReconciliationBuilder.sortAndComputePreselection(listOf(candidate))
+            assertFalse("preview-only candidate must never be preselected", sorted.single().preselected)
+        }
+
+        // (b) 真实 StreakstreakContainer 内的确定信号全部正常识别
+        val numericLit = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakDays" to 42,
+                "streakKind" to "couple",
+                "streakIconVariant" to "couple/couple_normal.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertEquals(42, numericLit.sparkDays)
+        assertEquals("couple", numericLit.sparkKind)
+        assertNull(numericLit.sparkLabel)
+        assertEquals(true, numericLit.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(numericLit.sparkDays, numericLit.sparkKind, numericLit.sparkLabel))
+
+        val numericGray = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakDays" to 18,
+                "streakKind" to "soulmate",
+                "streakIconVariant" to "soulmate/gray_soulmate.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertEquals(18, numericGray.sparkDays)
+        assertEquals("soulmate", numericGray.sparkKind)
+        assertEquals(false, numericGray.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(numericGray.sparkDays, numericGray.sparkKind, numericGray.sparkLabel))
+
+        val rekindlingGray = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakLabel" to "重燃中 1/3",
+                "streakKind" to "normal",
+                "streakIconVariant" to "normal/gray_normal.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertNull(rekindlingGray.sparkDays)
+        assertEquals("normal", rekindlingGray.sparkKind)
+        assertEquals("重燃中 1/3", rekindlingGray.sparkLabel)
+        assertEquals(false, rekindlingGray.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(rekindlingGray.sparkDays, rekindlingGray.sparkKind, rekindlingGray.sparkLabel))
+
+        val lightingProgress = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakLabel" to "点亮中 1/3",
+                "streakKind" to "mate",
+                "streakIconVariant" to "mate/mate_normal.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertNull(lightingProgress.sparkDays)
+        assertEquals("mate", lightingProgress.sparkKind)
+        assertEquals("点亮中 1/3", lightingProgress.sparkLabel)
+        assertNull(lightingProgress.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(lightingProgress.sparkDays, lightingProgress.sparkKind, lightingProgress.sparkLabel))
+
+        val expiringCountdown = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakLabel" to "2天后消失",
+                "streakKind" to "family",
+                "streakIconVariant" to "family/family_normal.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertNull(expiringCountdown.sparkDays)
+        assertEquals("family", expiringCountdown.sparkKind)
+        assertEquals("2天后消失", expiringCountdown.sparkLabel)
+        assertNull(expiringCountdown.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(expiringCountdown.sparkDays, expiringCountdown.sparkKind, expiringCountdown.sparkLabel))
+
+        // 仅图标（已知 6 类之一，无天数无文案）
+        val knownIconOnly = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakIconVariant" to "bosom/gray_bosom.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertNull(knownIconOnly.sparkDays)
+        assertEquals("bosom", knownIconOnly.sparkKind)
+        assertNull(knownIconOnly.sparkLabel)
+        assertEquals(false, knownIconOnly.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(knownIconOnly.sparkDays, knownIconOnly.sparkKind, knownIconOnly.sparkLabel))
+
+        // 仅图标（未知种类路径，无天数无文案）-> 仍识别为官方火花，且不伪造「火花」文案
+        val unknownIconOnly = DouyinWebExecutor.parseScannedRowSpark(
+            mapOf(
+                "streakIconVariant" to "special/custom_flame.png",
+                "hasStreakIcon" to true,
+            ),
+        )
+        assertNull(unknownIconOnly.sparkDays)
+        assertEquals(ScanReconciliationBuilder.UNKNOWN_SPARK_KIND, unknownIconOnly.sparkKind)
+        assertNull(unknownIconOnly.sparkLabel)
+        assertNull(unknownIconOnly.sparkLitToday)
+        assertTrue(ScanReconciliationBuilder.hasOfficialSpark(unknownIconOnly.sparkDays, unknownIconOnly.sparkKind, unknownIconOnly.sparkLabel))
+
+        // 重叠滚屏合并：首轮未水合 -> 次轮水合出官方火花时自动补全，且真实类型可覆盖 unknown 占位
+        val emptyRow = DouyinWebExecutor.ParsedScannedRowSpark()
+        assertEquals(numericLit, DouyinWebExecutor.mergeScannedRowSpark(emptyRow, numericLit))
+        val upgraded = DouyinWebExecutor.mergeScannedRowSpark(unknownIconOnly, numericLit)
+        assertEquals(42, upgraded.sparkDays)
+        assertEquals("couple", upgraded.sparkKind)
+        assertEquals(true, upgraded.sparkLitToday)
     }
 
     @Test
@@ -1015,6 +1192,208 @@ class DouyinJsScriptsTest {
             webViewVersion = "135.0.0.0",
         )
         assertEquals(AuthProbeOutcome.VERIFICATION_REQUIRED, verifyAtTimeout.outcome)
+    }
+
+    @Test
+    fun scanScrollPolicyComputesOverlapStepAndWaitsForLateProtoPagination() {
+        // 1) 动态重叠步长：小视口 454px -> 272px，避免 900px 跳漏虚拟列表行
+        assertEquals(272, DouyinWebExecutor.computeScanScrollStepPx(454))
+        assertEquals(240, DouyinWebExecutor.computeScanScrollStepPx(200))
+        assertEquals(520, DouyinWebExecutor.computeScanScrollStepPx(1000))
+        assertEquals(450, DouyinWebExecutor.computeScanScrollStepPx(0))
+
+        // 2) 首次触底（第 1 包 20 条）不得立刻结束，应执行触底轻推并等待后续分页
+        var state = DouyinWebExecutor.ScanScrollState()
+        val r1 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = state,
+            round = 1,
+            newItemsAdded = 11,
+            atBottom = false,
+            scrollTop = 0,
+            scrollHeight = 1340,
+            clientHeight = 454,
+            elapsedMs = 300L,
+        )
+        assertTrue(r1.shouldContinue)
+        assertEquals(272, r1.stepPx)
+        assertFalse(r1.nudgeBottom)
+        assertEquals(DouyinWebExecutor.SCAN_STEP_DELAY_MS, r1.delayMs)
+        state = r1.nextState
+
+        // 到达第 1 包底部且仍有 proto 在途：必须继续等待，不得递增停滞计数
+        val r2 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = state,
+            round = 2,
+            newItemsAdded = 0,
+            atBottom = true,
+            scrollTop = 886,
+            scrollHeight = 1340,
+            clientHeight = 454,
+            elapsedMs = 1_200L,
+            protoInFlight = 1,
+            protoQuietMs = 100,
+        )
+        assertTrue(r2.shouldContinue)
+        assertTrue(r2.nudgeBottom)
+        assertEquals(0, r2.nextState.bottomStagnantRounds)
+        assertEquals(DouyinWebExecutor.SCAN_BOTTOM_SETTLE_DELAY_MS, r2.delayMs)
+        state = r2.nextState
+
+        // 第 2 包 2.07MB 到达导致 scrollHeight 从 1340 增长到 2881：记录增长并恢复正常步进
+        val r3 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = state,
+            round = 3,
+            newItemsAdded = 4,
+            atBottom = false,
+            scrollTop = 886,
+            scrollHeight = 2881,
+            clientHeight = 454,
+            elapsedMs = 2_300L,
+            protoInFlight = 0,
+            protoQuietMs = 1_200,
+        )
+        assertTrue(r3.shouldContinue)
+        assertFalse(r3.nudgeBottom)
+        assertEquals(1, r3.nextState.scrollHeightGrowths)
+        assertEquals(2881, r3.nextState.maxScrollHeight)
+        state = r3.nextState
+
+        // 到达最终底部后连续 3 轮无新增、无高度增长且无在途 proto -> bottom_settled 收敛退出
+        val b1 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = state,
+            round = 10,
+            newItemsAdded = 0,
+            atBottom = true,
+            scrollTop = 2427,
+            scrollHeight = 2881,
+            clientHeight = 454,
+            elapsedMs = 6_000L,
+            protoInFlight = 0,
+            protoQuietMs = 2_000,
+        )
+        assertTrue(b1.shouldContinue)
+        assertEquals(1, b1.nextState.bottomStagnantRounds)
+
+        val b2 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = b1.nextState,
+            round = 11,
+            newItemsAdded = 0,
+            atBottom = true,
+            scrollTop = 2427,
+            scrollHeight = 2881,
+            clientHeight = 454,
+            elapsedMs = 7_000L,
+            protoInFlight = 0,
+            protoQuietMs = 3_000,
+        )
+        assertTrue(b2.shouldContinue)
+        assertEquals(2, b2.nextState.bottomStagnantRounds)
+
+        val b3 = DouyinWebExecutor.decideNextScanScrollStep(
+            state = b2.nextState,
+            round = 12,
+            newItemsAdded = 0,
+            atBottom = true,
+            scrollTop = 2427,
+            scrollHeight = 2881,
+            clientHeight = 454,
+            elapsedMs = 8_000L,
+            protoInFlight = 0,
+            protoQuietMs = 4_000,
+        )
+        assertFalse(b3.shouldContinue)
+        assertEquals("bottom_settled", b3.stopReason)
+
+        // 3) 脚本契约校验：在途 proto 标记 + 滚动容器解析 + 同步静置检测
+        val bundle = SelectorBundle.defaults()
+        val docJs = DouyinJsScripts.buildIdentityCaptureDocumentStartJs()
+        assertTrue(docJs.contains("__flameProtoInFlight"))
+        assertTrue(docJs.contains("__flameLastProtoAt"))
+        val syncJs = DouyinJsScripts.buildReadConversationSyncStateJs(bundle)
+        assertTrue(syncJs.contains("__flameResolveConversationScroller"))
+        assertTrue(syncJs.contains("protoInFlight"))
+        assertTrue(syncJs.contains("protoQuietMs"))
+        val collectJs = DouyinJsScripts.buildScrollAndCollectChatsJs(bundle)
+        assertTrue(collectJs.contains("protoInFlight"))
+        assertTrue(collectJs.contains("protoQuietMs"))
+        assertTrue(collectJs.contains("scrollerSource"))
+    }
+
+    @Test
+    fun openConversationListScrollPolicyProbesBottomAndResetsReactSearchState() {
+        // 1) 未触底时按可见高度 60%（454 -> 272）推进，避免 900px 跳过中间行或遗漏最底屏
+        var state = DouyinWebExecutor.OpenListScrollState()
+        val s0 = DouyinWebExecutor.decideNextOpenListScrollStep(
+            state = state,
+            scrollRound = 0,
+            probedAtBottom = false,
+            scrollTop = 0,
+            clientHeight = 454,
+            scrollHeight = 2881,
+        )
+        assertTrue(s0.shouldContinue)
+        assertEquals(272, s0.stepPx)
+        state = s0.nextState
+
+        // 2) 当且仅当已经探测过触底屏且高度未再增长时才以 bottom_probed 收敛退出
+        val sBottomGrew = DouyinWebExecutor.decideNextOpenListScrollStep(
+            state = state,
+            scrollRound = 4,
+            probedAtBottom = true,
+            scrollTop = 2427,
+            clientHeight = 454,
+            scrollHeight = 3600,
+        )
+        assertTrue(sBottomGrew.shouldContinue)
+        assertEquals(272, sBottomGrew.stepPx)
+
+        val sBottomDone = DouyinWebExecutor.decideNextOpenListScrollStep(
+            state = sBottomGrew.nextState,
+            scrollRound = 5,
+            probedAtBottom = true,
+            scrollTop = 3146,
+            clientHeight = 454,
+            scrollHeight = 3600,
+        )
+        assertFalse(sBottomDone.shouldContinue)
+        assertEquals("bottom_probed", sBottomDone.stopReason)
+
+        // 3) 连续卡死在相同 scrollTop（非底且无高度增长）2 轮 -> scroll_stuck 安全退出
+        val stuck1 = DouyinWebExecutor.decideNextOpenListScrollStep(
+            state = DouyinWebExecutor.OpenListScrollState(lastScrollTop = 500, maxScrollHeight = 2881),
+            scrollRound = 2,
+            probedAtBottom = false,
+            scrollTop = 500,
+            clientHeight = 454,
+            scrollHeight = 2881,
+        )
+        assertTrue(stuck1.shouldContinue)
+        val stuck2 = DouyinWebExecutor.decideNextOpenListScrollStep(
+            state = stuck1.nextState,
+            scrollRound = 3,
+            probedAtBottom = false,
+            scrollTop = 500,
+            clientHeight = 454,
+            scrollHeight = 2881,
+        )
+        assertFalse(stuck2.shouldContinue)
+        assertEquals("scroll_stuck", stuck2.stopReason)
+
+        // 4) 搜索框清零、React _valueTracker 重置、未读角标标题归一化与底屏指标返回契约
+        val bundle = SelectorBundle.defaults()
+        val clearJs = DouyinJsScripts.buildClearSearchInputIfNonEmptyJs(bundle)
+        assertTrue(clearJs.contains("_valueTracker"))
+        assertTrue(clearJs.contains("semi-input-clearbtn"))
+        val fillJs = DouyinJsScripts.buildFillSearchInputJs(bundle, "测试好友")
+        assertTrue(fillJs.contains("_valueTracker"))
+        assertTrue(fillJs.contains("InputEvent"))
+        val searchJs = DouyinJsScripts.buildSearchAndOpenJs(bundle, "测试好友", 0)
+        assertTrue(searchJs.contains("__flameNormalizeMatchTitle"))
+        assertTrue(searchJs.contains("searchNoResult"))
+        val clickListJs = DouyinJsScripts.buildClickListItemByTitleJs(bundle, "测试好友", 0)
+        assertTrue(clickListJs.contains("__flameNormalizeMatchTitle"))
+        assertTrue(clickListJs.contains("atBottom:"))
+        assertTrue(clickListJs.contains("clientHeight:"))
     }
 
     @Test

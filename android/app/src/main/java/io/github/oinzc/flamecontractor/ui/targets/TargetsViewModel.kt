@@ -1020,8 +1020,10 @@ class TargetsViewModel(
                                             sparkLabel = candidate.sparkLabel,
                                             scannedAt = nowMs,
                                         )
+                                        litUpdates[existing.id] = candidate.sparkLitToday
+                                    } else {
+                                        litUpdates[existing.id] = null
                                     }
-                                    litUpdates[existing.id] = candidate.sparkLitToday
                                     revivedCount++
                                 } else {
                                     if (safeNickname != existing.nicknameSnapshot ||
@@ -1050,8 +1052,10 @@ class TargetsViewModel(
                                             sparkLabel = candidate.sparkLabel,
                                             scannedAt = nowMs,
                                         )
+                                        litUpdates[existing.id] = candidate.sparkLitToday
+                                    } else {
+                                        litUpdates[existing.id] = null
                                     }
-                                    litUpdates[existing.id] = candidate.sparkLitToday
                                     refreshedCount++
                                 }
                             } else {
@@ -1080,8 +1084,10 @@ class TargetsViewModel(
                                         sparkLabel = candidate.sparkLabel,
                                         scannedAt = nowMs,
                                     )
+                                    litUpdates[newId] = candidate.sparkLitToday
+                                } else {
+                                    litUpdates[newId] = null
                                 }
-                                litUpdates[newId] = candidate.sparkLitToday
                                 createdCount++
                             }
                             newlyImportedKeys.add(item.key)
@@ -1744,9 +1750,7 @@ class TargetsViewModel(
         }
 
         fun hasSparkPayload(candidate: ScannedChatCandidate): Boolean =
-            candidate.sparkDays != null ||
-                !candidate.sparkKind.isNullOrBlank() ||
-                !candidate.sparkLabel.isNullOrBlank()
+            ScanReconciliationBuilder.hasOfficialSpark(candidate)
 
         internal fun candidateKey(candidate: ScannedChatCandidate): String =
             buildString {
