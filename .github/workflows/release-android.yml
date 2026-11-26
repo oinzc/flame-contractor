@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 校验全端版本号与 Tag 一致性
         run: |
@@ -30,6 +32,7 @@ jobs:
           else
             python3 scripts/bump_version.py --check
           fi
+          python3 -m unittest discover -s scripts -p "test_*.py" -v
 
       - name: 配置 JDK 17
         uses: actions/setup-java@v4
@@ -43,18 +46,33 @@ jobs:
       - name: 赋予 gradlew 执行权限
         run: chmod +x android/gradlew
 
-      - name: 解析版本号
+      - name: 解析版本号与更新源配置
         id: meta
+        env:
+          RAW_UPDATE_MANIFEST_URL: ${{ vars.FLAME_UPDATE_MANIFEST_URL }}
+          RAW_UPDATE_BASE_URL: ${{ vars.FLAME_UPDATE_BASE_URL }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            VERSION_CODE="$(python3 scripts/android_release_manifest.py --compute-version-code "${VERSION}")"
           else
             SHORT_SHA="$(git rev-parse --short HEAD)"
             VERSION="dev-${SHORT_SHA}"
+            VERSION_CODE="${RUN_NUMBER}"
           fi
+
+          UPDATE_BASE_URL="$(printf '%s' "${RAW_UPDATE_BASE_URL}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's:/*$::')"
+          UPDATE_MANIFEST_URL="$(printf '%s' "${RAW_UPDATE_MANIFEST_URL}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "${UPDATE_MANIFEST_URL}" && -n "${UPDATE_BASE_URL}" ]]; then
+            UPDATE_MANIFEST_URL="${UPDATE_BASE_URL}/android/latest.json"
+          fi
+
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "version_code=${{ github.run_number }}" >> "${GITHUB_OUTPUT}"
+          echo "version_code=${VERSION_CODE}" >> "${GITHUB_OUTPUT}"
+          echo "update_base_url=${UPDATE_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "update_manifest_url=${UPDATE_MANIFEST_URL}" >> "${GITHUB_OUTPUT}"
 
       - name: 发布前契约、单测与 Lint 门禁
         working-directory: android
@@ -69,6 +87,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           FLAME_FEEDBACK_ENDPOINT: ${{ vars.FLAME_FEEDBACK_ENDPOINT }}
+          FLAME_UPDATE_MANIFEST_URL: ${{ steps.meta.outputs.update_manifest_url }}
           VERSION_NAME: ${{ steps.meta.outputs.version }}
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
         run: |
@@ -114,16 +133,107 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: 附加已签名 Release APK 到 GitHub Release（仅 Tag 且已配置签名密钥）
+      - name: 发布签名 APK 与 latest.json 到 GitHub Release（仅 Tag 且已配置签名密钥）
         if: startsWith(github.ref, 'refs/tags/v') && steps.build_apk.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
+          FLAME_UPDATE_BASE_URL: ${{ steps.meta.outputs.update_base_url }}
+          FLAME_UPDATE_MIN_VERSION_CODE: ${{ vars.FLAME_UPDATE_MIN_VERSION_CODE }}
         run: |
           set -euo pipefail
+          APK_FILENAME="FlameContractor-${VERSION}-android-universal-release.apk"
+          APK_PATH="android/build-dist/${APK_FILENAME}"
+          MANIFEST_PATH="android/build-dist/latest.json"
+          NOTES_FILE="${RUNNER_TEMP}/android-release-notes.md"
+
           if ! gh release view "${TAG}" >/dev/null 2>&1; then
             gh release create "${TAG}" --generate-notes || gh release view "${TAG}" >/dev/null 2>&1
           fi
-          for apk in android/build-dist/*-release.apk; do
-            gh release upload "${TAG}" "${apk}" --clobber
-          done
+
+          gh release upload "${TAG}" "${APK_PATH}" --clobber
+
+          RELEASE_BODY="$(gh release view "${TAG}" --json body -q .body || true)"
+          if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
+            PREV_TAG="$(git describe --tags --match "v*" --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+            if [[ -n "${PREV_TAG}" ]]; then
+              RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s' -n 30 || true)"
+              if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
+                RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --pretty=format:'- %s' -n 30 || true)"
+              fi
+            else
+              RELEASE_BODY="$(git log -n 20 --no-merges --pretty=format:'- %s' || true)"
+            fi
+          fi
+          printf '%s\n' "${RELEASE_BODY}" > "${NOTES_FILE}"
+
+          MIN_VERSION_CODE="$(printf '%s' "${FLAME_UPDATE_MIN_VERSION_CODE:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "${MIN_VERSION_CODE}" ]]; then
+            MIN_VERSION_CODE="0"
+          fi
+
+          if [[ -n "${FLAME_UPDATE_BASE_URL}" ]]; then
+            MANIFEST_BASE_URL="${FLAME_UPDATE_BASE_URL}"
+            APK_OBJECT_KEY="android/releases/${APK_FILENAME}"
+          else
+            MANIFEST_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+            APK_OBJECT_KEY="${APK_FILENAME}"
+          fi
+
+          python3 scripts/android_release_manifest.py --build-manifest \
+            --apk "${APK_PATH}" \
+            --version-name "${VERSION}" \
+            --version-code "${VERSION_CODE}" \
+            --base-url "${MANIFEST_BASE_URL}" \
+            --apk-object-key "${APK_OBJECT_KEY}" \
+            --release-page-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            --changelog-file "${NOTES_FILE}" \
+            --min-version-code "${MIN_VERSION_CODE}" \
+            --output "${MANIFEST_PATH}"
+
+          gh release upload "${TAG}" "${MANIFEST_PATH}" --clobber
+
+      - name: 同步上传签名 APK 与 latest.json 到 Cloudflare R2（可选）
+        if: startsWith(github.ref, 'refs/tags/v') && steps.build_apk.outputs.signed == 'true'
+        env:
+          CF_R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+          FLAME_UPDATE_BASE_URL: ${{ steps.meta.outputs.update_base_url }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CF_R2_ACCOUNT_ID}" || -z "${CF_R2_ACCESS_KEY_ID}" || -z "${CF_R2_SECRET_ACCESS_KEY}" || -z "${CF_R2_BUCKET}" || -z "${FLAME_UPDATE_BASE_URL}" ]]; then
+            echo "::notice::未检测到完整的 Cloudflare R2 Secrets（CF_R2_*）或 FLAME_UPDATE_BASE_URL 变量，本次优雅跳过 R2 同步上传，不影响 GitHub Release 发布。"
+            exit 0
+          fi
+
+          APK_FILENAME="FlameContractor-${VERSION}-android-universal-release.apk"
+          APK_PATH="android/build-dist/${APK_FILENAME}"
+          MANIFEST_PATH="android/build-dist/latest.json"
+          R2_ENDPOINT="https://${CF_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          export AWS_ACCESS_KEY_ID="${CF_R2_ACCESS_KEY_ID}"
+          export AWS_SECRET_ACCESS_KEY="${CF_R2_SECRET_ACCESS_KEY}"
+          export AWS_DEFAULT_REGION="auto"
+          export AWS_EC2_METADATA_DISABLED="true"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
+
+          # 必须先上传 APK 再覆盖 latest.json，避免客户端读到新清单时 APK 尚未就绪
+          aws s3 cp "${APK_PATH}" \
+            "s3://${CF_R2_BUCKET}/android/releases/${APK_FILENAME}" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --content-type "application/vnd.android.package-archive" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --no-progress
+
+          aws s3 cp "${MANIFEST_PATH}" \
+            "s3://${CF_R2_BUCKET}/android/latest.json" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "no-cache, max-age=60" \
+            --no-progress
