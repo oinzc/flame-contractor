@@ -27,6 +27,7 @@ import io.github.oinzc.flamecontractor.domain.AuthProbeOutcome
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,7 +73,7 @@ class DouyinJsScriptsTest {
     }
 
     @Test
-    fun flameBridgeChunkedProtoAndIndexedDbGroupIngestionValidateStrictlyAndDetectAmbiguity() = runTest {
+    fun flameBridgeChunkedProtoAndIndexedDbGroupIngestionValidateStrictlyAndDetectAmbiguity() = runBlocking {
         val store = DouyinWebExecutor.IdentityStore()
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
