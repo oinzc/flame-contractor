@@ -3,6 +3,9 @@ package io.github.oinzc.flamecontractor.ui.targets
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -12,19 +15,16 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
@@ -32,7 +32,6 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -43,31 +42,35 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
-import androidx.core.view.WindowInsetsControllerCompat
 import io.github.oinzc.flamecontractor.core.identity.MatchStatus
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.execution.ScannedChatCandidate
@@ -81,6 +84,26 @@ import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * 拦截底部弹窗内容区内列表回弹与惯性滑动向上冒泡给 ModalBottomSheet，
+ * 确保用户在列表或筛选区任意上下滑动时都不会把弹窗误拖下去。
+ */
+private object BlockSheetDragNestedScrollConnection : NestedScrollConnection {
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource,
+    ): Offset = Offset(x = 0f, y = available.y)
+
+    override suspend fun onPostFling(
+        consumed: Velocity,
+        available: Velocity,
+    ): Velocity = Velocity(x = 0f, y = available.y)
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -99,357 +122,328 @@ fun ScanReconcileSheet(
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val isDark = FlameThemeTokens.isDark
+    val importingState by rememberUpdatedState(reconcileState.importing)
+    val gestureScope = rememberCoroutineScope()
+    var dragStartedOnHandle by remember { mutableStateOf(false) }
+    var handleResetJob by remember { mutableStateOf<Job?>(null) }
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { targetValue ->
+            if (targetValue == SheetValue.Hidden) {
+                !importingState && dragStartedOnHandle
+            } else {
+                true
+            }
+        },
+    )
     var templateMenuExpanded by remember { mutableStateOf(false) }
     val selectedTemplateName = remember(reconcileState.defaultTemplateId, templates) {
         templates.firstOrNull { it.id == reconcileState.defaultTemplateId }?.name
     }
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
-    val maxModalHeight = (screenHeightDp * 0.92f).coerceAtLeast(360f).dp
-    val scrimColor = Color.Black.copy(alpha = if (isDark) 0.68f else 0.42f)
+    val maxSheetContentHeight = (screenHeightDp * 0.88f).coerceAtLeast(280f).dp
+    val contentDragAbsorberState = rememberDraggableState {}
 
-    Dialog(
+    ModalBottomSheet(
         onDismissRequest = { if (!reconcileState.importing) onDismiss() },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-            dismissOnBackPress = !reconcileState.importing,
-            dismissOnClickOutside = false,
+        sheetState = sheetState,
+        sheetMaxWidth = 760.dp,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        containerColor = palette.surface,
+        contentColor = palette.ink,
+        scrimColor = Color.Black.copy(alpha = if (isDark) 0.62f else 0.36f),
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+        properties = ModalBottomSheetProperties(
+            shouldDismissOnBackPress = !reconcileState.importing,
         ),
-    ) {
-        val dialogView = LocalView.current
-        SideEffect {
-            val window = (dialogView.parent as? DialogWindowProvider)?.window
-            if (window != null) {
-                val controller = WindowInsetsControllerCompat(window, dialogView)
-                controller.isAppearanceLightStatusBars = !isDark
-                controller.isAppearanceLightNavigationBars = !isDark
-            }
-        }
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            val isWideModal = maxWidth >= 600.dp
-
-            val contentBody: @Composable (Modifier) -> Unit = { containerModifier ->
-                Column(
-                    modifier = containerModifier,
-                ) {
-                    // 固定顶栏：标题、扫描统计与显式关闭按钮（不可拖拽下滑关闭，彻底避免与长列表滚动手势冲突）
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                start = 18.dp,
-                                end = 14.dp,
-                                top = if (isWideModal) 16.dp else 12.dp,
-                                bottom = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Text(
-                                text = "扫描对账与导入",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = palette.ink,
-                            )
-                            val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
-                            val litCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == true }
-                            val grayCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == false }
-                            val litBreakdown = if (litCount > 0 || grayCount > 0) {
-                                "（今日已亮 $litCount / 待续 $grayCount）"
-                            } else {
-                                ""
-                            }
-                            Text(
-                                text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条$litBreakdown · $timeStr",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.inkSecondary,
-                            )
-                        }
-
-                        Surface(
-                            onClick = { if (!reconcileState.importing) onDismiss() },
-                            enabled = !reconcileState.importing,
-                            shape = CircleShape,
-                            color = palette.surfaceSubtle,
-                            contentColor = if (reconcileState.importing) palette.inkTertiary else palette.ink,
-                            border = BorderStroke(1.dp, palette.hairline),
-                            modifier = Modifier
-                                .size(38.dp)
-                                .semantics {
-                                    role = Role.Button
-                                    contentDescription = "关闭扫描对账"
-                                },
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(thickness = 1.dp, color = palette.hairline)
-
-                    // 筛选与批量选择控制区
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (reconcileState.errorMessage != null) {
-                            Surface(
-                                color = semantics.dangerContainer,
-                                border = BorderStroke(1.dp, semantics.dangerBorder),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    text = reconcileState.errorMessage,
-                                    color = semantics.onDangerContainer,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(12.dp),
-                                )
-                            }
-                        }
-
-                        if (isWideModal) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                FlameSearchPill(
-                                    query = reconcileState.searchQuery,
-                                    onQueryChange = onSearchChanged,
-                                    placeholder = "搜索昵称、群名、抖音号或火花天数…",
-                                    modifier = Modifier.weight(1f),
-                                )
-                                ReconcileTemplateSelector(
-                                    selectedTemplateName = selectedTemplateName,
-                                    templates = templates,
-                                    expanded = templateMenuExpanded,
-                                    onExpandedChange = { templateMenuExpanded = it },
-                                    onDefaultTemplateChanged = onDefaultTemplateChanged,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                        } else {
-                            FlameSearchPill(
-                                query = reconcileState.searchQuery,
-                                onQueryChange = onSearchChanged,
-                                placeholder = "搜索昵称、群名、抖音号或火花天数…",
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            ReconcileTemplateSelector(
-                                selectedTemplateName = selectedTemplateName,
-                                templates = templates,
-                                expanded = templateMenuExpanded,
-                                onExpandedChange = { templateMenuExpanded = it },
-                                onDefaultTemplateChanged = onDefaultTemplateChanged,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            FlameTopPillButton(
-                                text = "全选可导入火花 (${reconcileState.importableSparkCount})",
-                                primary = false,
-                                enabled = reconcileState.importableSparkCount > 0 && !reconcileState.importing,
-                                onClick = onSelectAllImportableSparks,
-                            )
-                            FlameTopPillButton(
-                                text = "清空选择",
-                                primary = false,
-                                enabled = reconcileState.selectedCount > 0 && !reconcileState.importing,
-                                onClick = onClearSelection,
-                            )
-                            if (reconcileState.alreadyImportedWithSparkCount > 0) {
-                                FlameTopPillButton(
-                                    text = "同步已有火花 (${reconcileState.alreadyImportedWithSparkCount})",
-                                    primary = false,
-                                    enabled = !reconcileState.importing,
-                                    onClick = onSyncExistingSparks,
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(thickness = 1.dp, color = palette.hairline)
-
-                    // 候选列表独占中间可滚区域，手机端全屏展开，平板端按剩余高度伸缩
-                    if (reconcileState.filteredCandidates.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = !isWideModal)
-                                .padding(horizontal = 18.dp, vertical = 28.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = if (reconcileState.allCandidates.isEmpty()) {
-                                    "暂无扫描对账数据，请先点击「扫描对账」重新扫描"
-                                } else {
-                                    "没有匹配当前搜索关键词的会话"
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = palette.inkSecondary,
-                            )
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = !isWideModal),
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(
-                                items = reconcileState.filteredCandidates,
-                                key = { it.key },
-                            ) { item ->
-                                ScanCandidateRow(
-                                    item = item,
-                                    busy = reconcileState.importing,
-                                    onToggle = { onToggleCandidate(item.candidate) },
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(thickness = 1.dp, color = palette.hairline)
-
-                    // 固定底部提交操作栏
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(
-                            onClick = onDismiss,
-                            enabled = !reconcileState.importing,
-                            modifier = Modifier.heightIn(min = 44.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            color = palette.surfaceSubtle,
-                            contentColor = if (reconcileState.importing) palette.inkTertiary else palette.ink,
-                            border = BorderStroke(1.dp, palette.hairline),
-                        ) {
-                            Box(
-                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = "关闭",
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
-                            }
-                        }
-
-                        val importEnabled = reconcileState.selectedCount > 0 && !reconcileState.importing
-                        Surface(
-                            onClick = onImportSelected,
-                            enabled = importEnabled,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 44.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (importEnabled) {
-                                palette.monoCtaContainer
-                            } else {
-                                palette.surfaceSubtle
-                            },
-                            contentColor = if (importEnabled) {
-                                palette.monoCtaContent
-                            } else {
-                                palette.inkTertiary
-                            },
-                            border = BorderStroke(
-                                1.dp,
-                                if (importEnabled) palette.monoCtaContainer else palette.hairline,
-                            ),
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                            ) {
-                                if (reconcileState.importing) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(15.dp),
-                                        strokeWidth = 2.dp,
-                                        color = palette.inkTertiary,
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "导入中…",
-                                        style = MaterialTheme.typography.labelLarge,
-                                    )
-                                } else {
-                                    Text(
-                                        text = "导入所选 (${reconcileState.selectedCount})",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val anyPressed = event.changes.any { it.pressed }
+                                if (anyPressed) {
+                                    handleResetJob?.cancel()
+                                    dragStartedOnHandle = true
+                                } else if (dragStartedOnHandle) {
+                                    handleResetJob?.cancel()
+                                    handleResetJob = gestureScope.launch {
+                                        delay(450L)
+                                        dragStartedOnHandle = false
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-
-            if (isWideModal) {
+                    .padding(top = 12.dp, bottom = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(scrimColor)
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                        .imePadding()
-                        .padding(horizontal = 24.dp, vertical = 20.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Surface(
-                        color = palette.surface,
-                        contentColor = palette.ink,
-                        shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, palette.hairline),
-                        shadowElevation = 6.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = 760.dp)
-                            .heightIn(max = maxModalHeight),
-                    ) {
-                        contentBody(Modifier.fillMaxWidth())
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(palette.hairlineStrong),
+                )
+            }
+        },
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxSheetContentHeight)
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.any { it.pressed }) {
+                                handleResetJob?.cancel()
+                                dragStartedOnHandle = false
+                            }
+                        }
                     }
                 }
-            } else {
-                Surface(
-                    color = palette.surface,
-                    contentColor = palette.ink,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    contentBody(
-                        Modifier
-                            .fillMaxSize()
-                            .statusBarsPadding()
-                            .navigationBarsPadding()
-                            .imePadding(),
+                .nestedScroll(BlockSheetDragNestedScrollConnection)
+                .draggable(
+                    state = contentDragAbsorberState,
+                    orientation = Orientation.Vertical,
+                )
+                .imePadding()
+                .navigationBarsPadding(),
+        ) {
+            val isWideSheet = maxWidth >= 520.dp
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // 标题与扫描统计
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = "扫描对账与导入",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = palette.ink,
                     )
+                    val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
+                    val litCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == true }
+                    val grayCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == false }
+                    val litBreakdown = if (litCount > 0 || grayCount > 0) {
+                        "（今日已亮 $litCount / 待续 $grayCount）"
+                    } else {
+                        ""
+                    }
+                    Text(
+                        text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条$litBreakdown · $timeStr",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                    )
+                }
+
+                if (reconcileState.errorMessage != null) {
+                    Surface(
+                        color = semantics.dangerContainer,
+                        border = BorderStroke(1.dp, semantics.dangerBorder),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = reconcileState.errorMessage,
+                            color = semantics.onDangerContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                }
+
+                // 宽屏（横屏/平板）将搜索栏与默认模板选择器并排放置，节省纵向高度让列表与底栏同步可见
+                if (isWideSheet) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlameSearchPill(
+                            query = reconcileState.searchQuery,
+                            onQueryChange = onSearchChanged,
+                            placeholder = "搜索昵称、群名、抖音号或火花天数…",
+                            modifier = Modifier.weight(1f),
+                        )
+                        ReconcileTemplateSelector(
+                            selectedTemplateName = selectedTemplateName,
+                            templates = templates,
+                            expanded = templateMenuExpanded,
+                            onExpandedChange = { templateMenuExpanded = it },
+                            onDefaultTemplateChanged = onDefaultTemplateChanged,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                } else {
+                    FlameSearchPill(
+                        query = reconcileState.searchQuery,
+                        onQueryChange = onSearchChanged,
+                        placeholder = "搜索昵称、群名、抖音号或火花天数…",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    ReconcileTemplateSelector(
+                        selectedTemplateName = selectedTemplateName,
+                        templates = templates,
+                        expanded = templateMenuExpanded,
+                        onExpandedChange = { templateMenuExpanded = it },
+                        onDefaultTemplateChanged = onDefaultTemplateChanged,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FlameTopPillButton(
+                        text = "全选可导入火花 (${reconcileState.importableSparkCount})",
+                        primary = false,
+                        enabled = reconcileState.importableSparkCount > 0 && !reconcileState.importing,
+                        onClick = onSelectAllImportableSparks,
+                    )
+                    FlameTopPillButton(
+                        text = "清空选择",
+                        primary = false,
+                        enabled = reconcileState.selectedCount > 0 && !reconcileState.importing,
+                        onClick = onClearSelection,
+                    )
+                    if (reconcileState.alreadyImportedWithSparkCount > 0) {
+                        FlameTopPillButton(
+                            text = "同步已有火花 (${reconcileState.alreadyImportedWithSparkCount})",
+                            primary = false,
+                            enabled = !reconcileState.importing,
+                            onClick = onSyncExistingSparks,
+                        )
+                    }
+                }
+
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+                // 候选列表按剩余可用高度自适应伸缩，确保底部按钮栏始终锚定可见
+                if (reconcileState.filteredCandidates.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .padding(vertical = 22.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (reconcileState.allCandidates.isEmpty()) {
+                                "暂无扫描对账数据，请先点击「扫描对账」重新扫描"
+                            } else {
+                                "没有匹配当前搜索关键词的会话"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false),
+                        contentPadding = PaddingValues(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(
+                            items = reconcileState.filteredCandidates,
+                            key = { it.key },
+                        ) { item ->
+                            ScanCandidateRow(
+                                item = item,
+                                busy = reconcileState.importing,
+                                onToggle = { onToggleCandidate(item.candidate) },
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+                // 底部提交操作栏
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        onClick = onDismiss,
+                        enabled = !reconcileState.importing,
+                        modifier = Modifier.heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = palette.surfaceSubtle,
+                        contentColor = if (reconcileState.importing) palette.inkTertiary else palette.ink,
+                        border = BorderStroke(1.dp, palette.hairline),
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "关闭",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+
+                    val importEnabled = reconcileState.selectedCount > 0 && !reconcileState.importing
+                    Surface(
+                        onClick = onImportSelected,
+                        enabled = importEnabled,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (importEnabled) {
+                            palette.monoCtaContainer
+                        } else {
+                            palette.surfaceSubtle
+                        },
+                        contentColor = if (importEnabled) {
+                            palette.monoCtaContent
+                        } else {
+                            palette.inkTertiary
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (importEnabled) palette.monoCtaContainer else palette.hairline,
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (reconcileState.importing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(15.dp),
+                                    strokeWidth = 2.dp,
+                                    color = palette.inkTertiary,
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "导入中…",
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            } else {
+                                Text(
+                                    text = "导入所选 (${reconcileState.selectedCount})",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
