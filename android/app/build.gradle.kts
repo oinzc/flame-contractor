@@ -26,6 +26,18 @@ val escapedFeedbackEndpoint = requestedFeedbackEndpoint
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
 
+val requestedUpdateManifestUrl = (
+    (project.findProperty("updateManifestUrl") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv("FLAME_UPDATE_MANIFEST_URL")?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv("FLAME_UPDATE_BASE_URL")?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { base -> "${base.trimEnd('/')}/android/latest.json" }
+        ?: localProps.getProperty("update.manifest.url")?.trim()?.takeIf { it.isNotEmpty() }
+        ?: ""
+)
+val escapedUpdateManifestUrl = requestedUpdateManifestUrl
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
 val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
 val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
@@ -47,6 +59,7 @@ android {
         versionCode = requestedVersionCode
         versionName = requestedVersionName
         buildConfigField("String", "FEEDBACK_ENDPOINT", "\"$escapedFeedbackEndpoint\"")
+        buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }
 
     signingConfigs {
@@ -76,6 +89,8 @@ android {
                 "FEEDBACK_ENDPOINT",
                 "\"https://feedback-demo.invalid/v1/submit\"",
             )
+            // 演示变体显式清空更新源，禁止发起任何版本检查网络请求
+            buildConfigField("String", "UPDATE_MANIFEST_URL", "\"\"")
         }
         release {
             isMinifyEnabled = false

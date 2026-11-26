@@ -1,6 +1,7 @@
 package io.github.oinzc.flamecontractor.app
 
 import android.content.Context
+import io.github.oinzc.flamecontractor.BuildConfig
 import io.github.oinzc.flamecontractor.core.account.AccountManager
 import io.github.oinzc.flamecontractor.core.account.ActiveAccountStore
 import io.github.oinzc.flamecontractor.core.account.PendingProfileCleanupStore
@@ -17,6 +18,8 @@ import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
 import io.github.oinzc.flamecontractor.core.theme.ThemePreferencesStore
+import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
+import io.github.oinzc.flamecontractor.core.update.AppUpdatePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.domain.AccountHealthReducer
 import io.github.oinzc.flamecontractor.domain.LocalStreakCounter
@@ -56,6 +59,16 @@ class AppContainer(context: Context) {
     val activeAccountStore: ActiveAccountStore = ActiveAccountStore.fromContext(appContext)
     val themePreferencesStore: ThemePreferencesStore = ThemePreferencesStore.fromContext(appContext)
     val setupOnboardingStore: SetupOnboardingStore = SetupOnboardingStore.fromContext(appContext)
+    val appUpdatePreferencesStore: AppUpdatePreferencesStore =
+        AppUpdatePreferencesStore.fromContext(appContext)
+    val appUpdateManager: AppUpdateManager = AppUpdateManager(
+        preferencesStore = appUpdatePreferencesStore,
+        manifestUrlProvider = { BuildConfig.UPDATE_MANIFEST_URL },
+        currentVersionName = BuildConfig.VERSION_NAME,
+        currentVersionCode = BuildConfig.VERSION_CODE.toLong(),
+        isDebugVariant = BuildConfig.DEBUG,
+        cacheDir = appContext.cacheDir,
+    )
     val accountManager: AccountManager = AccountManager(
         database = database,
         activeAccountStore = activeAccountStore,
@@ -107,6 +120,9 @@ class AppContainer(context: Context) {
             )
             runCatching {
                 diagnosticScreenshotStore.pruneExpiredAndExcess()
+            }
+            runCatching {
+                appUpdateManager.cleanupStaleApks()
             }
         }
     }
