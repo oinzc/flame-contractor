@@ -58,6 +58,7 @@ import io.github.oinzc.flamecontractor.execution.login.QrConnectStatus
 import io.github.oinzc.flamecontractor.execution.login.QrVisualStage
 import io.github.oinzc.flamecontractor.execution.webview.DesktopWebViewFactory
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.ProvideFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.login.AccountSwitchPromptState
 import io.github.oinzc.flamecontractor.ui.login.LoginScreen
 import io.github.oinzc.flamecontractor.ui.login.LoginScreenState
@@ -295,20 +296,22 @@ class LoginWebViewActivity : AppCompatActivity() {
             }
 
             FlameTheme(preference = preference) {
-                LoginScreen(
-                    state = screenState,
-                    webView = webView,
-                    snackbarHostState = snackbarHostState,
-                    onBack = { finish() },
-                    onToggleDisplayMode = ::toggleDisplayMode,
-                    onRefreshQr = ::handleRefreshQrClick,
-                    onLaunchDouyinConfirm = ::handleLaunchDouyinConfirm,
-                    onSaveQrAndScan = ::handleSaveQrAndScanClick,
-                    onOpenSmsWebLogin = ::handleOpenSmsWebLogin,
-                    onProbeLoginNow = { triggerSingleLoginProbe(userInitiated = true) },
-                    onClearCacheAndReload = ::handleClearCacheAndReload,
-                    onConfirmAccountSwitch = ::applyAccountSwitchDecision,
-                )
+                ProvideFlameWindowLayout {
+                    LoginScreen(
+                        state = screenState,
+                        webView = webView,
+                        snackbarHostState = snackbarHostState,
+                        onBack = { finish() },
+                        onToggleDisplayMode = ::toggleDisplayMode,
+                        onRefreshQr = ::handleRefreshQrClick,
+                        onLaunchDouyinConfirm = ::handleLaunchDouyinConfirm,
+                        onSaveQrAndScan = ::handleSaveQrAndScanClick,
+                        onOpenSmsWebLogin = ::handleOpenSmsWebLogin,
+                        onProbeLoginNow = { triggerSingleLoginProbe(userInitiated = true) },
+                        onClearCacheAndReload = ::handleClearCacheAndReload,
+                        onConfirmAccountSwitch = ::applyAccountSwitchDecision,
+                    )
+                }
             }
         }
 

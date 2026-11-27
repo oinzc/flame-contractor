@@ -174,6 +174,7 @@ internal fun SettingsAppearancePage(
     onSelectThemeMode: (ThemeMode) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
     onSelectDisplayMode: (UiDisplayMode) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -319,8 +320,12 @@ internal fun SettingsAppearancePage(
         onBack = onBack,
         snackbarHostState = snackbarHostState,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 当前生效外观预览条
             FlameCard(contentPadding = PaddingValues(15.dp)) {
                 Row(

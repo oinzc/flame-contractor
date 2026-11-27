@@ -65,6 +65,7 @@ internal fun SettingsBackupPage(
     onDismissBackupPreview: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
     val busy = isBackupSafBusy ||
@@ -76,8 +77,12 @@ internal fun SettingsBackupPage(
         title = SettingsSection.BACKUP.title,
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 脱敏说明与互迁范围
             FlameCard(contentPadding = PaddingValues(15.dp)) {
                 Row(

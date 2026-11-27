@@ -17,15 +17,20 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -77,12 +82,14 @@ import io.github.oinzc.flamecontractor.core.storage.TemplateImageStoreUtils
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -118,6 +125,8 @@ fun TemplateEditorScreen(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val layout = LocalFlameWindowLayout.current
+    val maxContentWidth = if (layout.formFactor == FlameFormFactor.TABLET_LANDSCAPE) 820.dp else 680.dp
     val canSave = !busy &&
         !editor.isImportingImage &&
         (editor.type != TemplateType.IMAGE || editor.imageAvailable)
@@ -150,15 +159,19 @@ fun TemplateEditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                 .imePadding(),
             contentAlignment = Alignment.TopCenter,
         ) {
             Column(
                 modifier = Modifier
-                    .widthIn(max = 680.dp)
+                    .widthIn(max = maxContentWidth)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .padding(
+                        horizontal = layout.horizontalGutter,
+                        vertical = if (layout.isShortLandscape) 10.dp else 14.dp,
+                    ),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 if (editor.errorMessage != null) {

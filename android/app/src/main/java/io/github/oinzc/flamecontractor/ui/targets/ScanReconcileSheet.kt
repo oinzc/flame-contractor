@@ -36,10 +36,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -103,6 +105,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.components.officialSparkKindFullLabel
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
@@ -223,6 +226,8 @@ fun ScanReconcileSheet(
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val isDark = FlameThemeTokens.isDark
+    val layout = LocalFlameWindowLayout.current
+    val useCenterDialog = layout.useCenterDialogForSheets
     val reducedMotion = rememberReducedMotion()
     val density = LocalDensity.current
     val sheetScope = rememberCoroutineScope()
@@ -234,14 +239,18 @@ fun ScanReconcileSheet(
         templates.firstOrNull { it.id == reconcileState.defaultTemplateId }?.name
     }
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
-    val maxSheetHeight = (screenHeightDp * 0.88f).coerceAtLeast(320f).dp
+    val maxSheetHeight = if (useCenterDialog) {
+        (screenHeightDp * 0.86f).coerceAtLeast(300f).dp
+    } else {
+        (screenHeightDp * 0.88f).coerceAtLeast(320f).dp
+    }
 
     var sheetHeightPx by remember { mutableFloatStateOf(0f) }
     var dismissing by remember { mutableStateOf(false) }
     val entryProgress = remember { Animatable(if (reducedMotion) 1f else 0f) }
     val dragOffsetY = remember { Animatable(0f) }
 
-    val entrySlidePx = with(density) { 44.dp.toPx() }
+    val entrySlidePx = with(density) { if (useCenterDialog) 20.dp.toPx() else 44.dp.toPx() }
     val dismissMinPx = with(density) { 96.dp.toPx() }
     val dismissMaxPx = with(density) { 180.dp.toPx() }
     val flingVelocityThresholdPx = with(density) { 750.dp.toPx() }
@@ -265,6 +274,19 @@ fun ScanReconcileSheet(
         dismissing = true
         if (reducedMotion) {
             onDismissState()
+            return
+        }
+        if (useCenterDialog) {
+            sheetScope.launch {
+                entryProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(
+                        durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                        easing = FlameMotionSpec.easeOut,
+                    ),
+                )
+                onDismissState()
+            }
             return
         }
         sheetScope.launch {
@@ -318,84 +340,120 @@ fun ScanReconcileSheet(
         val dragFraction = (dragOffsetY.value / dismissDenom).coerceIn(0f, 1f)
         val baseScrimAlpha = if (isDark) 0.62f else 0.36f
         val effectiveScrimAlpha = baseScrimAlpha * entryProgress.value * (1f - dragFraction)
+        val dialogHPadding = if (layout.isShortLandscape) 20.dp else 24.dp
+        val dialogVPadding = if (layout.isShortLandscape) 12.dp else 20.dp
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = effectiveScrimAlpha)),
-            contentAlignment = Alignment.BottomCenter,
+            contentAlignment = if (useCenterDialog) Alignment.Center else Alignment.BottomCenter,
         ) {
-            // 底部弹窗外观与原版一致，但弹窗主体本身不挂载任何拖拽或嵌套滚动关闭手势，
-            // 仅顶部横条区域支持下拉关闭，彻底杜绝列表、搜索栏或下拉框滑动时的误触。
+            // 手机竖屏保留底部弹窗 + 仅顶部横条可下拉关闭的防误滑逻辑；
+            // 平板横/竖屏与手机横屏切换为居中圆角大浮层，无拖拽手势，仅通过标题关闭钮/取消按钮/返回键关闭。
             Surface(
-                shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+                shape = if (useCenterDialog) {
+                    RoundedCornerShape(24.dp)
+                } else {
+                    RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
+                },
                 color = palette.surface,
                 contentColor = palette.ink,
-                shadowElevation = 6.dp,
+                border = if (useCenterDialog) BorderStroke(1.dp, palette.hairlineStrong) else null,
+                shadowElevation = if (useCenterDialog) {
+                    if (isDark) 18.dp else 14.dp
+                } else {
+                    6.dp
+                },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 760.dp)
+                    .then(
+                        if (useCenterDialog) {
+                            Modifier
+                                .imePadding()
+                                .padding(horizontal = dialogHPadding, vertical = dialogVPadding)
+                                .widthIn(max = 780.dp)
+                                .fillMaxWidth()
+                        } else {
+                            Modifier
+                                .widthIn(max = 760.dp)
+                                .fillMaxWidth()
+                        },
+                    )
                     .heightIn(max = maxSheetHeight)
                     .onSizeChanged { sheetHeightPx = it.height.toFloat() }
                     .graphicsLayer {
-                        translationY = dragOffsetY.value + (1f - entryProgress.value) * entrySlidePx
-                        alpha = if (reducedMotion) 1f else (0.65f + 0.35f * entryProgress.value)
+                        if (useCenterDialog) {
+                            translationY = (1f - entryProgress.value) * entrySlidePx
+                            alpha = if (reducedMotion) 1f else entryProgress.value
+                        } else {
+                            translationY = dragOffsetY.value + (1f - entryProgress.value) * entrySlidePx
+                            alpha = if (reducedMotion) 1f else (0.65f + 0.35f * entryProgress.value)
+                        }
                     },
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .imePadding()
-                        .navigationBarsPadding(),
+                        .then(
+                            if (useCenterDialog) {
+                                Modifier
+                            } else {
+                                Modifier
+                                    .imePadding()
+                                    .navigationBarsPadding()
+                            },
+                        ),
                 ) {
-                    // 仅此顶部横条严格自身边界内支持下拉关闭（不使用会扩展 48dp 隐形热区的 draggable，
-                    // 避免向下渗入「扫描对账与导入」标题区域）
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentDescription = "向下拖动顶部横条关闭扫描对账" }
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown(requireUnconsumed = false)
-                                    if (importingState || dismissingState) return@awaitEachGesture
-                                    if (down.position.y < 0f || down.position.y > size.height.toFloat()) {
-                                        return@awaitEachGesture
-                                    }
-                                    val tracker = VelocityTracker()
-                                    tracker.addPosition(down.uptimeMillis, down.position)
-                                    var started = false
-                                    val drag = awaitVerticalTouchSlopOrCancellation(down.id) { change, over ->
-                                        change.consume()
-                                        started = true
-                                        tracker.addPosition(change.uptimeMillis, change.position)
-                                        val next = (dragOffsetY.value + over).coerceAtLeast(0f)
-                                        sheetScope.launch { dragOffsetY.snapTo(next) }
-                                    }
-                                    if (drag != null) {
-                                        verticalDrag(drag.id) { change ->
-                                            val dy = change.positionChange().y
-                                            if (dy != 0f) {
-                                                change.consume()
-                                                tracker.addPosition(change.uptimeMillis, change.position)
-                                                val next = (dragOffsetY.value + dy).coerceAtLeast(0f)
-                                                sheetScope.launch { dragOffsetY.snapTo(next) }
-                                            }
-                                        }
-                                        settleHandleDrag(tracker.calculateVelocity().y)
-                                    } else if (started) {
-                                        settleHandleDrag(0f)
-                                    }
-                                }
-                            }
-                            .padding(top = 14.dp, bottom = 10.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                    if (!useCenterDialog) {
+                        // 仅此顶部横条严格自身边界内支持下拉关闭（不使用会扩展 48dp 隐形热区的 draggable，
+                        // 避免向下渗入「扫描对账与导入」标题区域）
                         Box(
                             modifier = Modifier
-                                .size(width = 40.dp, height = 4.dp)
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(palette.hairlineStrong),
-                        )
+                                .fillMaxWidth()
+                                .semantics { contentDescription = "向下拖动顶部横条关闭扫描对账" }
+                                .pointerInput(Unit) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        if (importingState || dismissingState) return@awaitEachGesture
+                                        if (down.position.y < 0f || down.position.y > size.height.toFloat()) {
+                                            return@awaitEachGesture
+                                        }
+                                        val tracker = VelocityTracker()
+                                        tracker.addPosition(down.uptimeMillis, down.position)
+                                        var started = false
+                                        val drag = awaitVerticalTouchSlopOrCancellation(down.id) { change, over ->
+                                            change.consume()
+                                            started = true
+                                            tracker.addPosition(change.uptimeMillis, change.position)
+                                            val next = (dragOffsetY.value + over).coerceAtLeast(0f)
+                                            sheetScope.launch { dragOffsetY.snapTo(next) }
+                                        }
+                                        if (drag != null) {
+                                            verticalDrag(drag.id) { change ->
+                                                val dy = change.positionChange().y
+                                                if (dy != 0f) {
+                                                    change.consume()
+                                                    tracker.addPosition(change.uptimeMillis, change.position)
+                                                    val next = (dragOffsetY.value + dy).coerceAtLeast(0f)
+                                                    sheetScope.launch { dragOffsetY.snapTo(next) }
+                                                }
+                                            }
+                                            settleHandleDrag(tracker.calculateVelocity().y)
+                                        } else if (started) {
+                                            settleHandleDrag(0f)
+                                        }
+                                    }
+                                }
+                                .padding(top = 14.dp, bottom = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 40.dp, height = 4.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(palette.hairlineStrong),
+                            )
+                        }
                     }
 
                     BoxWithConstraints(
@@ -406,29 +464,62 @@ fun ScanReconcileSheet(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 16.dp),
+                                .padding(
+                                    start = if (useCenterDialog) 22.dp else 18.dp,
+                                    end = if (useCenterDialog) 22.dp else 18.dp,
+                                    top = if (useCenterDialog) 18.dp else 2.dp,
+                                    bottom = if (useCenterDialog) 18.dp else 16.dp,
+                                ),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             // 标题与扫描统计
-                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    text = "扫描对账与导入",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = palette.ink,
-                                )
-                                val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
-                                val litCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == true }
-                                val grayCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == false }
-                                val litBreakdown = if (litCount > 0 || grayCount > 0) {
-                                    "（今日已亮 $litCount / 待续 $grayCount）"
-                                } else {
-                                    ""
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Text(
+                                        text = "扫描对账与导入",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        color = palette.ink,
+                                    )
+                                    val timeStr = reconcileState.scannedAtEpochMs?.let(::formatScanTimestamp) ?: "未知时间"
+                                    val litCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == true }
+                                    val grayCount = reconcileState.allCandidates.count { it.candidate.sparkLitToday == false }
+                                    val litBreakdown = if (litCount > 0 || grayCount > 0) {
+                                        "（今日已亮 $litCount / 待续 $grayCount）"
+                                    } else {
+                                        ""
+                                    }
+                                    Text(
+                                        text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条$litBreakdown · $timeStr",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.inkSecondary,
+                                    )
                                 }
-                                Text(
-                                    text = "共扫描 ${reconcileState.discoveredCount} 条会话 · 含官方火花 ${reconcileState.sparkCount} 条$litBreakdown · $timeStr",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = palette.inkSecondary,
-                                )
+                                if (useCenterDialog) {
+                                    Surface(
+                                        onClick = { animateAndDismiss() },
+                                        enabled = !reconcileState.importing && !dismissing,
+                                        modifier = Modifier.size(34.dp),
+                                        shape = CircleShape,
+                                        color = palette.surfaceSubtle,
+                                        contentColor = if (reconcileState.importing) palette.inkTertiary else palette.inkSecondary,
+                                        border = BorderStroke(1.dp, palette.hairline),
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Close,
+                                                contentDescription = "关闭",
+                                                modifier = Modifier.size(17.dp),
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             if (reconcileState.errorMessage != null) {

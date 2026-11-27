@@ -9,16 +9,23 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -42,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +72,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
@@ -89,11 +98,13 @@ internal fun SettingsHubScreen(
     val reducedMotion = rememberReducedMotion()
     val statusTone = settingsAccountStatusTone(uiState.accountStatus)
     val statusLabel = settingsAccountStatusLabel(uiState.accountStatus)
+    val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
 
     FlameSubpageScaffold(
         title = "设置与维护",
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = chromeHandlesGlobalNav && themePreference.displayMode == UiDisplayMode.STANDARD,
         trailingAction = {
             if (uiState.accountDisplayName.isNotBlank()) {
                 Text(
@@ -618,6 +629,303 @@ private fun ProminentFeedbackHubCard(
                     softWrap = false,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                 )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsMasterDirectoryPane(
+    uiState: SettingsUiState,
+    themePreference: ThemePreference,
+    selectedSection: SettingsSection,
+    onSelectSection: (SettingsSection) -> Unit,
+    onStartOnboardingWizard: () -> Unit,
+    updateUiState: AppUpdateUiState? = null,
+    onOpenUpdateDialog: () -> Unit = {},
+    onSwitchToStandardMode: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val scrollState = rememberScrollState()
+
+    val readiness = SetupReadinessBuilder.build(
+        survivalSnapshot = uiState.survivalSnapshot,
+        accountStatus = uiState.accountStatus,
+        enabledTargetCount = uiState.enabledTargetCount,
+    )
+    val hasScheduleDraft = uiState.hasUnsavedScheduleChanges || uiState.hasUnsavedAutoScanChanges
+    val hasAvailableUpdate = updateUiState?.hasAvailableUpdate == true
+    val versionTag = ProjectLinks.formatVersionLabel(BuildConfig.VERSION_NAME, versionCode = 0)
+
+    Column(
+        modifier = modifier
+            .background(palette.surface)
+            .verticalScroll(scrollState)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (themePreference.displayMode == UiDisplayMode.SIMPLE) {
+            Surface(
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onSwitchToStandardMode()
+                },
+                shape = RoundedCornerShape(14.dp),
+                color = palette.emberContainer,
+                border = BorderStroke(1.dp, palette.emberBorder),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Dashboard,
+                        contentDescription = null,
+                        tint = palette.ember,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "切回标准模式",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.ink,
+                        )
+                        Text(
+                            text = "当前为极简模式",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (uiState.accountStatus == AccountStatus.DOM_BROKEN) {
+            Surface(
+                onClick = {
+                    haptics.performFlameLightTick()
+                    onSelectSection(SettingsSection.DIAGNOSTICS)
+                },
+                shape = RoundedCornerShape(14.dp),
+                color = semantics.dangerContainer,
+                border = BorderStroke(1.dp, semantics.dangerBorder),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.WarningAmber,
+                        contentDescription = null,
+                        tint = semantics.danger,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "页面结构异常，点此诊断恢复",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = semantics.onDangerContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        SettingsDirectoryGroupLabel("上手与配置")
+        SettingsDirectoryItem(
+            title = SettingsSection.SURVIVAL.title,
+            subtitle = "${readiness.completedCount}/${readiness.totalCount} 项已完成",
+            icon = if (readiness.allCompleted) Icons.Outlined.CheckCircle else Icons.Outlined.Security,
+            selected = selectedSection == SettingsSection.SURVIVAL,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.SURVIVAL)
+            },
+        )
+        SettingsDirectoryItem(
+            title = "新手分步设置引导",
+            subtitle = "全品牌权限逐项引导",
+            icon = Icons.Outlined.PlayCircleOutline,
+            selected = false,
+            onClick = {
+                haptics.performFlameLightTick()
+                onStartOnboardingWizard()
+            },
+        )
+
+        SettingsDirectoryGroupLabel("个性化与执行")
+        SettingsDirectoryItem(
+            title = SettingsSection.APPEARANCE.title,
+            subtitle = "${themeModeLabel(themePreference.mode)} · ${displayModeLabel(themePreference.displayMode)}",
+            icon = Icons.Outlined.Palette,
+            selected = selectedSection == SettingsSection.APPEARANCE,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.APPEARANCE)
+            },
+        )
+        SettingsDirectoryItem(
+            title = SettingsSection.SCHEDULE.title,
+            subtitle = if (hasScheduleDraft) "存在未保存修改" else if (uiState.enabledInput) "每日自动调度开启" else "每日调度已暂停",
+            icon = Icons.Outlined.Schedule,
+            selected = selectedSection == SettingsSection.SCHEDULE,
+            badgeText = if (hasScheduleDraft) "未保存" else null,
+            badgeTone = FlameTone.WARNING,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.SCHEDULE)
+            },
+        )
+        SettingsDirectoryItem(
+            title = SettingsSection.NOTIFICATIONS.title,
+            subtitle = if (uiState.barkConfigured) "本机通知 · Bark 已配置" else "本机通知与通道",
+            icon = Icons.Outlined.NotificationsActive,
+            selected = selectedSection == SettingsSection.NOTIFICATIONS,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.NOTIFICATIONS)
+            },
+        )
+
+        SettingsDirectoryGroupLabel("数据与维护")
+        SettingsDirectoryItem(
+            title = SettingsSection.BACKUP.title,
+            subtitle = "JSON 脱敏导出与迁移",
+            icon = Icons.Outlined.ImportExport,
+            selected = selectedSection == SettingsSection.BACKUP,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.BACKUP)
+            },
+        )
+        SettingsDirectoryItem(
+            title = SettingsSection.DIAGNOSTICS.title,
+            subtitle = if (uiState.hasSelectorOverrides) "已启用定位器覆写" else "网页体检与脱敏日志",
+            icon = Icons.Outlined.Tune,
+            selected = selectedSection == SettingsSection.DIAGNOSTICS,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.DIAGNOSTICS)
+            },
+        )
+
+        SettingsDirectoryGroupLabel("反馈与版本")
+        SettingsDirectoryItem(
+            title = SettingsSection.ABOUT.title,
+            subtitle = "问题反馈与关于",
+            icon = Icons.Outlined.Feedback,
+            selected = selectedSection == SettingsSection.ABOUT,
+            badgeText = "可传截图",
+            badgeTone = FlameTone.EMBER,
+            onClick = {
+                haptics.performFlameLightTick()
+                onSelectSection(SettingsSection.ABOUT)
+            },
+        )
+        SettingsDirectoryItem(
+            title = SettingsSection.UPDATES.title,
+            subtitle = versionTag,
+            icon = Icons.Outlined.SystemUpdate,
+            selected = selectedSection == SettingsSection.UPDATES,
+            badgeText = if (hasAvailableUpdate) "可更新" else null,
+            badgeTone = FlameTone.EMBER,
+            onClick = {
+                haptics.performFlameLightTick()
+                if (hasAvailableUpdate && selectedSection == SettingsSection.UPDATES) {
+                    onOpenUpdateDialog()
+                } else {
+                    onSelectSection(SettingsSection.UPDATES)
+                }
+            },
+        )
+        SettingsDirectoryItem(
+            title = "GitHub 项目源码",
+            subtitle = ProjectLinks.REPO_DISPLAY_PATH,
+            icon = Icons.Outlined.Code,
+            selected = false,
+            onClick = {
+                haptics.performFlameLightTick()
+                openExternalUrlOrCopyToast(context, ProjectLinks.REPO_URL)
+            },
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+    }
+}
+
+@Composable
+private fun SettingsDirectoryGroupLabel(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = FlameThemeTokens.palette.inkTertiary,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+@Composable
+private fun SettingsDirectoryItem(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    badgeText: String? = null,
+    badgeTone: FlameTone = FlameTone.NEUTRAL,
+) {
+    val palette = FlameThemeTokens.palette
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(13.dp),
+        color = if (selected) palette.surfaceSubtle else palette.surface,
+        border = if (selected) BorderStroke(1.dp, palette.hairlineStrong) else null,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) palette.ink else palette.inkSecondary,
+                modifier = Modifier.size(18.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) palette.ink else palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (badgeText != null) {
+                FlameMiniTag(text = badgeText, tone = badgeTone)
             }
         }
     }

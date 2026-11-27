@@ -6,6 +6,7 @@ import io.github.oinzc.flamecontractor.data.db.JobStatus
 import io.github.oinzc.flamecontractor.data.db.SendJobEntity
 import io.github.oinzc.flamecontractor.domain.SendGuard
 import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.ZoneId
@@ -329,6 +330,40 @@ class SimpleTodayActionStateTest {
             "去扫描并挑选好友",
             resolveSimplePrimaryCtaLabel(resolveSimpleActionState(emptyTargets), emptyTargets),
         )
+    }
+
+    @Test
+    fun `resolveSimpleLayoutMetrics adapts columns, scale, and button bounds across form factors`() {
+        val phonePortrait = resolveSimpleLayoutMetrics(FlameFormFactor.COMPACT_PORTRAIT, fontScale = 1f)
+        assertFalse(phonePortrait.isTwoColumn)
+        assertEquals(460, phonePortrait.containerMaxWidthDp)
+        assertEquals(68, phonePortrait.heroNumberSp)
+        assertEquals(null, phonePortrait.primaryButtonMaxWidthDp)
+
+        val tabletPortrait = resolveSimpleLayoutMetrics(FlameFormFactor.TABLET_PORTRAIT, fontScale = 1f)
+        assertFalse(tabletPortrait.isTwoColumn)
+        assertEquals(560, tabletPortrait.containerMaxWidthDp)
+        assertEquals(84, tabletPortrait.heroNumberSp)
+        assertEquals(11, tabletPortrait.singleRowDotSizeDp)
+        assertEquals(400, tabletPortrait.primaryButtonMaxWidthDp)
+        assertEquals(58, tabletPortrait.primaryButtonMinHeightDp)
+
+        val tabletLandscape = resolveSimpleLayoutMetrics(FlameFormFactor.TABLET_LANDSCAPE, fontScale = 1f)
+        assertTrue(tabletLandscape.isTwoColumn)
+        assertEquals(960, tabletLandscape.containerMaxWidthDp)
+        assertEquals(92, tabletLandscape.heroNumberSp)
+        assertEquals(12, tabletLandscape.singleRowDotSizeDp)
+        assertEquals(58, tabletLandscape.primaryButtonMinHeightDp)
+
+        val phoneLandscape = resolveSimpleLayoutMetrics(FlameFormFactor.COMPACT_HEIGHT_LANDSCAPE, fontScale = 1f)
+        assertTrue(phoneLandscape.isTwoColumn)
+        assertEquals(780, phoneLandscape.containerMaxWidthDp)
+        assertEquals(56, phoneLandscape.heroNumberSp)
+        assertEquals(50, phoneLandscape.primaryButtonMinHeightDp)
+
+        val largeFontLandscape = resolveSimpleLayoutMetrics(FlameFormFactor.TABLET_LANDSCAPE, fontScale = 1.4f)
+        assertEquals(70, largeFontLandscape.heroNumberSp)
+        assertEquals(28, largeFontLandscape.heroDenomSp)
     }
 
     private fun baseAccount(

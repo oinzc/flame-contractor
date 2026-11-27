@@ -30,22 +30,30 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -107,6 +115,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
@@ -418,6 +428,7 @@ fun OnboardingWizardScreen(
         label = "onboarding_step_progress",
     )
 
+    val layout = LocalFlameWindowLayout.current
     Surface(
         modifier = modifier.fillMaxSize(),
         color = palette.canvas,
@@ -425,14 +436,24 @@ fun OnboardingWizardScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // 顶部步骤进度条（移除右上角「稍后设置」退出入口，防止误点跳过核心权限）
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(palette.surface)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .background(palette.surface),
+                contentAlignment = Alignment.Center,
             ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 680.dp)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                        .padding(
+                            horizontal = layout.horizontalGutter,
+                            vertical = if (layout.isShortLandscape) 8.dp else 12.dp,
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 6.dp else 10.dp),
+                ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -534,20 +555,23 @@ fun OnboardingWizardScreen(
                     }
                 }
             }
+            }
             HorizontalDivider(thickness = 1.dp, color = palette.hairline)
 
             // 中部可滚动内容区
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 AnimatedContent(
                     targetState = currentIndex,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 640.dp),
+                        .widthIn(max = 680.dp)
+                        .fillMaxWidth()
+                        .fillMaxHeight(),
                     transitionSpec = {
                         when {
                             reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
@@ -790,14 +814,23 @@ fun OnboardingWizardScreen(
                 color = palette.surface,
                 contentColor = palette.ink,
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
+                    Column(
+                        modifier = Modifier
+                            .widthIn(max = 680.dp)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                            .padding(
+                                horizontal = layout.horizontalGutter,
+                                vertical = if (layout.isShortLandscape) 8.dp else 12.dp,
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1066,6 +1099,7 @@ fun OnboardingWizardScreen(
                                 .padding(horizontal = 10.dp, vertical = 4.dp),
                         )
                     }
+                }
                 }
             }
         }
@@ -1495,6 +1529,7 @@ private fun OnboardingChooseModeStepBody(
 ) {
     val palette = FlameThemeTokens.palette
     val isDark = FlameThemeTokens.isDark
+    val layout = LocalFlameWindowLayout.current
     val reducedMotion = rememberReducedMotion()
     val animMs = if (reducedMotion) 0 else 180
 
@@ -1502,40 +1537,94 @@ private fun OnboardingChooseModeStepBody(
         whyText = "如果你希望查看完整数据与模板管理，推荐「标准模式」；如果你只想打开应用点一下超大圆钮就能一键续火，推荐「极简模式」。两者随时可在设置中自由切换。",
     )
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        OnboardingDisplayModeCard(
-            mode = UiDisplayMode.STANDARD,
-            title = "标准模式",
-            badgeText = "全功能工作台",
-            summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
-            highlights = listOf(
-                "底部 4 栏快速切换：今日 / 好友 / 模板 / 记录",
-                "展示完整执行动态时间线、模板维护与火花统计",
-            ),
-            selected = selectedDisplayMode == UiDisplayMode.STANDARD,
-            accentColor = palette.monoCtaContainer,
-            selectedContainerColor = palette.surfaceSubtle,
-            animMs = animMs,
-            onClick = { onSelectDisplayMode(UiDisplayMode.STANDARD) },
-            previewContent = { StandardModeWireframePreview() },
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val sideBySide = maxWidth >= 560.dp ||
+            layout.formFactor == FlameFormFactor.TABLET_LANDSCAPE ||
+            layout.isShortLandscape
+        if (sideBySide) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OnboardingDisplayModeCard(
+                    mode = UiDisplayMode.STANDARD,
+                    title = "标准模式",
+                    badgeText = "全功能工作台",
+                    summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
+                    highlights = listOf(
+                        "底部 / 侧边快速切换：今日 / 好友 / 模板 / 记录",
+                        "展示完整执行动态时间线、模板维护与火花统计",
+                    ),
+                    selected = selectedDisplayMode == UiDisplayMode.STANDARD,
+                    accentColor = palette.monoCtaContainer,
+                    selectedContainerColor = palette.surfaceSubtle,
+                    animMs = animMs,
+                    onClick = { onSelectDisplayMode(UiDisplayMode.STANDARD) },
+                    previewContent = { StandardModeWireframePreview() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
 
-        OnboardingDisplayModeCard(
-            mode = UiDisplayMode.SIMPLE,
-            title = "极简模式",
-            badgeText = "大字单页",
-            summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
-            highlights = listOf(
-                "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
-                "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
-            ),
-            selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
-            accentColor = palette.ember,
-            selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
-            animMs = animMs,
-            onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
-            previewContent = { SimpleModeWireframePreview() },
-        )
+                OnboardingDisplayModeCard(
+                    mode = UiDisplayMode.SIMPLE,
+                    title = "极简模式",
+                    badgeText = "大字单页",
+                    summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
+                    highlights = listOf(
+                        "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
+                        "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
+                    ),
+                    selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
+                    accentColor = palette.ember,
+                    selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
+                    animMs = animMs,
+                    onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
+                    previewContent = { SimpleModeWireframePreview() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OnboardingDisplayModeCard(
+                    mode = UiDisplayMode.STANDARD,
+                    title = "标准模式",
+                    badgeText = "全功能工作台",
+                    summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
+                    highlights = listOf(
+                        "底部 4 栏快速切换：今日 / 好友 / 模板 / 记录",
+                        "展示完整执行动态时间线、模板维护与火花统计",
+                    ),
+                    selected = selectedDisplayMode == UiDisplayMode.STANDARD,
+                    accentColor = palette.monoCtaContainer,
+                    selectedContainerColor = palette.surfaceSubtle,
+                    animMs = animMs,
+                    onClick = { onSelectDisplayMode(UiDisplayMode.STANDARD) },
+                    previewContent = { StandardModeWireframePreview() },
+                )
+
+                OnboardingDisplayModeCard(
+                    mode = UiDisplayMode.SIMPLE,
+                    title = "极简模式",
+                    badgeText = "大字单页",
+                    summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
+                    highlights = listOf(
+                        "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
+                        "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
+                    ),
+                    selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
+                    accentColor = palette.ember,
+                    selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
+                    animMs = animMs,
+                    onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
+                    previewContent = { SimpleModeWireframePreview() },
+                )
+            }
+        }
     }
 
     Text(
@@ -1558,6 +1647,7 @@ private fun OnboardingDisplayModeCard(
     animMs: Int,
     onClick: () -> Unit,
     previewContent: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
     val interactionSource = remember(mode) { MutableInteractionSource() }
@@ -1573,7 +1663,7 @@ private fun OnboardingDisplayModeCard(
     )
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .flamePressScale(interactionSource = interactionSource)
             .clip(RoundedCornerShape(20.dp))

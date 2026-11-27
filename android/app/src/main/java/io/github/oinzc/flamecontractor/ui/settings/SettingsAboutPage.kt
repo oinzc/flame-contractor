@@ -148,6 +148,7 @@ internal fun SettingsAboutPage(
     uiState: SettingsUiState,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
     preFillDraft: FeedbackPreFillDraft? = null,
     onConsumePreFillDraft: (Long) -> Unit = {},
     onBuildDiagnosticsReportText: (suspend () -> String)? = null,
@@ -573,8 +574,12 @@ internal fun SettingsAboutPage(
         onBack = onBack,
         snackbarHostState = snackbarHostState,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 问题反馈与建议（应用内直提 + 截图上传）
             FlameCard(
                 modifier = Modifier.fillMaxWidth(),
