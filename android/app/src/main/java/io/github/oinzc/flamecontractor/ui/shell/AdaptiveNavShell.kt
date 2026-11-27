@@ -2,22 +2,24 @@ package io.github.oinzc.flamecontractor.ui.shell
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -70,6 +72,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -155,22 +158,21 @@ fun AdaptiveNavShell(
                     if (reducedMotion) {
                         EnterTransition.None togetherWith ExitTransition.None
                     } else {
-                        (fadeIn(
-                            animationSpec = tween(
-                                durationMillis = FlameMotionSpec.TAB_ENTER_MS,
-                                easing = FlameMotionSpec.easeOut,
+                        ContentTransform(
+                            targetContentEnter = fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = 150,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
                             ),
-                        ) + scaleIn(
-                            initialScale = FlameMotionSpec.TAB_INITIAL_SCALE,
-                            animationSpec = tween(
-                                durationMillis = FlameMotionSpec.TAB_ENTER_MS,
-                                easing = FlameMotionSpec.easeOut,
+                            initialContentExit = fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = 1,
+                                    delayMillis = 150,
+                                ),
                             ),
-                        )) togetherWith fadeOut(
-                            animationSpec = tween(
-                                durationMillis = FlameMotionSpec.TAB_EXIT_MS,
-                                easing = FlameMotionSpec.easeOut,
-                            ),
+                            targetContentZIndex = 1f,
+                            sizeTransform = SizeTransform(clip = false),
                         )
                     }
                 },
@@ -337,6 +339,19 @@ private fun FlameFloatingPillDock(
     val palette = FlameThemeTokens.palette
     val isDark = FlameThemeTokens.isDark
     val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val reducedMotion = rememberReducedMotion()
+    val tabs = MainTab.entries
+    val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
+    val indicatorIndex by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = if (reducedMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.88f, stiffness = 540f)
+        },
+        label = "dock_indicator_index",
+    )
 
     Surface(
         modifier = Modifier
@@ -349,67 +364,92 @@ private fun FlameFloatingPillDock(
         shadowElevation = if (isDark) 10.dp else 8.dp,
         tonalElevation = 0.dp,
     ) {
-        Row(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 6.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            MainTab.entries.forEach { tab ->
-                val selected = tab == selectedTab
-                val tabInteraction = remember(tab) { MutableInteractionSource() }
-                val itemContainer by animateColorAsState(
-                    targetValue = if (selected) palette.dockActiveContainer else Color.Transparent,
-                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                    label = "dock_item_bg_${tab.name}",
-                )
-                val targetContentColor = if (selected) palette.ink else palette.inkTertiary
-                val itemTint by animateColorAsState(
-                    targetValue = targetContentColor,
-                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                    label = "dock_item_fg_${tab.name}",
+            val gap = 4.dp
+            val slotWidth = ((maxWidth - gap * (tabs.size - 1)) / tabs.size).coerceAtLeast(0.dp)
+            val trackHeight = 52.dp
+            val stepPx = with(density) { (slotWidth + gap).toPx() }
+            val textAnimMs = if (reducedMotion) 0 else 150
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(trackHeight),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(slotWidth)
+                        .fillMaxHeight()
+                        .graphicsLayer {
+                            translationX = indicatorIndex * stepPx
+                        }
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(palette.dockActiveContainer),
                 )
 
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .flamePressScale(
-                            interactionSource = tabInteraction,
-                            pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
-                        )
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(itemContainer)
-                        .clickable(
-                            interactionSource = tabInteraction,
-                            indication = LocalIndication.current,
-                            role = Role.Tab,
-                            onClick = {
-                                if (!selected) {
-                                    haptics.performFlameLightTick()
-                                }
-                                onSelectTab(tab)
-                            },
-                        )
-                        .padding(vertical = 7.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    TabIconWithBadge(
-                        tab = tab,
-                        selected = selected,
-                        tint = itemTint,
-                        showBadge = tab == MainTab.TODAY && todayAlertBadge,
-                        badgeRingColor = if (selected) palette.dockActiveContainer else palette.dockContainer,
-                    )
-                    Text(
-                        text = tab.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = itemTint,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
+                    tabs.forEach { tab ->
+                        val selected = tab == selectedTab
+                        val tabInteraction = remember(tab) { MutableInteractionSource() }
+                        val itemTint by animateColorAsState(
+                            targetValue = if (selected) palette.ink else palette.inkTertiary,
+                            animationSpec = tween(durationMillis = textAnimMs, easing = FlameMotionSpec.easeOut),
+                            label = "dock_item_fg_${tab.name}",
+                        )
+                        val badgeRingColor by animateColorAsState(
+                            targetValue = if (selected) palette.dockActiveContainer else palette.dockContainer,
+                            animationSpec = tween(durationMillis = textAnimMs, easing = FlameMotionSpec.easeOut),
+                            label = "dock_badge_ring_${tab.name}",
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .flamePressScale(
+                                    interactionSource = tabInteraction,
+                                    pressedScale = FlameMotionSpec.PRESS_SCALE_HERO,
+                                )
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable(
+                                    interactionSource = tabInteraction,
+                                    indication = null,
+                                    role = Role.Tab,
+                                    onClick = {
+                                        if (!selected) {
+                                            haptics.performFlameLightTick()
+                                        }
+                                        onSelectTab(tab)
+                                    },
+                                ),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                        ) {
+                            TabIconWithBadge(
+                                tab = tab,
+                                selected = selected,
+                                tint = itemTint,
+                                showBadge = tab == MainTab.TODAY && todayAlertBadge,
+                                badgeRingColor = badgeRingColor,
+                            )
+                            Text(
+                                text = tab.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = itemTint,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -54,6 +55,7 @@ import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.execution.login.LoginReturnHelper
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.components.ProvideFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
@@ -127,7 +129,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             FlameTheme(preference = themePreference) {
-                ProvideFlameWindowLayout {
+                val rootReducedMotion = rememberReducedMotion()
+                CompositionLocalProvider(LocalFlameReducedMotion provides rootReducedMotion) {
+                    ProvideFlameWindowLayout {
                     val windowLayout = LocalFlameWindowLayout.current
                     val isSimpleMode = themePreference.displayMode == UiDisplayMode.SIMPLE
                     var navState by rememberSaveable(stateSaver = MainNavStateSaver) {
@@ -678,6 +682,7 @@ class MainActivity : AppCompatActivity() {
                             appUpdateManager = container.appUpdateManager,
                         )
                     }
+                }
                 }
             }
         }

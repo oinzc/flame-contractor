@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedback
@@ -58,10 +59,12 @@ object FlameMotionSpec {
     )
 
     fun tabIconSpringSpec() = spring<Float>(
-        dampingRatio = 0.68f,
+        dampingRatio = 0.92f,
         stiffness = Spring.StiffnessMedium,
     )
 }
+
+val LocalFlameReducedMotion = staticCompositionLocalOf<Boolean?> { null }
 
 internal fun isReducedMotionAnimatorScale(scale: Float): Boolean =
     scale.isFinite() && scale <= 0f
@@ -80,6 +83,7 @@ fun readSystemReducedMotion(context: Context): Boolean = runCatching {
  */
 @Composable
 fun rememberReducedMotion(): Boolean {
+    LocalFlameReducedMotion.current?.let { return it }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var reduced by remember(context) { mutableStateOf(readSystemReducedMotion(context)) }
