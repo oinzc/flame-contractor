@@ -857,3 +857,107 @@ export function formatBackupImportSummary(
     missingImagesHint,
   }
 }
+
+export type AccountScheduleMode = 'window' | 'fixed'
+
+export interface ClockTimeParts {
+  hour: number
+  minute: number
+}
+
+const CLOCK_HHMM_RE = /^(\d{1,2}):(\d{1,2})$/
+export const ACCOUNT_WINDOW_MAX_MINUTES = 23 * 60 + 55
+
+export function parseClockHhmm(
+  raw: string | null | undefined,
+  fallback = '08:30',
+): ClockTimeParts {
+  const tryParse = (input: string | null | undefined): ClockTimeParts | null => {
+    if (!input) return null
+    const match = CLOCK_HHMM_RE.exec(input.trim())
+    if (!match) return null
+    const hour = Number(match[1])
+    const minute = Number(match[2])
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+    return { hour, minute }
+  }
+  return tryParse(raw) ?? tryParse(fallback) ?? { hour: 8, minute: 30 }
+}
+
+export function formatClockHhmm(hour: number, minute: number): string {
+  const h = Math.max(0, Math.min(23, Math.trunc(hour)))
+  const m = Math.max(0, Math.min(59, Math.trunc(minute)))
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function toClockMinutes(parts: ClockTimeParts): number {
+  return parts.hour * 60 + parts.minute
+}
+
+function fromClockMinutes(totalMinutes: number): string {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.trunc(totalMinutes)))
+  return formatClockHhmm(Math.floor(clamped / 60), clamped % 60)
+}
+
+export function normalizeAccountWindowRange(
+  start: string,
+  end: string,
+  changed: 'start' | 'end',
+): { start: string; end: string } {
+  let startMinutes = Math.max(
+    0,
+    Math.min(ACCOUNT_WINDOW_MAX_MINUTES - 1, toClockMinutes(parseClockHhmm(start, '08:30'))),
+  )
+  let endMinutes = Math.max(
+    1,
+    Math.min(ACCOUNT_WINDOW_MAX_MINUTES, toClockMinutes(parseClockHhmm(end, '22:30'))),
+  )
+
+  if (changed === 'start') {
+    if (startMinutes >= endMinutes) {
+      endMinutes = Math.min(ACCOUNT_WINDOW_MAX_MINUTES, startMinutes + 30)
+    }
+  } else {
+    if (endMinutes <= startMinutes) {
+      startMinutes = Math.max(0, endMinutes - 30)
+    }
+  }
+
+  return {
+    start: fromClockMinutes(startMinutes),
+    end: fromClockMinutes(endMinutes),
+  }
+}
+
+export function describeAccountScheduleEffect(
+  mode: AccountScheduleMode,
+  windowStart: string,
+  windowEnd: string,
+  fixedTime: string,
+): string {
+  if (mode === 'fixed') {
+    const cleanFixed = formatClockHhmm(
+      parseClockHhmm(fixedTime, '20:30').hour,
+      parseClockHhmm(fixedTime, '20:30').minute,
+    )
+    return `每天会尽量在 ${cleanFixed} 准时发送；若当时服务离线或未启动，会在设定的宽限期内自动补发。`
+  }
+  const normalized = normalizeAccountWindowRange(windowStart, windowEnd, 'start')
+  return `系统每天会在 ${normalized.start} 到 ${normalized.end} 之间自动选一个错峰时间发送；错过结束时间当天不会补发，更不易触发平台风控。`
+}
+
+export function describeTargetScheduleEffect(
+  sendTimeHhmm: string | null | undefined,
+  account: Pick<Account, 'sendWindowStart' | 'sendWindowEnd' | 'sendTimeHhmm'>,
+): string {
+  const clean = sendTimeHhmm?.trim() ?? ''
+  if (!clean) {
+    if (account.sendTimeHhmm?.trim()) {
+      return `当前跟随账号固定时刻：每天约 ${account.sendTimeHhmm.trim()} 发送。`
+    }
+    return `当前跟随账号时段：每天 ${account.sendWindowStart}–${account.sendWindowEnd} 之间自动错峰发送。`
+  }
+  const parsed = parseClockHhmm(clean, '20:30')
+  return `已为该好友单独定时：每天尽量在 ${formatClockHhmm(parsed.hour, parsed.minute)} 发送，不再受账号全局时段限制。`
+}

@@ -69,11 +69,10 @@ data class MainNavState(
             when (tab) {
                 MainTab.TODAY,
                 MainTab.TARGETS,
+                MainTab.TEMPLATES,
                 -> tab
 
-                MainTab.TEMPLATES,
-                MainTab.HISTORY,
-                -> MainTab.TODAY
+                MainTab.HISTORY -> MainTab.TODAY
             }
         } else {
             tab
@@ -146,11 +145,7 @@ data class MainNavState(
                     SHORTCUT_TARGETS,
                     -> MainTab.TARGETS
 
-                    SHORTCUT_TEMPLATES -> if (displayMode == UiDisplayMode.SIMPLE) {
-                        MainTab.TODAY
-                    } else {
-                        MainTab.TEMPLATES
-                    }
+                    SHORTCUT_TEMPLATES -> MainTab.TEMPLATES
 
                     SHORTCUT_HISTORY -> if (displayMode == UiDisplayMode.SIMPLE) {
                         MainTab.TODAY

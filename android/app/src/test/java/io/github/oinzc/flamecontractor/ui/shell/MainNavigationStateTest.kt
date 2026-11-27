@@ -226,7 +226,7 @@ class MainNavigationStateTest {
 
         val base = MainNavState(MainTab.TODAY)
         assertEquals(MainTab.TARGETS, base.selectTab(MainTab.TARGETS, UiDisplayMode.SIMPLE).selectedTab)
-        assertEquals(MainTab.TODAY, base.selectTab(MainTab.TEMPLATES, UiDisplayMode.SIMPLE).selectedTab)
+        assertEquals(MainTab.TEMPLATES, base.selectTab(MainTab.TEMPLATES, UiDisplayMode.SIMPLE).selectedTab)
         assertEquals(MainTab.TODAY, base.selectTab(MainTab.HISTORY, UiDisplayMode.SIMPLE).selectedTab)
 
         assertEquals(
@@ -238,7 +238,7 @@ class MainNavigationStateTest {
             base.applyLaunchIntent(UrgentCategory.SPARK_DETERIORATING.name, true, UiDisplayMode.SIMPLE),
         )
         assertEquals(
-            MainNavState(MainTab.TODAY),
+            MainNavState(MainTab.TEMPLATES),
             base.applyLaunchIntent(MainNavState.SHORTCUT_TEMPLATES, false, UiDisplayMode.SIMPLE),
         )
         assertEquals(

@@ -253,7 +253,7 @@ fun OnboardingWizardScreen(
     onFinishToToday: () -> Unit,
     onSkip: () -> Unit,
     modifier: Modifier = Modifier,
-    selectedDisplayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    selectedDisplayMode: UiDisplayMode = UiDisplayMode.SIMPLE,
     onSelectDisplayMode: (UiDisplayMode) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -1534,7 +1534,7 @@ private fun OnboardingChooseModeStepBody(
     val animMs = if (reducedMotion) 0 else 180
 
     OnboardingWhyBox(
-        whyText = "如果你希望查看完整数据与模板管理，推荐「标准模式」；如果你只想打开应用点一下超大圆钮就能一键续火，推荐「极简模式」。两者随时可在设置中自由切换。",
+        whyText = "默认推荐「极简模式」，打开就能看今日续火进度并直达好友、模板与定时设置；如果你想看 30 日发送记录和完整控制台，也可以选「标准模式」。两种模式在首页顶栏随时点一下就能切换。",
     )
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -1549,9 +1549,29 @@ private fun OnboardingChooseModeStepBody(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 OnboardingDisplayModeCard(
+                    mode = UiDisplayMode.SIMPLE,
+                    title = "极简模式",
+                    badgeText = "默认推荐",
+                    summary = "无底栏单页排版数字流，配齐续火、好友、模板与闹钟定时四大核心能力。",
+                    highlights = listOf(
+                        "醒目数字进度与单手主按钮，自动区分待发与已续完",
+                        "首页直达续火好友、续火模板与闹钟式定时设置",
+                    ),
+                    selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
+                    accentColor = palette.ember,
+                    selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
+                    animMs = animMs,
+                    onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
+                    previewContent = { SimpleModeWireframePreview() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+
+                OnboardingDisplayModeCard(
                     mode = UiDisplayMode.STANDARD,
                     title = "标准模式",
-                    badgeText = "全功能工作台",
+                    badgeText = "完整工作台",
                     summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
                     highlights = listOf(
                         "底部 / 侧边快速切换：今日 / 好友 / 模板 / 记录",
@@ -1567,15 +1587,17 @@ private fun OnboardingChooseModeStepBody(
                         .weight(1f)
                         .fillMaxHeight(),
                 )
-
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OnboardingDisplayModeCard(
                     mode = UiDisplayMode.SIMPLE,
                     title = "极简模式",
-                    badgeText = "大字单页",
-                    summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
+                    badgeText = "默认推荐",
+                    summary = "无底栏单页排版数字流，配齐续火、好友、模板与闹钟定时四大核心能力。",
                     highlights = listOf(
-                        "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
-                        "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
+                        "醒目数字进度与单手主按钮，自动区分待发与已续完",
+                        "首页直达续火好友、续火模板与闹钟式定时设置",
                     ),
                     selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
                     accentColor = palette.ember,
@@ -1583,17 +1605,12 @@ private fun OnboardingChooseModeStepBody(
                     animMs = animMs,
                     onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
                     previewContent = { SimpleModeWireframePreview() },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
                 )
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
                 OnboardingDisplayModeCard(
                     mode = UiDisplayMode.STANDARD,
                     title = "标准模式",
-                    badgeText = "全功能工作台",
+                    badgeText = "完整工作台",
                     summary = "完整 4 栏工作台，包含好友管理、消息模板库与 30 日发送记录。",
                     highlights = listOf(
                         "底部 4 栏快速切换：今日 / 好友 / 模板 / 记录",
@@ -1606,29 +1623,12 @@ private fun OnboardingChooseModeStepBody(
                     onClick = { onSelectDisplayMode(UiDisplayMode.STANDARD) },
                     previewContent = { StandardModeWireframePreview() },
                 )
-
-                OnboardingDisplayModeCard(
-                    mode = UiDisplayMode.SIMPLE,
-                    title = "极简模式",
-                    badgeText = "大字单页",
-                    summary = "单页超大圆钮一键续火，隐藏复杂图表与底部导航栏，清晰不迷路。",
-                    highlights = listOf(
-                        "中央超大圆形「一键续火」主钮，自动区分待发与已续完",
-                        "醒目大字异常拦截提醒，保留续火好友与重登快捷入口",
-                    ),
-                    selected = selectedDisplayMode == UiDisplayMode.SIMPLE,
-                    accentColor = palette.ember,
-                    selectedContainerColor = palette.emberContainer.copy(alpha = if (isDark) 0.55f else 0.72f),
-                    animMs = animMs,
-                    onClick = { onSelectDisplayMode(UiDisplayMode.SIMPLE) },
-                    previewContent = { SimpleModeWireframePreview() },
-                )
             }
         }
     }
 
     Text(
-        text = "提示：两种模式共用同一套账号、好友与定时任务，后续随时可在「设置 → 外观与主题」中一键切换。",
+        text = "提示：两种模式共用同一套账号、好友与定时任务，后续随时可在首页顶栏或「设置 → 外观与主题」中一键切换。",
         style = MaterialTheme.typography.bodySmall,
         color = palette.inkTertiary,
     )
@@ -1913,7 +1913,7 @@ private fun SimpleModeWireframePreview() {
 private fun stepStatusLabel(
     step: OnboardingStep,
     readiness: SetupReadinessSnapshot,
-    selectedDisplayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+    selectedDisplayMode: UiDisplayMode = UiDisplayMode.SIMPLE,
 ): String = when (step) {
     OnboardingStep.NOTIFICATIONS -> readiness.itemById(SetupItemId.NOTIFICATIONS).statusLabel
     OnboardingStep.AUTO_RETURN -> readiness.itemById(SetupItemId.AUTO_RETURN_OVERLAY).statusLabel

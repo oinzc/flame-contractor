@@ -104,6 +104,7 @@ import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
 import io.github.oinzc.flamecontractor.ui.components.FLAME_TWO_PANE_CONTENT_MIN_WIDTH
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameClockTime
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
@@ -119,6 +120,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSearchPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
+import io.github.oinzc.flamecontractor.ui.components.FlameTimeWheelPickerSheet
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
@@ -1503,6 +1505,11 @@ private fun TargetEditorSheet(
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     var templateDropdownExpanded by remember { mutableStateOf(false) }
+    var showTargetClockPicker by remember { mutableStateOf(false) }
+    val customClock = remember(editor.sendTimeHhmm) {
+        FlameClockTime.parseOrDefault(editor.sendTimeHhmm, FlameClockTime(20, 30))
+    }
+    val hasCustomTime = editor.sendTimeHhmm.isNotBlank()
 
     val selectedTemplate = remember(editor.templateId, templates) {
         templates.firstOrNull { it.id == editor.templateId }
@@ -1655,17 +1662,88 @@ private fun TargetEditorSheet(
                 }
             }
 
-            OutlinedTextField(
-                value = editor.sendTimeHhmm,
-                onValueChange = onSendTimeChanged,
-                label = { Text("可选固定时刻（HH:mm）") },
-                placeholder = { Text("留空则沿用账号发送窗口，例如 20:30") },
-                supportingText = { Text("填写后优先于账号全局窗口，享有 60 分钟同日宽限窗") },
-                singleLine = true,
-                enabled = !busy,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "每日发送时间",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.inkTertiary,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    EditorSegmentOption(
+                        label = "跟随账号时间",
+                        selected = !hasCustomTime,
+                        enabled = !busy,
+                        onClick = { onSendTimeChanged("") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    EditorSegmentOption(
+                        label = "单独定闹钟",
+                        selected = hasCustomTime,
+                        enabled = !busy,
+                        onClick = {
+                            if (!hasCustomTime) {
+                                onSendTimeChanged(customClock.toHhmm())
+                            }
+                            showTargetClockPicker = true
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                if (hasCustomTime) {
+                    Surface(
+                        onClick = { if (!busy) showTargetClockPicker = true },
+                        enabled = !busy,
+                        shape = RoundedCornerShape(14.dp),
+                        color = palette.surfaceSubtle,
+                        border = BorderStroke(1.dp, palette.hairlineStrong),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "每天准点时刻",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.inkSecondary,
+                                )
+                                Text(
+                                    text = customClock.toHhmm(),
+                                    style = MaterialTheme.typography.headlineSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontFeatureSettings = "tnum",
+                                    ),
+                                    color = palette.ink,
+                                )
+                            }
+                            Text(
+                                text = "点此滚轮调节",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.inkSecondary,
+                            )
+                        }
+                    }
+                    Text(
+                        text = "设置后该好友单独在每天 ${customClock.toHhmm()} 左右发送（支持 60 分钟内断网补发），不再随账号大时间段统一发。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkSecondary,
+                    )
+                } else {
+                    Text(
+                        text = "将跟随当前抖音号在「自动调度与定时扫描」里统一设定的时间自动续火。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkTertiary,
+                    )
+                }
+            }
 
             FlameGroupedSection {
                 FlameListRow(
@@ -1698,6 +1776,28 @@ private fun TargetEditorSheet(
                 onClick = onDismiss,
             )
         }
+    }
+
+    if (showTargetClockPicker) {
+        FlameTimeWheelPickerSheet(
+            title = "设置该好友独立闹钟",
+            subtitle = "每天按这个时刻单独给该好友续火",
+            initialTime = customClock,
+            minTime = FlameClockTime(0, 0),
+            maxTime = FlameClockTime(23, 59),
+            presetTimes = listOf(
+                FlameClockTime(8, 0),
+                FlameClockTime(12, 30),
+                FlameClockTime(20, 0),
+                FlameClockTime(20, 30),
+                FlameClockTime(22, 0),
+            ),
+            onConfirm = { picked ->
+                onSendTimeChanged(picked.toHhmm())
+                showTargetClockPicker = false
+            },
+            onDismiss = { showTargetClockPicker = false },
+        )
     }
 }
 

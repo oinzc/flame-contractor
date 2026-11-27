@@ -9,12 +9,15 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
@@ -34,6 +37,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,10 +45,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -132,6 +140,7 @@ import io.github.oinzc.flamecontractor.ui.components.FLAME_TWO_PANE_CONTENT_MIN_
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameDisplayModeToggle
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
@@ -141,6 +150,7 @@ import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
 import io.github.oinzc.flamecontractor.ui.components.FlameModalSheet
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.FlameNavChromeKind
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
@@ -188,6 +198,7 @@ fun TodayRoute(
     accountId: String = DEFAULT_ACCOUNT_ID,
     displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
     onSwitchToStandardMode: () -> Unit = {},
+    onSwitchToSimpleMode: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -274,83 +285,338 @@ fun TodayRoute(
         )
     }
 
-    if (displayMode == UiDisplayMode.SIMPLE) {
-        SimpleTodayScreen(
-            state = uiState,
-            snackbarHostState = snackbarHostState,
-            onReloginClick = viewModel::onReloginClick,
-            onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
-            onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
-            onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
-            onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
-            onDismissUnknownReview = viewModel::dismissUnknownReview,
-            onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
-            onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
-            onOpenCooldownDetail = viewModel::openCooldownDetail,
-            onDismissCooldownDetail = viewModel::dismissCooldownDetail,
-            onClearCooldown = viewModel::clearCooldown,
-            onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
-            onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
-            onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
-            onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
-            onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
-            onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
-            onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
-            onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
-            onOpenTab = onOpenTab,
-            onOpenSettings = onOpenSettings,
-            onOpenFeedback = onOpenFeedback,
-            onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
-            onFeedbackIssue = handleFeedbackIssue,
-            onOpenAccountSwitcher = onOpenAccountSwitcher,
-            onSwitchToStandardMode = onSwitchToStandardMode,
-            otherAccountAlertBadge = otherAccountAlertBadge,
-            resolveJobScreenshotFile = { jobId ->
-                container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+    val palette = FlameThemeTokens.palette
+    val reducedMotion = rememberReducedMotion()
+    val layout = LocalFlameWindowLayout.current
+    val dockBottomClearance = flameDockBottomPadding()
+
+    Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            .background(palette.canvas),
+        containerColor = palette.canvas,
+        contentColor = palette.ink,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            TodayPersistentTopBar(
+                account = uiState.account,
+                businessDate = uiState.businessDate,
+                displayMode = displayMode,
+                otherAccountAlertBadge = otherAccountAlertBadge,
+                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                onSelectDisplayMode = { next ->
+                    when (next) {
+                        UiDisplayMode.SIMPLE -> if (displayMode != UiDisplayMode.SIMPLE) onSwitchToSimpleMode()
+                        UiDisplayMode.STANDARD -> if (displayMode != UiDisplayMode.STANDARD) onSwitchToStandardMode()
+                    }
+                },
+                onOpenFeedback = onOpenFeedback,
+                onOpenSettings = { onOpenSettings(null) },
+            )
+        },
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(
+                        bottom = if (displayMode == UiDisplayMode.STANDARD && layout.hasBottomFloatingDock) {
+                            dockBottomClearance - 12.dp
+                        } else {
+                            12.dp
+                        },
+                    ),
+            )
+        },
+    ) { innerPadding ->
+        AnimatedContent(
+            targetState = displayMode,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            transitionSpec = {
+                if (reducedMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    (fadeIn(
+                        animationSpec = tween(
+                            durationMillis = 220,
+                            delayMillis = 20,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) + scaleIn(
+                        initialScale = 0.985f,
+                        animationSpec = tween(
+                            durationMillis = 220,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    )) togetherWith fadeOut(
+                        animationSpec = tween(
+                            durationMillis = 130,
+                            easing = FlameMotionSpec.easeOut,
+                        ),
+                    ) using SizeTransform(clip = false)
+                }
             },
-            modifier = modifier,
-        )
-    } else {
-        TodayScreen(
-            state = uiState,
-            snackbarHostState = snackbarHostState,
-            onReloginClick = viewModel::onReloginClick,
-            onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
-            onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
-            onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
-            onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
-            onDismissUnknownReview = viewModel::dismissUnknownReview,
-            onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
-            onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
-            onOpenCooldownDetail = viewModel::openCooldownDetail,
-            onDismissCooldownDetail = viewModel::dismissCooldownDetail,
-            onClearCooldown = viewModel::clearCooldown,
-            onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
-            onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
-            onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
-            onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
-            onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
-            onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
-            onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
-            onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
-            onToggleJobExpanded = viewModel::toggleJobExpanded,
-            onOpenTab = onOpenTab,
-            onOpenSettings = onOpenSettings,
-            onOpenFeedback = onOpenFeedback,
-            onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
-            onFeedbackIssue = handleFeedbackIssue,
-            onOpenAccountSwitcher = onOpenAccountSwitcher,
-            otherAccountAlertBadge = otherAccountAlertBadge,
-            setupReadiness = setupReadiness,
-            onStartOnboardingWizard = onStartOnboardingWizard,
-            resolveJobScreenshotFile = { jobId ->
-                container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
-            },
-            resolveAttemptScreenshotFile = { attemptId ->
-                container.diagnosticScreenshotStore.resolveAttemptFile(attemptId)
-            },
-            modifier = modifier,
-        )
+            label = "today_display_mode_switch",
+        ) { activeMode ->
+            if (activeMode == UiDisplayMode.SIMPLE) {
+                SimpleTodayScreen(
+                    state = uiState,
+                    snackbarHostState = snackbarHostState,
+                    onReloginClick = viewModel::onReloginClick,
+                    onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
+                    onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
+                    onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
+                    onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
+                    onDismissUnknownReview = viewModel::dismissUnknownReview,
+                    onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
+                    onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
+                    onOpenCooldownDetail = viewModel::openCooldownDetail,
+                    onDismissCooldownDetail = viewModel::dismissCooldownDetail,
+                    onClearCooldown = viewModel::clearCooldown,
+                    onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
+                    onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
+                    onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
+                    onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
+                    onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
+                    onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
+                    onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
+                    onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
+                    onOpenTab = onOpenTab,
+                    onOpenSettings = onOpenSettings,
+                    onOpenFeedback = onOpenFeedback,
+                    onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+                    onFeedbackIssue = handleFeedbackIssue,
+                    onOpenAccountSwitcher = onOpenAccountSwitcher,
+                    onSwitchToStandardMode = onSwitchToStandardMode,
+                    otherAccountAlertBadge = otherAccountAlertBadge,
+                    resolveJobScreenshotFile = { jobId ->
+                        container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+                    },
+                    showTopBar = false,
+                    showSnackbarHost = false,
+                )
+            } else {
+                TodayScreen(
+                    state = uiState,
+                    snackbarHostState = snackbarHostState,
+                    onReloginClick = viewModel::onReloginClick,
+                    onDismissReloginChoice = viewModel::dismissReloginChoiceDialog,
+                    onChoosePreserveSessionLogin = viewModel::chooseReloginPreserveSession,
+                    onChooseClearAndRelogin = viewModel::chooseReloginClearAndRelogin,
+                    onOpenUnknownReview = { jobId -> viewModel.openUnknownReview(jobId) },
+                    onDismissUnknownReview = viewModel::dismissUnknownReview,
+                    onResolveUnknownAsSucceeded = viewModel::resolveUnknownAsSucceeded,
+                    onResolveUnknownAsCancelled = viewModel::resolveUnknownAsCancelled,
+                    onOpenCooldownDetail = viewModel::openCooldownDetail,
+                    onDismissCooldownDetail = viewModel::dismissCooldownDetail,
+                    onClearCooldown = viewModel::clearCooldown,
+                    onDismissDomBrokenDialog = viewModel::dismissDomBrokenDialog,
+                    onDismissUrgentAuthPrompt = viewModel::dismissUrgentAuthPrompt,
+                    onConfirmUrgentAuthPrompt = viewModel::confirmUrgentAuthPrompt,
+                    onTriggerForceAllBatch = viewModel::onTriggerForceAllBatchClick,
+                    onConfirmForceAllBatch = viewModel::confirmForceAllBatch,
+                    onDismissForceAllConfirm = viewModel::dismissForceAllConfirmDialog,
+                    onTriggerManualBatch = viewModel::onTriggerManualBatchClick,
+                    onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
+                    onToggleJobExpanded = viewModel::toggleJobExpanded,
+                    onOpenTab = onOpenTab,
+                    onOpenSettings = onOpenSettings,
+                    onOpenFeedback = onOpenFeedback,
+                    onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
+                    onFeedbackIssue = handleFeedbackIssue,
+                    onOpenAccountSwitcher = onOpenAccountSwitcher,
+                    onSwitchToSimpleMode = onSwitchToSimpleMode,
+                    otherAccountAlertBadge = otherAccountAlertBadge,
+                    setupReadiness = setupReadiness,
+                    onStartOnboardingWizard = onStartOnboardingWizard,
+                    resolveJobScreenshotFile = { jobId ->
+                        container.diagnosticScreenshotStore.resolveJobLatestFile(jobId)
+                    },
+                    resolveAttemptScreenshotFile = { attemptId ->
+                        container.diagnosticScreenshotStore.resolveAttemptFile(attemptId)
+                    },
+                    showTopBar = false,
+                    showSnackbarHost = false,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodayPersistentTopBar(
+    account: AccountEntity?,
+    businessDate: String,
+    displayMode: UiDisplayMode,
+    otherAccountAlertBadge: Boolean,
+    onOpenAccountSwitcher: () -> Unit,
+    onSelectDisplayMode: (UiDisplayMode) -> Unit,
+    onOpenFeedback: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
+    val formFactor = layout.formFactor
+    val reducedMotion = rememberReducedMotion()
+    val isBottomDockForm = layout.navChromeKind == FlameNavChromeKind.BOTTOM_DOCK
+    val isShortLandscape = formFactor == FlameFormFactor.COMPACT_HEIGHT_LANDSCAPE
+    val horizontalPadding = when (formFactor) {
+        FlameFormFactor.COMPACT_PORTRAIT -> 16.dp
+        FlameFormFactor.COMPACT_HEIGHT_LANDSCAPE -> 16.dp
+        FlameFormFactor.TABLET_PORTRAIT,
+        FlameFormFactor.TABLET_LANDSCAPE,
+        -> layout.horizontalGutter
+    }
+    val verticalPadding = when (formFactor) {
+        FlameFormFactor.COMPACT_PORTRAIT -> 12.dp
+        FlameFormFactor.COMPACT_HEIGHT_LANDSCAPE -> 8.dp
+        FlameFormFactor.TABLET_PORTRAIT,
+        FlameFormFactor.TABLET_LANDSCAPE,
+        -> 14.dp
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(palette.canvas),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .padding(horizontal = horizontalPadding, vertical = verticalPadding)
+                .heightIn(min = if (isShortLandscape) 40.dp else 44.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (isBottomDockForm || isShortLandscape) 6.dp else 10.dp),
+        ) {
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (isBottomDockForm) {
+                    TodayAccountSwitcherPill(
+                        account = account,
+                        otherAccountAlertBadge = otherAccountAlertBadge,
+                        onClick = onOpenAccountSwitcher,
+                    )
+                } else {
+                    AnimatedContent(
+                        targetState = displayMode,
+                        transitionSpec = {
+                            if (reducedMotion) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                fadeIn(tween(160, easing = FlameMotionSpec.easeOut)) togetherWith
+                                    fadeOut(tween(120, easing = FlameMotionSpec.easeOut))
+                            }
+                        },
+                        label = "persistent_topbar_leading",
+                    ) { mode ->
+                        if (mode == UiDisplayMode.SIMPLE) {
+                            TodayAccountSwitcherPill(
+                                account = account,
+                                otherAccountAlertBadge = otherAccountAlertBadge,
+                                onClick = onOpenAccountSwitcher,
+                            )
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "今日",
+                                    style = if (isShortLandscape) {
+                                        MaterialTheme.typography.titleLarge
+                                    } else {
+                                        MaterialTheme.typography.headlineSmall
+                                    },
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = palette.ink,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                                if (businessDate.isNotBlank()) {
+                                    Text(
+                                        text = businessDate,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = palette.inkTertiary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!isBottomDockForm) {
+                AnimatedVisibility(
+                    visible = displayMode == UiDisplayMode.SIMPLE,
+                    enter = if (reducedMotion) {
+                        EnterTransition.None
+                    } else {
+                        expandHorizontally(
+                            tween(180, easing = FlameMotionSpec.easeOut),
+                            expandFrom = Alignment.End,
+                        ) + fadeIn(tween(150, easing = FlameMotionSpec.easeOut))
+                    },
+                    exit = if (reducedMotion) {
+                        ExitTransition.None
+                    } else {
+                        shrinkHorizontally(
+                            tween(150, easing = FlameMotionSpec.easeOut),
+                            shrinkTowards = Alignment.End,
+                        ) + fadeOut(tween(110, easing = FlameMotionSpec.easeOut))
+                    },
+                    label = "topbar_simple_tools",
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(if (isShortLandscape) 8.dp else 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlameFeedbackTopButton(
+                            onClick = onOpenFeedback,
+                            compact = true,
+                        )
+                        FlameIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            onClick = onOpenSettings,
+                        )
+                    }
+                }
+            }
+
+            FlameDisplayModeToggle(
+                mode = displayMode,
+                compact = isBottomDockForm || isShortLandscape,
+                onSelectMode = onSelectDisplayMode,
+            )
+
+            if (isBottomDockForm) {
+                FlameFeedbackTopButton(
+                    onClick = onOpenFeedback,
+                    compact = true,
+                )
+                FlameIconButton(
+                    icon = Icons.Outlined.Settings,
+                    contentDescription = "设置与维护",
+                    onClick = onOpenSettings,
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = !isBottomDockForm && displayMode == UiDisplayMode.STANDARD,
+            enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180, easing = FlameMotionSpec.easeOut)),
+            exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(130, easing = FlameMotionSpec.easeOut)),
+            label = "topbar_standard_divider",
+        ) {
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+        }
     }
 }
 
@@ -384,11 +650,14 @@ fun TodayScreen(
     onCopyDiagnosticsLog: (() -> Unit)? = null,
     onFeedbackIssue: ((title: String, content: String) -> Unit)? = null,
     onOpenAccountSwitcher: () -> Unit = {},
+    onSwitchToSimpleMode: () -> Unit = {},
     otherAccountAlertBadge: Boolean = false,
     setupReadiness: SetupReadinessSnapshot? = null,
     onStartOnboardingWizard: () -> Unit = {},
     resolveJobScreenshotFile: (String) -> File? = { null },
     resolveAttemptScreenshotFile: (String) -> File? = { null },
+    showTopBar: Boolean = true,
+    showSnackbarHost: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
@@ -422,39 +691,73 @@ fun TodayScreen(
             contentColor = palette.ink,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
-                FlameTopBar(
-                    title = "今日",
-                    subtitle = if (chromeHandlesGlobalNav) {
-                        state.businessDate.takeIf { it.isNotBlank() }
-                    } else {
-                        null
-                    },
-                ) {
+                if (showTopBar) {
                     if (!chromeHandlesGlobalNav) {
-                        TodayAccountSwitcherPill(
-                            account = state.account,
-                            otherAccountAlertBadge = otherAccountAlertBadge,
-                            onClick = onOpenAccountSwitcher,
-                        )
-                        FlameFeedbackTopButton(
-                            onClick = onOpenFeedback,
-                            compact = compactFeedbackButton,
-                        )
-                        FlameIconButton(
-                            icon = Icons.Outlined.Settings,
-                            contentDescription = "设置与维护",
-                            onClick = { onOpenSettings(null) },
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier.weight(1f),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                TodayAccountSwitcherPill(
+                                    account = state.account,
+                                    otherAccountAlertBadge = otherAccountAlertBadge,
+                                    onClick = onOpenAccountSwitcher,
+                                )
+                            }
+                            FlameDisplayModeToggle(
+                                mode = UiDisplayMode.STANDARD,
+                                compact = true,
+                                onSelectMode = { next ->
+                                    if (next == UiDisplayMode.SIMPLE) {
+                                        onSwitchToSimpleMode()
+                                    }
+                                },
+                            )
+                            FlameFeedbackTopButton(
+                                onClick = onOpenFeedback,
+                                compact = true,
+                            )
+                            FlameIconButton(
+                                icon = Icons.Outlined.Settings,
+                                contentDescription = "设置与维护",
+                                onClick = { onOpenSettings(null) },
+                            )
+                        }
+                    } else {
+                        FlameTopBar(
+                            title = "今日",
+                            subtitle = state.businessDate.takeIf { it.isNotBlank() },
+                        ) {
+                            FlameDisplayModeToggle(
+                                mode = UiDisplayMode.STANDARD,
+                                compact = layout.isShortLandscape,
+                                onSelectMode = { next ->
+                                    if (next == UiDisplayMode.SIMPLE) {
+                                        onSwitchToSimpleMode()
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             },
             snackbarHost = {
-                SnackbarHost(
-                    hostState = snackbarHostState,
-                    modifier = Modifier.padding(
-                        bottom = if (layout.hasBottomFloatingDock) dockBottomClearance - 12.dp else 16.dp,
-                    ),
-                )
+                if (showSnackbarHost) {
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier.padding(
+                            bottom = if (layout.hasBottomFloatingDock) dockBottomClearance - 12.dp else 16.dp,
+                        ),
+                    )
+                }
             },
         ) { innerPadding ->
             when {

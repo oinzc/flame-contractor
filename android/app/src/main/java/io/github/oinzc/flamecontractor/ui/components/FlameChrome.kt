@@ -3,10 +3,14 @@ package io.github.oinzc.flamecontractor.ui.components
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
@@ -48,14 +53,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
 /**
@@ -505,4 +516,113 @@ fun FlameSubpageScaffold(
         },
         content = content,
     )
+}
+
+/**
+ * 首页顶栏「极简 | 标准」双段滑块胶囊，固定同一坐标系位置实现单点零跳转直切。
+ */
+@Composable
+fun FlameDisplayModeToggle(
+    mode: UiDisplayMode,
+    onSelectMode: (UiDisplayMode) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val palette = FlameThemeTokens.palette
+    val isDark = FlameThemeTokens.isDark
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val reducedMotion = rememberReducedMotion()
+    val segWidth = if (compact) 48.dp else 56.dp
+    val segHeight = if (compact) 28.dp else 30.dp
+    val gapWidth = 2.dp
+    val textAnimMs = if (reducedMotion) 0 else 160
+    val thumbFraction by animateFloatAsState(
+        targetValue = if (mode == UiDisplayMode.SIMPLE) 0f else 1f,
+        animationSpec = if (reducedMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.86f, stiffness = 520f)
+        },
+        label = "display_mode_thumb_fraction",
+    )
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(999.dp),
+        color = palette.surfaceSubtle,
+        border = BorderStroke(1.dp, palette.hairline),
+    ) {
+        Box(modifier = Modifier.padding(3.dp)) {
+            Box(
+                modifier = Modifier
+                    .width(segWidth)
+                    .height(segHeight)
+                    .graphicsLayer {
+                        translationX = thumbFraction * with(density) { (segWidth + gapWidth).toPx() }
+                    }
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(palette.surface)
+                    .then(
+                        if (isDark) {
+                            Modifier.border(1.dp, palette.hairlineStrong, RoundedCornerShape(999.dp))
+                        } else {
+                            Modifier.border(0.5.dp, palette.hairline, RoundedCornerShape(999.dp))
+                        },
+                    ),
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(gapWidth),
+            ) {
+                listOf(
+                    UiDisplayMode.SIMPLE to "极简",
+                    UiDisplayMode.STANDARD to "标准",
+                ).forEach { (option, label) ->
+                    val isSelected = mode == option
+                    val interaction = remember(option) { MutableInteractionSource() }
+                    val fgColor by animateColorAsState(
+                        targetValue = if (isSelected) palette.ink else palette.inkTertiary,
+                        animationSpec = tween(durationMillis = textAnimMs, easing = FlameMotionSpec.easeOut),
+                        label = "display_mode_seg_fg_${option.name}",
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .width(segWidth)
+                            .height(segHeight)
+                            .flamePressScale(interactionSource = interaction)
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable(
+                                interactionSource = interaction,
+                                indication = null,
+                                role = Role.Tab,
+                                onClick = {
+                                    if (!isSelected) {
+                                        haptics.performFlameLightTick()
+                                        onSelectMode(option)
+                                    }
+                                },
+                            )
+                            .semantics {
+                                role = Role.Tab
+                                selected = isSelected
+                                contentDescription = "切换至${label}模式"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = fgColor,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

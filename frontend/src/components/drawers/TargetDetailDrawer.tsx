@@ -15,6 +15,7 @@ import { DrawerShell } from '../ui/DrawerShell.tsx'
 import { TrashIcon } from '../ui/Icons.tsx'
 import { PaginationBar } from '../ui/PaginationBar.tsx'
 import { PillTabs } from '../ui/PillTabs.tsx'
+import { TargetScheduleTimeField } from '../ui/ScheduleTimeControl.tsx'
 import { SlashVariableInput } from '../ui/SlashVariableInput.tsx'
 import { SparkChip } from '../ui/SparkChip.tsx'
 import { StatusPill } from '../ui/StatusPill.tsx'
@@ -296,19 +297,12 @@ export function TargetDetailDrawer({
               </select>
             </div>
 
-            <div className="fc-field">
-              <label className="fc-label" htmlFor="td-hhmm">
-                <span>精确发送时刻覆写（HH:MM）</span>
-                <span className="fc-hint">留空则跟随当前抖音号时段</span>
-              </label>
-              <input
-                id="td-hhmm"
-                className="fc-input fc-mono"
-                placeholder="跟随账号"
-                value={sendTimeHhmm}
-                onChange={(e) => setSendTimeHhmm(e.target.value)}
-              />
-            </div>
+            <TargetScheduleTimeField
+              idPrefix="td"
+              account={account}
+              value={sendTimeHhmm}
+              onChange={setSendTimeHhmm}
+            />
 
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button

@@ -27,6 +27,8 @@ import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.ExecutionRuntimeBus
 import io.github.oinzc.flamecontractor.execution.StructureProbeItem
 import io.github.oinzc.flamecontractor.execution.StructureProbeReport
+import io.github.oinzc.flamecontractor.ui.components.FlameClockTime
+import io.github.oinzc.flamecontractor.ui.components.ScheduleTriggerMode
 import java.io.File
 import java.io.InputStream
 import java.time.Instant
@@ -1214,6 +1216,78 @@ class SettingsViewModelTest {
                 fallbackDisplay = "   ",
             ),
         )
+    }
+
+    @Test
+    fun `alarm clock picker and rhythm helpers update schedule inputs cleanly`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val initialAccount = AccountEntity(
+            id = DEFAULT_ACCOUNT_ID,
+            status = AccountStatus.HEALTHY,
+            enabled = true,
+            sendWindowStart = "20:00",
+            sendWindowEnd = "22:00",
+            sendTimeHhmm = null,
+            jitterMaxMinutes = 15,
+            cooldownMinSec = 3,
+            cooldownMaxSec = 8,
+            autoScanIntervalHours = 24,
+        )
+        val repo = FakeSettingsAccountRepository(initialAccount)
+        val scheduler = FakeScheduleGateway()
+        val vmScope = CoroutineScope(dispatcher + SupervisorJob())
+        try {
+            val vm = createViewModel(
+                vmScope = vmScope,
+                dispatcher = dispatcher,
+                accountRepo = repo,
+                scheduleGateway = scheduler,
+            )
+            advanceUntilIdle()
+
+            assertEquals(ScheduleTriggerMode.WINDOW, vm.uiState.value.scheduleTriggerMode)
+
+            // Picking start beyond end shifts end automatically to preserve same-day constraint
+            vm.onWindowStartTimePicked(FlameClockTime(22, 30))
+            assertEquals("22:30", vm.uiState.value.sendWindowStartInput)
+            assertEquals("23:00", vm.uiState.value.sendWindowEndInput)
+
+            vm.onWindowEndTimePicked(FlameClockTime(23, 30))
+            assertEquals("23:30", vm.uiState.value.sendWindowEndInput)
+
+            // Switching to FIXED_TIME uses fixedTimeDraftInput when saving
+            vm.onScheduleTriggerModeChanged(ScheduleTriggerMode.FIXED_TIME)
+            vm.onFixedTimePicked(FlameClockTime(21, 15))
+            vm.onJitterMinutesSelected(5)
+            vm.onCooldownRangeSelected(4, 10)
+            vm.saveScheduleConfig()
+            advanceUntilIdle()
+
+            assertNull(vm.uiState.value.scheduleError)
+            assertEquals("21:15", repo.currentAccount.sendTimeHhmm)
+            assertEquals(5, repo.currentAccount.jitterMaxMinutes)
+            assertEquals(4, repo.currentAccount.cooldownMinSec)
+            assertEquals(10, repo.currentAccount.cooldownMaxSec)
+
+            // Switching back to WINDOW clears persisted sendTimeHhmm on save
+            vm.onScheduleTriggerModeChanged(ScheduleTriggerMode.WINDOW)
+            vm.onRestoreDefaultRhythm()
+            vm.saveScheduleConfig()
+            advanceUntilIdle()
+
+            assertNull(repo.currentAccount.sendTimeHhmm)
+            assertEquals(15, repo.currentAccount.jitterMaxMinutes)
+            assertEquals(3, repo.currentAccount.cooldownMinSec)
+            assertEquals(8, repo.currentAccount.cooldownMaxSec)
+
+            // Auto scan stepper clamps to 1..168
+            vm.stepAutoScanIntervalHours(6)
+            assertEquals("30", vm.uiState.value.autoScanIntervalHoursInput)
+            vm.stepAutoScanIntervalHours(-100)
+            assertEquals("1", vm.uiState.value.autoScanIntervalHoursInput)
+        } finally {
+            vmScope.cancel()
+        }
     }
 
     private fun createRealSelectorStore(subDir: String): SelectorBundleStore {

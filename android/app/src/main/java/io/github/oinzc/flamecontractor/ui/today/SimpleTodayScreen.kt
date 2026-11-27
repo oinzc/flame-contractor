@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -87,10 +88,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
+import io.github.oinzc.flamecontractor.ui.components.FlameDisplayModeToggle
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
@@ -542,6 +545,8 @@ fun SimpleTodayScreen(
     onSwitchToStandardMode: () -> Unit = { onOpenSettings(SettingsSection.APPEARANCE) },
     otherAccountAlertBadge: Boolean = false,
     resolveJobScreenshotFile: (String) -> File? = { null },
+    showTopBar: Boolean = true,
+    showSnackbarHost: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
@@ -591,22 +596,27 @@ fun SimpleTodayScreen(
         contentColor = palette.ink,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            SimpleTodayTopBar(
-                account = state.account,
-                formFactor = formFactor,
-                otherAccountAlertBadge = otherAccountAlertBadge,
-                onOpenAccountSwitcher = onOpenAccountSwitcher,
-                onOpenFeedback = onOpenFeedback,
-                onOpenSettings = { onOpenSettings(null) },
-            )
+            if (showTopBar) {
+                SimpleTodayTopBar(
+                    account = state.account,
+                    formFactor = formFactor,
+                    otherAccountAlertBadge = otherAccountAlertBadge,
+                    onOpenAccountSwitcher = onOpenAccountSwitcher,
+                    onSwitchToStandardMode = onSwitchToStandardMode,
+                    onOpenFeedback = onOpenFeedback,
+                    onOpenSettings = { onOpenSettings(null) },
+                )
+            }
         },
         snackbarHost = {
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = 12.dp),
-            )
+            if (showSnackbarHost) {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(bottom = 12.dp),
+                )
+            }
         },
     ) { innerPadding ->
         BoxWithConstraints(
@@ -668,7 +678,7 @@ fun SimpleTodayScreen(
                             showReloginHint = showReloginHint,
                             onPrimaryClick = handlePrimaryClick,
                             onOpenTargets = { onOpenTab(MainTab.TARGETS) },
-                            onSwitchToStandardMode = onSwitchToStandardMode,
+                            onOpenTemplates = { onOpenTab(MainTab.TEMPLATES) },
                             onReloginClick = onReloginClick,
                             modifier = Modifier.weight(rightWeight),
                         )
@@ -736,7 +746,7 @@ fun SimpleTodayScreen(
                             showReloginHint = showReloginHint,
                             largerTouchTargets = isTabletPortrait,
                             onOpenTargets = { onOpenTab(MainTab.TARGETS) },
-                            onSwitchToStandardMode = onSwitchToStandardMode,
+                            onOpenTemplates = { onOpenTab(MainTab.TEMPLATES) },
                             onReloginClick = onReloginClick,
                         )
                     }
@@ -854,6 +864,7 @@ private fun SimpleTodayTopBar(
     formFactor: FlameFormFactor,
     otherAccountAlertBadge: Boolean,
     onOpenAccountSwitcher: () -> Unit,
+    onSwitchToStandardMode: () -> Unit,
     onOpenFeedback: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -956,6 +967,16 @@ private fun SimpleTodayTopBar(
             }
         }
 
+        FlameDisplayModeToggle(
+            mode = UiDisplayMode.SIMPLE,
+            compact = isCompactPortrait || isShortLandscape,
+            onSelectMode = { next ->
+                if (next == UiDisplayMode.STANDARD) {
+                    onSwitchToStandardMode()
+                }
+            },
+        )
+
         if (!isCompactPortrait) {
             FlameFeedbackTopButton(
                 onClick = onOpenFeedback,
@@ -1000,7 +1021,7 @@ private fun SimpleConsoleActionCard(
     showReloginHint: Boolean,
     onPrimaryClick: () -> Unit,
     onOpenTargets: () -> Unit,
-    onSwitchToStandardMode: () -> Unit,
+    onOpenTemplates: () -> Unit,
     onReloginClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1099,7 +1120,7 @@ private fun SimpleConsoleActionCard(
                 showReloginHint = showReloginHint,
                 compact = compactVertical,
                 onOpenTargets = onOpenTargets,
-                onSwitchToStandardMode = onSwitchToStandardMode,
+                onOpenTemplates = onOpenTemplates,
                 onReloginClick = onReloginClick,
             )
         }
@@ -1112,13 +1133,13 @@ private fun SimpleConsoleQuickActionsRow(
     showReloginHint: Boolean,
     compact: Boolean,
     onOpenTargets: () -> Unit,
-    onSwitchToStandardMode: () -> Unit,
+    onOpenTemplates: () -> Unit,
     onReloginClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val haptics = LocalHapticFeedback.current
     val targetsInteraction = remember { MutableInteractionSource() }
-    val modeInteraction = remember { MutableInteractionSource() }
+    val templatesInteraction = remember { MutableInteractionSource() }
     val reloginInteraction = remember { MutableInteractionSource() }
     val pillMinHeight = if (compact) 36.dp else 42.dp
 
@@ -1172,24 +1193,31 @@ private fun SimpleConsoleQuickActionsRow(
             Surface(
                 onClick = {
                     haptics.performFlameLightTick()
-                    onSwitchToStandardMode()
+                    onOpenTemplates()
                 },
-                interactionSource = modeInteraction,
+                interactionSource = templatesInteraction,
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = pillMinHeight)
-                    .flamePressScale(interactionSource = modeInteraction),
+                    .flamePressScale(interactionSource = templatesInteraction),
                 shape = RoundedCornerShape(14.dp),
                 color = palette.surfaceSubtle,
                 contentColor = palette.inkSecondary,
                 border = BorderStroke(1.dp, palette.hairline),
             ) {
-                Box(
+                Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
                 ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Forum,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "切回标准模式",
+                        text = "续火模板",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -2033,13 +2061,13 @@ private fun SimpleQuietFooterLinks(
     showReloginHint: Boolean,
     largerTouchTargets: Boolean = false,
     onOpenTargets: () -> Unit,
-    onSwitchToStandardMode: () -> Unit,
+    onOpenTemplates: () -> Unit,
     onReloginClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val haptics = LocalHapticFeedback.current
     val targetsInteraction = remember { MutableInteractionSource() }
-    val modeInteraction = remember { MutableInteractionSource() }
+    val templatesInteraction = remember { MutableInteractionSource() }
     val reloginInteraction = remember { MutableInteractionSource() }
     val textStyle = if (largerTouchTargets) {
         MaterialTheme.typography.bodyMedium
@@ -2127,25 +2155,32 @@ private fun SimpleQuietFooterLinks(
             )
         }
 
-        Box(
+        Row(
             modifier = Modifier
-                .flamePressScale(interactionSource = modeInteraction)
+                .flamePressScale(interactionSource = templatesInteraction)
                 .clip(RoundedCornerShape(999.dp))
                 .clickable(
-                    interactionSource = modeInteraction,
+                    interactionSource = templatesInteraction,
                     indication = null,
                     role = Role.Button,
                     onClick = {
                         haptics.performFlameLightTick()
-                        onSwitchToStandardMode()
+                        onOpenTemplates()
                     },
                 )
                 .heightIn(min = linkMinHeight)
                 .padding(horizontal = if (largerTouchTargets) 12.dp else 10.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
+            Icon(
+                imageVector = Icons.Outlined.Forum,
+                contentDescription = null,
+                tint = palette.inkSecondary,
+                modifier = Modifier.size(if (largerTouchTargets) 16.dp else 15.dp),
+            )
             Text(
-                text = "切换标准模式",
+                text = "续火模板",
                 style = textStyle,
                 fontWeight = FontWeight.Medium,
                 color = palette.inkSecondary,

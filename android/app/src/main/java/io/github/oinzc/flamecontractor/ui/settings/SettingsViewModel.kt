@@ -39,6 +39,10 @@ import io.github.oinzc.flamecontractor.execution.ExecutionRuntimeBus
 import io.github.oinzc.flamecontractor.execution.StructureProbeReport
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FlameClockTime
+import io.github.oinzc.flamecontractor.ui.components.ScheduleTriggerMode
+import io.github.oinzc.flamecontractor.ui.components.normalizeWindowPairAfterEndChange
+import io.github.oinzc.flamecontractor.ui.components.normalizeWindowPairAfterStartChange
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -162,6 +166,8 @@ data class SettingsUiState(
     val sendWindowStartInput: String = "20:00",
     val sendWindowEndInput: String = "22:00",
     val sendTimeHhmmInput: String = "",
+    val scheduleTriggerMode: ScheduleTriggerMode = ScheduleTriggerMode.WINDOW,
+    val fixedTimeDraftInput: String = "20:30",
     val jitterMaxMinutesInput: String = "15",
     val cooldownMinSecInput: String = "3",
     val cooldownMaxSecInput: String = "8",
@@ -328,12 +334,19 @@ class SettingsViewModel(
                     )
                     if (!scheduleFormDirty) {
                         val skipOfficialLit = schedulePreferencesStore?.isSkipOfficialLitToday(accountId) == true
+                        val savedFixed = account.sendTimeHhmm?.trim().orEmpty()
                         nextState = nextState.copy(
                             enabledInput = account.enabled,
                             skipScheduledOfficialLitInput = skipOfficialLit,
                             sendWindowStartInput = account.sendWindowStart,
                             sendWindowEndInput = account.sendWindowEnd,
-                            sendTimeHhmmInput = account.sendTimeHhmm.orEmpty(),
+                            sendTimeHhmmInput = savedFixed,
+                            scheduleTriggerMode = if (savedFixed.isNotEmpty()) {
+                                ScheduleTriggerMode.FIXED_TIME
+                            } else {
+                                ScheduleTriggerMode.WINDOW
+                            },
+                            fixedTimeDraftInput = savedFixed.ifEmpty { "20:30" },
                             jitterMaxMinutesInput = account.jitterMaxMinutes.toString(),
                             cooldownMinSecInput = account.cooldownMinSec.toString(),
                             cooldownMaxSecInput = account.cooldownMaxSec.toString(),
@@ -474,9 +487,117 @@ class SettingsViewModel(
 
     fun onSendTimeHhmmChanged(value: String) {
         scheduleFormDirty = true
+        val trimmed = value.trim()
         _uiState.update {
             it.copy(
                 sendTimeHhmmInput = value,
+                scheduleTriggerMode = if (trimmed.isNotEmpty()) {
+                    ScheduleTriggerMode.FIXED_TIME
+                } else {
+                    ScheduleTriggerMode.WINDOW
+                },
+                fixedTimeDraftInput = if (trimmed.isNotEmpty()) trimmed else it.fixedTimeDraftInput,
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onScheduleTriggerModeChanged(mode: ScheduleTriggerMode) {
+        scheduleFormDirty = true
+        _uiState.update { current ->
+            val nextFixedDraft = current.fixedTimeDraftInput.ifBlank { "20:30" }
+            current.copy(
+                scheduleTriggerMode = mode,
+                fixedTimeDraftInput = nextFixedDraft,
+                sendTimeHhmmInput = if (mode == ScheduleTriggerMode.FIXED_TIME) nextFixedDraft else "",
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onWindowStartTimePicked(time: FlameClockTime) {
+        scheduleFormDirty = true
+        _uiState.update { current ->
+            val currentEnd = FlameClockTime.parseOrDefault(current.sendWindowEndInput, FlameClockTime(22, 0))
+            val (nextStart, nextEnd) = normalizeWindowPairAfterStartChange(time, currentEnd)
+            current.copy(
+                sendWindowStartInput = nextStart.toHhmm(),
+                sendWindowEndInput = nextEnd.toHhmm(),
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onWindowEndTimePicked(time: FlameClockTime) {
+        scheduleFormDirty = true
+        _uiState.update { current ->
+            val currentStart = FlameClockTime.parseOrDefault(current.sendWindowStartInput, FlameClockTime(20, 0))
+            val (nextStart, nextEnd) = normalizeWindowPairAfterEndChange(currentStart, time)
+            current.copy(
+                sendWindowStartInput = nextStart.toHhmm(),
+                sendWindowEndInput = nextEnd.toHhmm(),
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onFixedTimePicked(time: FlameClockTime) {
+        scheduleFormDirty = true
+        val hhmm = time.toHhmm()
+        _uiState.update { current ->
+            current.copy(
+                scheduleTriggerMode = ScheduleTriggerMode.FIXED_TIME,
+                fixedTimeDraftInput = hhmm,
+                sendTimeHhmmInput = hhmm,
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onJitterMinutesSelected(minutes: Int) {
+        scheduleFormDirty = true
+        _uiState.update {
+            it.copy(
+                jitterMaxMinutesInput = minutes.coerceIn(0, MAX_JITTER_MINUTES).toString(),
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onCooldownRangeSelected(minSec: Int, maxSec: Int) {
+        scheduleFormDirty = true
+        val safeMin = minSec.coerceIn(1, 60)
+        val safeMax = maxSec.coerceIn(safeMin, 60)
+        _uiState.update {
+            it.copy(
+                cooldownMinSecInput = safeMin.toString(),
+                cooldownMaxSecInput = safeMax.toString(),
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
+    fun onRestoreDefaultRhythm() {
+        scheduleFormDirty = true
+        _uiState.update {
+            it.copy(
+                jitterMaxMinutesInput = "15",
+                cooldownMinSecInput = "3",
+                cooldownMaxSecInput = "8",
                 hasUnsavedScheduleChanges = true,
                 scheduleError = null,
                 scheduleMessage = null,
@@ -525,13 +646,20 @@ class SettingsViewModel(
         scope.launch {
             val saved = withContext(ioDispatcher) { accountRepo.getAccount(accountId) } ?: return@launch
             val savedSkipOfficialLit = schedulePreferencesStore?.isSkipOfficialLitToday(accountId) == true
+            val savedFixed = saved.sendTimeHhmm?.trim().orEmpty()
             _uiState.update {
                 it.copy(
                     enabledInput = saved.enabled,
                     skipScheduledOfficialLitInput = savedSkipOfficialLit,
                     sendWindowStartInput = saved.sendWindowStart,
                     sendWindowEndInput = saved.sendWindowEnd,
-                    sendTimeHhmmInput = saved.sendTimeHhmm.orEmpty(),
+                    sendTimeHhmmInput = savedFixed,
+                    scheduleTriggerMode = if (savedFixed.isNotEmpty()) {
+                        ScheduleTriggerMode.FIXED_TIME
+                    } else {
+                        ScheduleTriggerMode.WINDOW
+                    },
+                    fixedTimeDraftInput = savedFixed.ifEmpty { "20:30" },
                     jitterMaxMinutesInput = saved.jitterMaxMinutes.toString(),
                     cooldownMinSecInput = saved.cooldownMinSec.toString(),
                     cooldownMaxSecInput = saved.cooldownMaxSec.toString(),
@@ -637,6 +765,12 @@ class SettingsViewModel(
                         sendWindowStartInput = updated.sendWindowStart,
                         sendWindowEndInput = updated.sendWindowEnd,
                         sendTimeHhmmInput = updated.sendTimeHhmm.orEmpty(),
+                        scheduleTriggerMode = if (!updated.sendTimeHhmm.isNullOrBlank()) {
+                            ScheduleTriggerMode.FIXED_TIME
+                        } else {
+                            ScheduleTriggerMode.WINDOW
+                        },
+                        fixedTimeDraftInput = updated.sendTimeHhmm?.takeIf { it.isNotBlank() } ?: current.fixedTimeDraftInput,
                         jitterMaxMinutesInput = updated.jitterMaxMinutes.toString(),
                         cooldownMinSecInput = updated.cooldownMinSec.toString(),
                         cooldownMaxSecInput = updated.cooldownMaxSec.toString(),
@@ -692,6 +826,23 @@ class SettingsViewModel(
                     MIN_AUTO_SCAN_INTERVAL_HOURS,
                     MAX_AUTO_SCAN_INTERVAL_HOURS,
                 ).toString(),
+                hasUnsavedAutoScanChanges = true,
+                autoScanError = null,
+                autoScanMessage = null,
+            )
+        }
+    }
+
+    fun stepAutoScanIntervalHours(delta: Int) {
+        autoScanFormDirty = true
+        _uiState.update { current ->
+            val base = current.autoScanIntervalHoursInput.trim().toIntOrNull() ?: 24
+            val next = (base + delta).coerceIn(
+                MIN_AUTO_SCAN_INTERVAL_HOURS,
+                MAX_AUTO_SCAN_INTERVAL_HOURS,
+            )
+            current.copy(
+                autoScanIntervalHoursInput = next.toString(),
                 hasUnsavedAutoScanChanges = true,
                 autoScanError = null,
                 autoScanMessage = null,

@@ -546,6 +546,9 @@ export function SettingsView({
                         value={scanInterval}
                         onChange={(e) => setScanInterval(e.target.value)}
                       />
+                      <span className="fc-hint">
+                        每隔几小时后台静默核对一次好友火花状态；数值越小越及时，越大越省资源。
+                      </span>
                     </div>
 
                     <div className="fc-field">
@@ -561,6 +564,9 @@ export function SettingsView({
                         value={graceMinutes}
                         onChange={(e) => setGraceMinutes(e.target.value)}
                       />
+                      <span className="fc-hint">
+                        若账号设置了固定发送时刻但到点时服务未在线，上线后在该分钟数内仍会自动补发；填 0 表示超时不补。
+                      </span>
                     </div>
                   </div>
 

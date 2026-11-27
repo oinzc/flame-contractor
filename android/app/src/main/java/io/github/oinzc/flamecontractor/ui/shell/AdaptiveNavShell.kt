@@ -8,9 +8,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -194,54 +196,75 @@ fun AdaptiveNavShell(
                 .fillMaxSize()
                 .background(palette.canvas),
         ) {
-            if (!hideNavigationChrome) {
-                when (navChromeKind) {
-                    FlameNavChromeKind.COMPACT_RAIL -> FlameCompactIconRail(
-                        selectedTab = selectedTab,
-                        isSettingsSelected = isSettingsSelected,
-                        onSelectTab = onSelectTab,
-                        todayAlertBadge = todayAlertBadge,
-                        currentAccount = currentAccount,
-                        otherAccountAlertBadge = otherAccountAlertBadge,
-                        onOpenAccountSwitcher = onOpenAccountSwitcher,
-                        onSwitchToSimpleMode = onSwitchToSimpleMode,
-                        onOpenFeedback = onOpenFeedback,
-                        onOpenSettings = onOpenSettings,
-                    )
+            AnimatedVisibility(
+                visible = !hideNavigationChrome,
+                enter = if (reducedMotion) {
+                    EnterTransition.None
+                } else {
+                    expandHorizontally(
+                        animationSpec = tween(220, easing = FlameMotionSpec.easeOut),
+                        expandFrom = Alignment.Start,
+                    ) + fadeIn(animationSpec = tween(180, easing = FlameMotionSpec.easeOut))
+                },
+                exit = if (reducedMotion) {
+                    ExitTransition.None
+                } else {
+                    shrinkHorizontally(
+                        animationSpec = tween(190, easing = FlameMotionSpec.easeOut),
+                        shrinkTowards = Alignment.Start,
+                    ) + fadeOut(animationSpec = tween(130, easing = FlameMotionSpec.easeOut))
+                },
+                label = "side_nav_visibility",
+            ) {
+                Row(modifier = Modifier.fillMaxHeight()) {
+                    when (navChromeKind) {
+                        FlameNavChromeKind.COMPACT_RAIL -> FlameCompactIconRail(
+                            selectedTab = selectedTab,
+                            isSettingsSelected = isSettingsSelected,
+                            onSelectTab = onSelectTab,
+                            todayAlertBadge = todayAlertBadge,
+                            currentAccount = currentAccount,
+                            otherAccountAlertBadge = otherAccountAlertBadge,
+                            onOpenAccountSwitcher = onOpenAccountSwitcher,
+                            onSwitchToSimpleMode = onSwitchToSimpleMode,
+                            onOpenFeedback = onOpenFeedback,
+                            onOpenSettings = onOpenSettings,
+                        )
 
-                    FlameNavChromeKind.NAVIGATION_RAIL -> FlameTabletNavigationRail(
-                        selectedTab = selectedTab,
-                        isSettingsSelected = isSettingsSelected,
-                        onSelectTab = onSelectTab,
-                        todayAlertBadge = todayAlertBadge,
-                        currentAccount = currentAccount,
-                        totalAccountCount = totalAccountCount,
-                        otherAccountAlertBadge = otherAccountAlertBadge,
-                        onOpenAccountSwitcher = onOpenAccountSwitcher,
-                        onSwitchToSimpleMode = onSwitchToSimpleMode,
-                        onOpenFeedback = onOpenFeedback,
-                        onOpenSettings = onOpenSettings,
-                    )
+                        FlameNavChromeKind.NAVIGATION_RAIL -> FlameTabletNavigationRail(
+                            selectedTab = selectedTab,
+                            isSettingsSelected = isSettingsSelected,
+                            onSelectTab = onSelectTab,
+                            todayAlertBadge = todayAlertBadge,
+                            currentAccount = currentAccount,
+                            totalAccountCount = totalAccountCount,
+                            otherAccountAlertBadge = otherAccountAlertBadge,
+                            onOpenAccountSwitcher = onOpenAccountSwitcher,
+                            onSwitchToSimpleMode = onSwitchToSimpleMode,
+                            onOpenFeedback = onOpenFeedback,
+                            onOpenSettings = onOpenSettings,
+                        )
 
-                    FlameNavChromeKind.PERMANENT_SIDEBAR -> FlamePermanentSidebar(
-                        selectedTab = selectedTab,
-                        isSettingsSelected = isSettingsSelected,
-                        onSelectTab = onSelectTab,
-                        todayAlertBadge = todayAlertBadge,
-                        enabledTargetCount = enabledTargetCount,
-                        currentAccount = currentAccount,
-                        totalAccountCount = totalAccountCount,
-                        otherAccountAlertBadge = otherAccountAlertBadge,
-                        appVersionLabel = appVersionLabel,
-                        onOpenAccountSwitcher = onOpenAccountSwitcher,
-                        onSwitchToSimpleMode = onSwitchToSimpleMode,
-                        onOpenFeedback = onOpenFeedback,
-                        onOpenSettings = onOpenSettings,
-                    )
+                        FlameNavChromeKind.PERMANENT_SIDEBAR -> FlamePermanentSidebar(
+                            selectedTab = selectedTab,
+                            isSettingsSelected = isSettingsSelected,
+                            onSelectTab = onSelectTab,
+                            todayAlertBadge = todayAlertBadge,
+                            enabledTargetCount = enabledTargetCount,
+                            currentAccount = currentAccount,
+                            totalAccountCount = totalAccountCount,
+                            otherAccountAlertBadge = otherAccountAlertBadge,
+                            appVersionLabel = appVersionLabel,
+                            onOpenAccountSwitcher = onOpenAccountSwitcher,
+                            onSwitchToSimpleMode = onSwitchToSimpleMode,
+                            onOpenFeedback = onOpenFeedback,
+                            onOpenSettings = onOpenSettings,
+                        )
 
-                    FlameNavChromeKind.BOTTOM_DOCK -> Unit
+                        FlameNavChromeKind.BOTTOM_DOCK -> Unit
+                    }
+                    VerticalDivider(thickness = 1.dp, color = palette.hairline)
                 }
-                VerticalDivider(thickness = 1.dp, color = palette.hairline)
             }
 
             Box(
@@ -275,19 +298,19 @@ fun AdaptiveNavShell(
                 enter = if (reducedMotion) {
                     EnterTransition.None
                 } else {
-                    fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                    fadeIn(animationSpec = tween(220, easing = FlameMotionSpec.easeOut)) +
                         slideInVertically(
-                            animationSpec = tween(200, easing = FastOutSlowInEasing),
-                            initialOffsetY = { it / 2 },
+                            animationSpec = tween(220, easing = FlameMotionSpec.easeOut),
+                            initialOffsetY = { it / 3 },
                         )
                 },
                 exit = if (reducedMotion) {
                     ExitTransition.None
                 } else {
-                    fadeOut(animationSpec = tween(150, easing = FastOutSlowInEasing)) +
+                    fadeOut(animationSpec = tween(150, easing = FlameMotionSpec.easeOut)) +
                         slideOutVertically(
-                            animationSpec = tween(170, easing = FastOutSlowInEasing),
-                            targetOffsetY = { it / 2 },
+                            animationSpec = tween(150, easing = FlameMotionSpec.easeOut),
+                            targetOffsetY = { it / 3 },
                         )
                 },
                 modifier = Modifier

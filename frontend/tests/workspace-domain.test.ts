@@ -6,12 +6,17 @@ import {
   buildInitialOverridesDraft,
   collectAccountReviewItems,
   deriveTargetDayMap,
+  describeAccountScheduleEffect,
   describeBarkCardState,
+  describeTargetScheduleEffect,
   filterScanReconciliationItems,
   formatBackupImportSummary,
+  formatClockHhmm,
   hasObservedSpark,
   mergeAccountSendPreview,
+  normalizeAccountWindowRange,
   parseBarkInputPreview,
+  parseClockHhmm,
   parseSchedulerSettingsForm,
   parseSelectorOverridesDraft,
   pickDefaultScreenshotAttempt,
@@ -714,4 +719,48 @@ test('formatBackupImportSummary formats counts, restored images, and missing-ima
   assert.equal(jsonMissing.tone, 'warn')
   assert.equal(jsonMissing.imagesDetail, null)
   assert.match(jsonMissing.missingImagesHint ?? '', /1 个图片模板/)
+})
+
+test('clock schedule helpers parse, normalize window bounds, and build plain explanations', () => {
+  assert.deepEqual(parseClockHhmm('20:30'), { hour: 20, minute: 30 })
+  assert.deepEqual(parseClockHhmm('25:99', '09:15'), { hour: 9, minute: 15 })
+  assert.equal(formatClockHhmm(7, 5), '07:05')
+
+  assert.deepEqual(normalizeAccountWindowRange('22:30', '21:00', 'start'), {
+    start: '22:30',
+    end: '23:00',
+  })
+  assert.deepEqual(normalizeAccountWindowRange('23:55', '23:59', 'start'), {
+    start: '23:54',
+    end: '23:55',
+  })
+  assert.deepEqual(normalizeAccountWindowRange('10:00', '09:30', 'end'), {
+    start: '09:00',
+    end: '09:30',
+  })
+
+  assert.match(
+    describeAccountScheduleEffect('window', '08:30', '22:30', ''),
+    /08:30 到 22:30/,
+  )
+  assert.match(
+    describeAccountScheduleEffect('fixed', '08:30', '22:30', '20:30'),
+    /20:30 准时发送/,
+  )
+  assert.match(
+    describeTargetScheduleEffect('', {
+      sendWindowStart: '09:00',
+      sendWindowEnd: '21:00',
+      sendTimeHhmm: null,
+    }),
+    /09:00–21:00/,
+  )
+  assert.match(
+    describeTargetScheduleEffect('19:45', {
+      sendWindowStart: '09:00',
+      sendWindowEnd: '21:00',
+      sendTimeHhmm: null,
+    }),
+    /19:45 发送/,
+  )
 })

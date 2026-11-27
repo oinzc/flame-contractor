@@ -224,7 +224,11 @@ class MainActivity : AppCompatActivity() {
                         val currentMode = themePreference.displayMode
                         if (currentMode == UiDisplayMode.SIMPLE) {
                             if (lastDisplayMode != UiDisplayMode.SIMPLE ||
-                                (navState.selectedTab != MainTab.TODAY && navState.selectedTab != MainTab.TARGETS)
+                                (
+                                    navState.selectedTab != MainTab.TODAY &&
+                                        navState.selectedTab != MainTab.TARGETS &&
+                                        navState.selectedTab != MainTab.TEMPLATES
+                                    )
                             ) {
                                 navState = navState.convergeForSimpleMode()
                             }
@@ -494,7 +498,12 @@ class MainActivity : AppCompatActivity() {
                                     accountId = activeAccountId,
                                     displayMode = themePreference.displayMode,
                                     onSwitchToStandardMode = {
+                                        isFullscreenEditorOpen = false
                                         container.themePreferencesStore.setDisplayMode(UiDisplayMode.STANDARD)
+                                    },
+                                    onSwitchToSimpleMode = {
+                                        isFullscreenEditorOpen = false
+                                        container.themePreferencesStore.setDisplayMode(UiDisplayMode.SIMPLE)
                                     },
                                 )
                             },
@@ -528,6 +537,14 @@ class MainActivity : AppCompatActivity() {
                                     onEditorVisibleChanged = { visible -> isFullscreenEditorOpen = visible },
                                     accountId = activeAccountId,
                                     imageStore = container.templateImageStore,
+                                    onBack = if (isSimpleMode) {
+                                        {
+                                            isFullscreenEditorOpen = false
+                                            navState = navState.selectTab(MainTab.TODAY, themePreference.displayMode)
+                                        }
+                                    } else {
+                                        null
+                                    },
                                 )
                             },
                             historyContent = {

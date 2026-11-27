@@ -14,15 +14,22 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -32,6 +39,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.filled.Add
@@ -126,6 +134,7 @@ fun TemplatesRoute(
     modifier: Modifier = Modifier,
     accountId: String = DEFAULT_ACCOUNT_ID,
     imageStore: TemplateImageStorage? = null,
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -246,6 +255,7 @@ fun TemplatesRoute(
             onRequestDelete = viewModel::requestDeleteTemplate,
             onOpenSettings = { onOpenSettings(null) },
             onOpenFeedback = onOpenFeedback,
+            onBack = onBack,
             modifier = modifier,
         )
     }
@@ -278,11 +288,13 @@ fun TemplatesScreen(
     onOpenSettings: () -> Unit = {},
     onOpenFeedback: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
     val layout = LocalFlameWindowLayout.current
     val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
+    val hideGlobalTopActions = onBack == null && chromeHandlesGlobalNav
     val previewTarget = remember(uiState.selectedPreviewTargetId, uiState.sampleTargets) {
         uiState.sampleTargets.firstOrNull { it.id == uiState.selectedPreviewTargetId }
             ?: uiState.sampleTargets.firstOrNull()
@@ -312,7 +324,9 @@ fun TemplatesScreen(
             ?: allTypedCards.firstOrNull()
     }
     val dockBottomClearance = flameDockBottomPadding()
-    val contentBottomPadding = flameContentBottomPadding(layout.hasBottomFloatingDock)
+    val hasBottomDock = onBack == null && layout.hasBottomFloatingDock
+    val navBarBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val contentBottomPadding = flameContentBottomPadding(hasBottomDock)
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -325,43 +339,94 @@ fun TemplatesScreen(
                 modifier = Modifier
                     .navigationBarsPadding()
                     .padding(
-                        bottom = if (layout.hasBottomFloatingDock) dockBottomClearance - 12.dp else 16.dp,
+                        bottom = if (hasBottomDock) dockBottomClearance - 12.dp else navBarBottomPadding + 16.dp,
                     ),
             )
         },
         topBar = {
-            FlameTopBar(
-                title = "模板",
-                subtitle = if (chromeHandlesGlobalNav && uiState.totalCount > 0) {
-                    "共 ${uiState.totalCount} 个消息模板"
-                } else {
-                    null
-                },
-                actions = {
+            if (onBack != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                        .padding(
+                            horizontal = layout.horizontalGutter,
+                            vertical = if (layout.isShortLandscape) 6.dp else 12.dp,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FlameIconButton(
+                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "返回极简主页",
+                        onClick = onBack,
+                    )
+                    Text(
+                        text = "续火模板",
+                        style = if (layout.isShortLandscape) {
+                            MaterialTheme.typography.titleLarge
+                        } else {
+                            MaterialTheme.typography.headlineSmall
+                        },
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     FlameTopPillButton(
                         text = "新建",
                         leadingIcon = Icons.Default.Add,
                         primary = true,
                         onClick = { showCreateTypeSheet = true },
                     )
-                    if (!chromeHandlesGlobalNav) {
-                        FlameFeedbackTopButton(
-                            onClick = onOpenFeedback,
+                    FlameIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置与维护",
+                        onClick = onOpenSettings,
+                    )
+                }
+            } else {
+                FlameTopBar(
+                    title = "模板",
+                    subtitle = if (hideGlobalTopActions && uiState.totalCount > 0) {
+                        "共 ${uiState.totalCount} 个消息模板"
+                    } else {
+                        null
+                    },
+                    actions = {
+                        FlameTopPillButton(
+                            text = "新建",
+                            leadingIcon = Icons.Default.Add,
+                            primary = true,
+                            onClick = { showCreateTypeSheet = true },
                         )
-                        FlameIconButton(
-                            icon = Icons.Outlined.Settings,
-                            contentDescription = "设置与维护",
-                            onClick = onOpenSettings,
-                        )
-                    }
-                },
-            )
+                        if (!hideGlobalTopActions) {
+                            FlameFeedbackTopButton(
+                                onClick = onOpenFeedback,
+                            )
+                            FlameIconButton(
+                                icon = Icons.Outlined.Settings,
+                                contentDescription = "设置与维护",
+                                onClick = onOpenSettings,
+                            )
+                        }
+                    },
+                )
+            }
         },
     ) { innerPadding ->
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .then(
+                    if (onBack != null) {
+                        Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                    } else {
+                        Modifier
+                    },
+                ),
             contentAlignment = Alignment.TopCenter,
         ) {
             val useSplitPreview = maxWidth >= FLAME_TEMPLATES_SPLIT_MIN_WIDTH

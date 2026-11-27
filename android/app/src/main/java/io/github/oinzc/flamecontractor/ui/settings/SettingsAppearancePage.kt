@@ -152,18 +152,18 @@ private data class DisplayModeOption(
 
 private val DISPLAY_MODE_OPTIONS = listOf(
     DisplayModeOption(
+        mode = UiDisplayMode.SIMPLE,
+        title = "极简模式",
+        badge = "默认推荐",
+        subtitle = "无底栏单页排版数字流，首页直达续火、好友、模板与定时，顶栏可随时切回标准模式",
+        icon = Icons.Outlined.LocalFireDepartment,
+    ),
+    DisplayModeOption(
         mode = UiDisplayMode.STANDARD,
         title = "标准模式",
         badge = "完整工作台",
         subtitle = "保留底部 4 栏导航、执行动态时间线、消息模板库与 30 日发送记录",
         icon = Icons.Outlined.Dashboard,
-    ),
-    DisplayModeOption(
-        mode = UiDisplayMode.SIMPLE,
-        title = "极简模式",
-        badge = "单页大圆",
-        subtitle = "隐藏底栏与复杂图表，保留超大一键续火圆钮、醒目异常拦截与好友快捷入口",
-        icon = Icons.Outlined.LocalFireDepartment,
     ),
 )
 
@@ -492,7 +492,7 @@ internal fun SettingsAppearancePage(
                     }
 
                     Text(
-                        text = "切换即时生效且不影响已有好友、模板与续火记录；在极简模式下随时可通过右上角「设置」切回标准模式。",
+                        text = "切换即时生效且不影响已有好友、模板与续火记录；极简模式与标准模式首页顶栏均可一键互切。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkTertiary,
                     )

@@ -1,13 +1,5 @@
 package io.github.oinzc.flamecontractor.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.ImportExport
 import androidx.compose.material.icons.outlined.NotificationsActive
@@ -67,14 +58,12 @@ import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
-import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
 import io.github.oinzc.flamecontractor.ui.components.FlameRowAvatar
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameSubpageScaffold
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
-import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
@@ -95,7 +84,6 @@ internal fun SettingsHubScreen(
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
     val palette = FlameThemeTokens.palette
-    val reducedMotion = rememberReducedMotion()
     val statusTone = settingsAccountStatusTone(uiState.accountStatus)
     val statusLabel = settingsAccountStatusLabel(uiState.accountStatus)
     val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
@@ -123,29 +111,6 @@ internal fun SettingsHubScreen(
         },
     ) { innerPadding ->
         SettingsPageScrollColumn(contentPadding = innerPadding) {
-            AnimatedVisibility(
-                visible = themePreference.displayMode == UiDisplayMode.SIMPLE,
-                enter = if (reducedMotion) {
-                    EnterTransition.None
-                } else {
-                    fadeIn(tween(180, easing = FlameMotionSpec.easeOut)) +
-                        expandVertically(tween(200, easing = FlameMotionSpec.easeOut))
-                },
-                exit = if (reducedMotion) {
-                    ExitTransition.None
-                } else {
-                    fadeOut(tween(140, easing = FlameMotionSpec.easeOut)) +
-                        shrinkVertically(tween(170, easing = FlameMotionSpec.easeOut))
-                },
-            ) {
-                SimpleModeQuickReturnCard(
-                    onSwitchToStandard = {
-                        haptics.performFlameLightTick()
-                        onSwitchToStandardMode()
-                    },
-                )
-            }
-
             if (uiState.accountStatus == AccountStatus.DOM_BROKEN) {
                 FlameAlertStrip(
                     title = "页面结构异常（DOM_BROKEN）",
@@ -494,76 +459,6 @@ internal fun SettingsHubScreen(
 }
 
 @Composable
-private fun SimpleModeQuickReturnCard(
-    onSwitchToStandard: () -> Unit,
-) {
-    val palette = FlameThemeTokens.palette
-    FlameCard(
-        modifier = Modifier.fillMaxWidth(),
-        cornerRadius = 18.dp,
-        containerColor = palette.surface,
-        borderColor = palette.emberBorder,
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 13.dp),
-        onClick = onSwitchToStandard,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            FlameRowAvatar(tone = FlameTone.EMBER) {
-                Icon(
-                    imageVector = Icons.Outlined.Dashboard,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = "当前处于极简模式",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    FlameMiniTag(text = "单页大圆", tone = FlameTone.EMBER)
-                }
-                Text(
-                    text = "已隐藏底栏、模板库与 30 日记录，点击可一键恢复完整标准模式",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkSecondary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = palette.monoCtaContainer,
-                contentColor = palette.monoCtaContent,
-            ) {
-                Text(
-                    text = "切回标准模式",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun ProminentFeedbackHubCard(
     onClick: () -> Unit,
 ) {
@@ -668,45 +563,6 @@ internal fun SettingsMasterDirectoryPane(
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        if (themePreference.displayMode == UiDisplayMode.SIMPLE) {
-            Surface(
-                onClick = {
-                    haptics.performFlameLightTick()
-                    onSwitchToStandardMode()
-                },
-                shape = RoundedCornerShape(14.dp),
-                color = palette.emberContainer,
-                border = BorderStroke(1.dp, palette.emberBorder),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Dashboard,
-                        contentDescription = null,
-                        tint = palette.ember,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "切回标准模式",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.ink,
-                        )
-                        Text(
-                            text = "当前为极简模式",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.inkSecondary,
-                        )
-                    }
-                }
-            }
-        }
-
         if (uiState.accountStatus == AccountStatus.DOM_BROKEN) {
             Surface(
                 onClick = {

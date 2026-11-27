@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { api, ApiError } from '../../api.ts'
+import type { AccountScheduleMode } from '../../lib/workspace.ts'
 import type { Account, MessageTemplate } from '../../types.ts'
 import { DrawerShell } from '../ui/DrawerShell.tsx'
+import { AccountScheduleTimeField } from '../ui/ScheduleTimeControl.tsx'
 
 export interface CreateEntityDrawerProps {
   mode: 'create-account' | 'create-target' | null
@@ -26,9 +28,10 @@ export function CreateEntityDrawer({
   // Account form state
   const [displayName, setDisplayName] = useState('')
   const [timezone, setTimezone] = useState(DEFAULT_TZ)
+  const [scheduleMode, setScheduleMode] = useState<AccountScheduleMode>('window')
   const [windowStart, setWindowStart] = useState('08:30')
   const [windowEnd, setWindowEnd] = useState('22:30')
-  const [sendTimeHhmm, setSendTimeHhmm] = useState('')
+  const [fixedTimeDraft, setFixedTimeDraft] = useState('20:30')
 
   // Target form state
   const [nickname, setNickname] = useState('')
@@ -53,7 +56,7 @@ export function CreateEntityDrawer({
         timezone: timezone.trim() || 'Asia/Shanghai',
         sendWindowStart: windowStart,
         sendWindowEnd: windowEnd,
-        sendTimeHhmm: sendTimeHhmm.trim() || null,
+        sendTimeHhmm: scheduleMode === 'fixed' ? (fixedTimeDraft.trim() || '20:30') : null,
       })
       setDisplayName('')
       await onAccountCreated(created)
@@ -135,48 +138,19 @@ export function CreateEntityDrawer({
             />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div className="fc-field">
-              <label className="fc-label" htmlFor="ca-start">
-                窗口开始
-              </label>
-              <input
-                id="ca-start"
-                type="time"
-                className="fc-input fc-mono"
-                value={windowStart}
-                onChange={(e) => setWindowStart(e.target.value)}
-                required
-              />
-            </div>
-            <div className="fc-field">
-              <label className="fc-label" htmlFor="ca-end">
-                窗口结束
-              </label>
-              <input
-                id="ca-end"
-                type="time"
-                className="fc-input fc-mono"
-                value={windowEnd}
-                onChange={(e) => setWindowEnd(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-
-          <div className="fc-field">
-            <label className="fc-label" htmlFor="ca-fixed">
-              <span>固定发送时刻</span>
-              <span className="fc-hint">留空则在发送窗口内随机取时</span>
-            </label>
-            <input
-              id="ca-fixed"
-              type="time"
-              className="fc-input fc-mono"
-              value={sendTimeHhmm}
-              onChange={(e) => setSendTimeHhmm(e.target.value)}
-            />
-          </div>
+          <AccountScheduleTimeField
+            idPrefix="ca"
+            mode={scheduleMode}
+            windowStart={windowStart}
+            windowEnd={windowEnd}
+            fixedTime={fixedTimeDraft}
+            onModeChange={setScheduleMode}
+            onWindowChange={(nextStart, nextEnd) => {
+              setWindowStart(nextStart)
+              setWindowEnd(nextEnd)
+            }}
+            onFixedTimeChange={setFixedTimeDraft}
+          />
 
           <div className="fc-field">
             <label className="fc-label" htmlFor="ca-tz">
