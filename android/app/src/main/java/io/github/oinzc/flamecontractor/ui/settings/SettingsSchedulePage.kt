@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.HorizontalDivider
@@ -50,6 +51,7 @@ private val AUTO_SCAN_PRESET_CHIP_HOURS = listOf(6, 12, 24, 48)
 internal fun SettingsSchedulePage(
     uiState: SettingsUiState,
     onAccountEnabledChanged: (Boolean) -> Unit,
+    onSkipScheduledOfficialLitChanged: (Boolean) -> Unit,
     onSendWindowStartChanged: (String) -> Unit,
     onSendWindowEndChanged: (String) -> Unit,
     onSendTimeHhmmChanged: (String) -> Unit,
@@ -108,6 +110,31 @@ internal fun SettingsSchedulePage(
                     },
                     showDivider = true,
                     onClick = { onAccountEnabledChanged(!uiState.enabledInput) },
+                )
+
+                FlameListRow(
+                    title = "定时跳过今日抖音已亮火花",
+                    subtitle = "默认关闭（按本机今日记录照常发）；开启后到点先只读核对一次官方火花，今日已亮自动跳过、仅发灰火或未续好友",
+                    leading = {
+                        FlameRowAvatar(
+                            tone = if (uiState.skipScheduledOfficialLitInput) FlameTone.EMBER else FlameTone.NEUTRAL,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.LocalFireDepartment,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    trailing = {
+                        Switch(
+                            checked = uiState.skipScheduledOfficialLitInput,
+                            onCheckedChange = onSkipScheduledOfficialLitChanged,
+                            colors = settingsSwitchColors(),
+                        )
+                    },
+                    showDivider = true,
+                    onClick = { onSkipScheduledOfficialLitChanged(!uiState.skipScheduledOfficialLitInput) },
                 )
 
                 Column(

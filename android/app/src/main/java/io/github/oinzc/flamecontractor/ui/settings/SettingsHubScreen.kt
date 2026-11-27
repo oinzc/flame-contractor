@@ -261,6 +261,9 @@ internal fun SettingsHubScreen(
                     } else {
                         append("每日 ${uiState.sendWindowStartInput}–${uiState.sendWindowEndInput}")
                     }
+                    if (uiState.skipScheduledOfficialLitInput) {
+                        append(" · 跳过已亮")
+                    }
                 }
                 append(" · ")
                 if (uiState.autoScanEnabledInput) {

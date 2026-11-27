@@ -122,6 +122,10 @@ class AccountManager(
         }
 
         val remainingIds = database.accountDao().listAll().map { it.id }
+        io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore.globalOrNull()
+            ?.clearForAccount(accountId)
+        io.github.oinzc.flamecontractor.core.storage.SchedulePreferencesStore.globalOrNull()
+            ?.clearForAccount(accountId)
         activeAccountStore.reconcileWithAvailableAccounts(remainingIds)
         onScheduleChanged()
         return true

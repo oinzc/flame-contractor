@@ -505,3 +505,176 @@ def test_patch_target_template_rebind(client):
 
     ghost = client.patch(f"/api/targets/{target['id']}", json={"templateId": "ghost"})
     assert ghost.status_code == 404
+
+
+def test_parse_flame_lit_today_and_scheduled_skip_official_lit_pipeline(settings):
+    """核验 parse_flame_lit_today 保守判定、/api/scheduler/settings 开关读写与同会话预检跳过逻辑。"""
+    from app.execution.douyin_chat import parse_flame_lit_today
+    from app.models import JobStatus, SendJob
+    from datetime import datetime
+    from sqlmodel import Session
+    from zoneinfo import ZoneInfo
+
+    assert (
+        parse_flame_lit_today(
+            "https://lf3-static.bytednsdoc.com/obj/eden-cn/flame_icon/normal/normal_2.png",
+            15,
+            None,
+        )
+        is True
+    )
+    assert (
+        parse_flame_lit_today(
+            "https://lf3-static.bytednsdoc.com/obj/eden-cn/flame_icon/couple/gray_couple_2.png",
+            15,
+            None,
+        )
+        is False
+    )
+    assert (
+        parse_flame_lit_today(
+            "https://lf3-static.bytednsdoc.com/obj/eden-cn/flame_icon/normal/normal_1.png",
+            None,
+            "重燃中 1/3",
+        )
+        is None
+    )
+    assert (
+        parse_flame_lit_today(
+            "https://lf3-static.bytednsdoc.com/obj/eden-cn/flame_icon/normal/normal_1.png",
+            5,
+            "2 天后消失",
+        )
+        is None
+    )
+    assert parse_flame_lit_today("https://example.com/avatar.png", 10, None) is None
+
+    app = make_app(settings, [FakePage(logged_in=True), FakePage(logged_in=True)])
+    with TestClient(app) as client:
+        # 1) API 读写：默认关闭，可 PATCH 开关持久化
+        status_default = client.get("/api/scheduler")
+        assert status_default.status_code == 200, status_default.text
+        assert status_default.json()["scheduledSkipOfficialLitToday"] is False
+
+        patched = client.patch(
+            "/api/scheduler/settings",
+            json={"scheduledSkipOfficialLitToday": True},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["scheduledSkipOfficialLitToday"] is True
+
+        # 2) 同会话预检跳过：已亮跳过（不调用 _send_one）、灰火与未观测正常发、待复核不被跳过掩盖
+        account = client.post("/api/accounts", json={"displayName": "主账号"}).json()
+        tpl = client.post("/api/templates", json={"name": "续火", "content": "早安"}).json()
+        t_lit = client.post(
+            "/api/targets",
+            json={
+                "accountId": account["id"],
+                "nicknameSnapshot": "已亮好友",
+                "platformUserId": "uid-lit",
+                "templateId": tpl["id"],
+            },
+        ).json()
+        t_gray = client.post(
+            "/api/targets",
+            json={
+                "accountId": account["id"],
+                "nicknameSnapshot": "灰火好友",
+                "platformUserId": "uid-gray",
+                "templateId": tpl["id"],
+            },
+        ).json()
+        t_unknown = client.post(
+            "/api/targets",
+            json={
+                "accountId": account["id"],
+                "nicknameSnapshot": "待复核好友",
+                "platformUserId": "uid-unk",
+                "templateId": tpl["id"],
+            },
+        ).json()
+
+        with Session(app.state.engine) as session:
+            today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            session.add(
+                SendJob(
+                    account_id=account["id"],
+                    target_id=t_unknown["id"],
+                    business_date=today,
+                    message_slot_id=f"{tpl['id']}:v1",
+                    idempotency_key=f"{account['id']}:{t_unknown['id']}:{today}:v1",
+                    status=JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                )
+            )
+            session.commit()
+
+        manager = app.state.browser_manager
+        sent_targets: list[str] = []
+
+        async def fake_send_one(chat, acc, target, business_date, **kwargs):
+            sent_targets.append(target.nickname_snapshot)
+            if target.id == t_unknown["id"]:
+                return {
+                    "target": target.nickname_snapshot,
+                    "status": "duplicate_unknown",
+                    "detail": "今日已有结果未确认，强制发送仍跳过以防重复",
+                    "failure_class": None,
+                    "message": None,
+                }
+            return {
+                "target": target.nickname_snapshot,
+                "status": "succeeded",
+                "detail": None,
+                "failure_class": None,
+                "message": "早安",
+            }
+
+        async def fake_confirm_session(_chat, _account_id):
+            return "ok"
+
+        class _PreScanChat:
+            def __init__(self, fail_scan: bool = False):
+                self._fail_scan = fail_scan
+
+            async def open_chat_page(self):
+                return None
+
+            async def scan_all_chats(self):
+                if self._fail_scan:
+                    raise RuntimeError("pre-scan boom")
+                return [
+                    {
+                        "title": "已亮好友",
+                        "platform_user_id": "uid-lit",
+                        "spark_lit_today": True,
+                    },
+                    {
+                        "title": "灰火好友",
+                        "platform_user_id": "uid-gray",
+                        "spark_lit_today": False,
+                    },
+                    {
+                        "title": "待复核好友",
+                        "platform_user_id": "uid-unk",
+                        "spark_lit_today": True,
+                    },
+                ]
+
+        manager._confirm_session = fake_confirm_session
+        manager._send_one = fake_send_one
+        manager._make_chat = lambda _page: _PreScanChat(fail_scan=False)
+
+        res = asyncio.run(manager.run_send(account["id"], skip_official_lit_today=True))
+        by_name = {item["target"]: item for item in res["results"]}
+        assert by_name["已亮好友"]["status"] == "skipped"
+        assert by_name["已亮好友"]["skip_code"] == "official_lit_today"
+        assert by_name["灰火好友"]["status"] == "succeeded"
+        assert by_name["待复核好友"]["status"] == "duplicate_unknown"
+        assert sent_targets == ["灰火好友", "待复核好友"]
+
+        # 3) 预检抛异常时保守回退：全部照常进入发送路径，绝不误跳过
+        sent_targets.clear()
+        manager._make_chat = lambda _page: _PreScanChat(fail_scan=True)
+        fallback = asyncio.run(manager.run_send(account["id"], skip_official_lit_today=True))
+        assert fallback["overall"] in ("ok", "partial")
+        assert sent_targets == ["已亮好友", "灰火好友", "待复核好友"]

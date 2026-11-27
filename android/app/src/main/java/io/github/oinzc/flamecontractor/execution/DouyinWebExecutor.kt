@@ -695,13 +695,14 @@ class DouyinWebExecutor(
         onProgress: (suspend (discoveredCount: Int) -> Unit)? = null,
         session: SessionHandle? = null,
         accountId: String = DEFAULT_ACCOUNT_ID,
+        skipAuthCheck: Boolean = false,
     ): ScanExecutionResult {
         if (session == null) {
             return withOffscreenSession(accountId = accountId) { created ->
-                scanAllChatsInSession(created, existingTargets, scanRunId, onProgress)
+                scanAllChatsInSession(created, existingTargets, scanRunId, onProgress, skipAuthCheck)
             }
         }
-        return scanAllChatsInSession(session, existingTargets, scanRunId, onProgress)
+        return scanAllChatsInSession(session, existingTargets, scanRunId, onProgress, skipAuthCheck)
     }
 
     suspend fun probeStructure(
@@ -1603,13 +1604,19 @@ class DouyinWebExecutor(
         existingTargets: List<ContractTargetEntity>,
         scanRunId: String,
         onProgress: (suspend (discoveredCount: Int) -> Unit)?,
+        skipAuthCheck: Boolean = false,
     ): ScanExecutionResult {
-        val auth = checkAuthInSession(session, AUTH_WAIT_TIMEOUT_MS)
-        if (auth.outcome != AuthProbeOutcome.AUTHENTICATED) {
-            return ScanExecutionResult.AuthOrGateFailure(
-                outcome = auth.outcome,
-                detail = auth.detail ?: "未登录或网络不可用，无法扫描会话",
-            )
+        val auth: AuthCheckResult? = if (skipAuthCheck) {
+            null
+        } else {
+            val checked = checkAuthInSession(session, AUTH_WAIT_TIMEOUT_MS)
+            if (checked.outcome != AuthProbeOutcome.AUTHENTICATED) {
+                return ScanExecutionResult.AuthOrGateFailure(
+                    outcome = checked.outcome,
+                    detail = checked.detail ?: "未登录或网络不可用，无法扫描会话",
+                )
+            }
+            checked
         }
 
         val bundle = selectorBundleStore.current()
@@ -1851,10 +1858,15 @@ class DouyinWebExecutor(
             detail = "rounds=$roundsCompleted stop=$stopReason scroller=$lastScrollerSource ch=$lastClientHeight maxSh=${scrollState.maxScrollHeight} growths=${scrollState.scrollHeightGrowths} bottomWaits=${scrollState.bottomWaitHits} discovered=${sortedCandidates.size} sparks=$sparkCount lit=$litCount gray=$grayCount users=${idStats.users} groups=${idStats.groups} protoHits=${idStats.protoHits} idbGroups=${idStats.idbGroups} domGroups=${idStats.domGroups} iconVariants=$variantsSummary",
             accountTag = accountTag,
         )
+        if (skipAuthCheck) {
+            // 同会话预检结束后将左侧列表复位至顶部，便于紧随其后的定位与发送从第 0 行起步
+            evalObject(session.webView, DouyinJsScripts.buildScrollConversationListStepJs(bundle, 0))
+            delay(150L)
+        }
         return ScanExecutionResult.Success(
             snapshot = snapshot,
-            selfUid = auth.selfUid,
-            douyinNickname = auth.douyinNickname,
+            selfUid = auth?.selfUid,
+            douyinNickname = auth?.douyinNickname,
         )
     }
 

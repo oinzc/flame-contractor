@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     # 开启后定时任务忽略当天已发送记录（含手动强制发送）再发一遍。
     # 注意：「结果未确认」仍然绝不自动重发，这条边界不受该开关影响。
     scheduled_always_send: bool = False
+    # 定时跳过今日抖音已亮火花：默认 False 保持按本机今日发送记录照常发；
+    # 开启后定时发送前先同会话只读扫描一次官方火花，今日已亮则自动跳过、仅发灰火或未续好友。
+    scheduled_skip_official_lit_today: bool = False
     # 成功汇总推送：自动发送完成后推送「今日续焰完成 N/M」（Bark）
     notify_on_success: bool = True
     # 连续失败熔断阈值：连续 N 次自动发送终态失败后账号转 cooldown，0=不熔断

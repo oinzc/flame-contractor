@@ -269,7 +269,21 @@ test('normalizeStatsSummary maps snake_case window_days and null successRate saf
 test('parseSchedulerSettingsForm enforces 1..168 scan hours and preserves 0 grace minutes', () => {
   assert.deepEqual(parseSchedulerSettingsForm('24', '0', false), {
     ok: true,
-    patch: { autoScanIntervalHours: 24, fixedTimeGraceMinutes: 0, scheduledAlwaysSend: false },
+    patch: {
+      autoScanIntervalHours: 24,
+      fixedTimeGraceMinutes: 0,
+      scheduledAlwaysSend: false,
+      scheduledSkipOfficialLitToday: false,
+    },
+  })
+  assert.deepEqual(parseSchedulerSettingsForm('12', '30', false, true), {
+    ok: true,
+    patch: {
+      autoScanIntervalHours: 12,
+      fixedTimeGraceMinutes: 30,
+      scheduledAlwaysSend: false,
+      scheduledSkipOfficialLitToday: true,
+    },
   })
   const zeroScan = parseSchedulerSettingsForm('0', '30', true)
   assert.equal(zeroScan.ok, false)

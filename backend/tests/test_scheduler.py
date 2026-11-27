@@ -1919,3 +1919,101 @@ def test_auto_scan_notifies_on_enabled_target_spark_deterioration_without_resend
     assert level == "timeSensitive"
     assert "阿哲" in body and "1 天后消失" in body
     assert "停用老友" not in body
+
+
+def test_scheduled_skip_official_lit_toggle_persists_and_prevents_rewake_loop(engine):
+    """「定时跳过今日抖音已亮火花」默认关闭；开启后持久化、传递预检标记且跳过后同日不重复派发。"""
+    first = Scheduler(engine, settings=None, clock=make_clock(datetime(2026, 8, 27, 15, 0, tzinfo=timezone.utc)))
+    assert first.scheduled_skip_official_lit_today is False
+
+    first.update_scheduled_skip_official_lit_today(True)
+    assert first.scheduled_skip_official_lit_today is True
+    with Session(engine) as session:
+        setting = session.get(AppSetting, "scheduler.skip_official_lit_today")
+        assert setting is not None and setting.value == "1"
+
+    reloaded = Scheduler(engine, settings=None)
+    reloaded.load_persisted_state()
+    assert reloaded.scheduled_skip_official_lit_today is True
+
+    # 好友级准点派发：开启且 scheduled_always_send=False 时传递 skip_official_lit_today=True，
+    # 跳过一次后同日后续 tick 不再重复派发；若把开关改回关闭，则立即清除跳过记忆恢复可派发。
+    account = make_account(engine, send_time_hhmm="02:22")
+    with Session(engine) as session:
+        target = ContractTarget(
+            account_id=account.id,
+            nickname_snapshot="已亮好友",
+            send_time_hhmm="02:22",
+        )
+        session.add(target)
+        session.commit()
+        target_id = target.id
+
+    calls: list[dict] = []
+
+    async def send_targets(
+        account_id: str,
+        ids: list[str],
+        *,
+        force_run_id=None,
+        skip_official_lit_today: bool = False,
+    ) -> dict:
+        calls.append(
+            {
+                "account_id": account_id,
+                "ids": ids,
+                "force_run_id": force_run_id,
+                "skip_official_lit_today": skip_official_lit_today,
+            }
+        )
+        return {
+            "overall": "ok",
+            "results": [
+                {
+                    "target": "已亮好友",
+                    "target_id": ids[0],
+                    "status": "skipped",
+                    "skip_code": "official_lit_today",
+                    "detail": "今日抖音已点亮火花，定时已跳过",
+                }
+            ],
+        }
+
+    clock = make_clock(datetime(2026, 8, 27, 18, 22, 5, tzinfo=timezone.utc))
+    sched = Scheduler(
+        engine,
+        settings=None,
+        send_targets=send_targets,
+        clock=clock,
+        sleep=asyncio.sleep,
+        loop_interval=0,
+        retry_max_count=0,
+        window_expiry_policy="dispatch",
+        scheduled_skip_official_lit_today=True,
+    )
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 1
+    assert calls[0]["ids"] == [target_id]
+    assert calls[0]["skip_official_lit_today"] is True
+
+    # 同一天再 tick：不再重复触发
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 1
+
+    # 关闭跳过开关后：清除内存跳过记录，再 tick 按默认逻辑派发（skip_official_lit_today=False）
+    sched.update_scheduled_skip_official_lit_today(False)
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 2
+    assert calls[1]["skip_official_lit_today"] is False
+
+    # 若同时开启 scheduled_always_send=True（强制再发一遍），以强制重发为准，不传 skip_official_lit_today
+    sched.update_scheduled_skip_official_lit_today(True)
+    sched.update_scheduled_always_send(True)
+    asyncio.run(sched.tick())
+    asyncio.run(sched.wait_idle())
+    assert len(calls) == 3
+    assert calls[2]["skip_official_lit_today"] is False
+    assert calls[2]["force_run_id"] == "sched20260828"

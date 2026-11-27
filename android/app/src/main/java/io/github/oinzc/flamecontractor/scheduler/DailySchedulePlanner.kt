@@ -154,6 +154,7 @@ object DailySchedulePlanner {
         todayJobs: List<SendJobEntity>,
         zoneId: ZoneId = ZoneId.systemDefault(),
         networkDeferCountToday: Int = 0,
+        skipOfficialLitTargetIds: Set<String> = emptySet(),
     ): ScheduleEvaluation {
         val today = ZonedDateTime.ofInstant(now, zoneId).toLocalDate()
         val todayStr = today.toString()
@@ -206,6 +207,11 @@ object DailySchedulePlanner {
         for (target in activeTargets) {
             val targetJobsToday = jobsByTarget[target.id].orEmpty()
             if (!SendGuard.canDispatchDaily(targetJobsToday)) {
+                continue
+            }
+            // 可选策略「定时跳过今日抖音已亮火花」开启且已确认今日点亮时跳过，避免重复唤醒循环；
+            // 安全顺序：SendGuard 在前，绝不绕过 UNKNOWN_REQUIRES_REVIEW 等硬拦截边界。
+            if (target.id in skipOfficialLitTargetIds) {
                 continue
             }
 

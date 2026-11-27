@@ -28,6 +28,7 @@ import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
 import io.github.oinzc.flamecontractor.core.storage.DiagnosticScreenshotStore
 import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
+import io.github.oinzc.flamecontractor.core.storage.SchedulePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -440,6 +441,8 @@ class ExecutionForegroundService : Service() {
         val todayJobs = database.sendJobDao().listJobsForDate(accountId, todayStr)
         val jobsByTarget = todayJobs.groupBy { it.targetId }
         val activeLitStore = OfficialSparkLitStore.globalOrNull() ?: officialSparkLitStore
+        val activeSchedulePrefs = SchedulePreferencesStore.resolve(applicationContext)
+        val skipScheduledOfficialLit = scheduledOnly && activeSchedulePrefs.isSkipOfficialLitToday(accountId)
 
         val skipReasonCounts = LinkedHashMap<String, Int>()
         val errorReasonCounts = LinkedHashMap<String, Int>()
@@ -449,6 +452,11 @@ class ExecutionForegroundService : Service() {
         val targetsToRun: List<ContractTargetEntity> = when {
             scheduledOnly -> {
                 val networkDeferCountToday = countNetworkDefers(todayJobs)
+                val knownOfficialLitIds = if (skipScheduledOfficialLit) {
+                    activeLitStore.todayLitTargetIds(accountId, todayStr)
+                } else {
+                    emptySet()
+                }
                 val evaluation = DailySchedulePlanner.evaluateNow(
                     now = now,
                     account = account,
@@ -456,6 +464,7 @@ class ExecutionForegroundService : Service() {
                     todayJobs = todayJobs,
                     zoneId = zoneId,
                     networkDeferCountToday = networkDeferCountToday,
+                    skipOfficialLitTargetIds = knownOfficialLitIds,
                 )
                 evaluation.dueTargets.map { it.target }
             }
@@ -680,20 +689,103 @@ class ExecutionForegroundService : Service() {
 
             var batchFinalizedNormally = false
             try {
-                for ((index, target) in targetsToRun.withIndex()) {
+                // 可选策略「定时跳过今日抖音已亮火花」：同会话先做一次只读实时核对，再剔除已亮好友；
+                // 核对失败或未观察到时保守回退为继续发送，绝不因预检失败误漏续。
+                val effectiveTargetsToRun: List<ContractTargetEntity> = if (skipScheduledOfficialLit) {
+                    promoteForeground("正在实时核对抖音今日火花状态…")
+                    val allActiveTargets = database.targetDao().listActiveTargets(accountId)
+                    val preScanResult = try {
+                        executor.scanAllChats(
+                            existingTargets = allActiveTargets,
+                            session = session,
+                            accountId = accountId,
+                            skipAuthCheck = true,
+                        )
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (exc: Throwable) {
+                        DiagnosticLogStore.recordGlobal(
+                            category = "BATCH",
+                            event = "pre_scan_error",
+                            level = "WARN",
+                            detail = "mode=$batchMode ex=${exc.javaClass.simpleName}",
+                            accountTag = accountTag,
+                        )
+                        null
+                    }
+                    when (preScanResult) {
+                        is ScanExecutionResult.Success -> {
+                            syncOfficialSparkLitFromScan(
+                                accountId = accountId,
+                                accountTimezone = runningAccount.timezone,
+                                existingTargets = allActiveTargets,
+                                candidates = preScanResult.snapshot.candidates,
+                                scannedAtEpochMs = preScanResult.snapshot.scannedAtEpochMs,
+                            )
+                            val litTotal = preScanResult.snapshot.candidates.count { it.sparkLitToday == true }
+                            DiagnosticLogStore.recordGlobal(
+                                category = "BATCH",
+                                event = "pre_scan_ok",
+                                level = "INFO",
+                                detail = "mode=$batchMode discovered=${preScanResult.snapshot.discoveredCount} lit=$litTotal",
+                                accountTag = accountTag,
+                            )
+                        }
+
+                        else -> {
+                            DiagnosticLogStore.recordGlobal(
+                                category = "BATCH",
+                                event = "pre_scan_fallback",
+                                level = "WARN",
+                                detail = "mode=$batchMode fallback=send_conservatively",
+                                accountTag = accountTag,
+                            )
+                        }
+                    }
+
+                    val filteredPlan = ExecutionServiceStoreOps.filterScheduledTargetsByOfficialLit(
+                        dueTargets = targetsToRun,
+                        jobsByTarget = jobsByTarget,
+                        businessDate = todayStr,
+                        officialSparkLitStore = activeLitStore,
+                    )
+                    for (skippedTarget in filteredPlan.officialLitSkippedTargets) {
+                        skippedCount++
+                        officialLitSkippedCount++
+                        ExecutionServiceStoreOps.incrementReasonCount(
+                            skipReasonCounts,
+                            ExecutionServiceStoreOps.SKIP_REASON_OFFICIAL_LIT_TODAY,
+                        )
+                        DiagnosticLogStore.recordGlobal(
+                            category = "SEND",
+                            event = "target_skip",
+                            level = "INFO",
+                            detail = "mode=$batchMode reason=official_lit_today",
+                            accountTag = accountTag,
+                        )
+                    }
+                    if (filteredPlan.targetsToRun.size != targetsToRun.size) {
+                        updateProgressState(taskLabel, 0, filteredPlan.targetsToRun.size, accountId)
+                    }
+                    filteredPlan.targetsToRun
+                } else {
+                    targetsToRun
+                }
+
+                for ((index, target) in effectiveTargetsToRun.withIndex()) {
                     if (index > 0 && maxCooldownMs > 0L) {
                         val waitMs = if (maxCooldownMs == minCooldownMs) {
                             minCooldownMs
                         } else {
                             Random.nextLong(minCooldownMs, maxCooldownMs + 1L)
                         }
-                        promoteForeground("冷却等待中（${index}/${targetsToRun.size}）…")
+                        promoteForeground("冷却等待中（${index}/${effectiveTargetsToRun.size}）…")
                         delay(waitMs)
                     }
 
-                    val progressText = "正在执行今日续火任务 ${index + 1}/${targetsToRun.size}"
+                    val progressText = "正在执行今日续火任务 ${index + 1}/${effectiveTargetsToRun.size}"
                     promoteForeground(progressText)
-                    updateProgressState(progressText, index, targetsToRun.size, accountId)
+                    updateProgressState(progressText, index, effectiveTargetsToRun.size, accountId)
 
                     val outcome = executeSingleTargetJob(
                         session = session,
@@ -704,7 +796,7 @@ class ExecutionForegroundService : Service() {
                         zoneId = zoneId,
                         overrideText = null,
                         isVisibleActivity = false,
-                        skipIfOfficiallyLitToday = !scheduledOnly && !forceAll,
+                        skipIfOfficiallyLitToday = (!scheduledOnly && !forceAll) || skipScheduledOfficialLit,
                     )
 
                     when (outcome.outcomeType) {
@@ -770,7 +862,7 @@ class ExecutionForegroundService : Service() {
                     }
                     activeBatchOutcomes = outcomes.toList()
 
-                    updateProgressState(progressText, index + 1, targetsToRun.size, accountId)
+                    updateProgressState(progressText, index + 1, effectiveTargetsToRun.size, accountId)
 
                     if (outcome.coreSkeletonBroken || outcome.failureClass == FailureClass.DOM_CHANGED) {
                         break
@@ -828,7 +920,9 @@ class ExecutionForegroundService : Service() {
                 unknownCount = unknownCount,
                 skipSummary = skipSummary,
             )
-            if (succeededCount + failedCount + unknownCount > 0) {
+            if (succeededCount + failedCount + unknownCount > 0 ||
+                (scheduledOnly && officialLitSkippedCount > 0)
+            ) {
                 sendDailySummaryBoth(
                     accountId = accountId,
                     title = "抖音续火工执行汇总",
@@ -3066,6 +3160,36 @@ internal object ExecutionServiceStoreOps {
                 continue
             }
             if (!SendGuard.canDispatchDaily(targetJobs)) {
+                continue
+            }
+            if (officialSparkLitStore?.isOfficiallyLitToday(target.id, businessDate) == true) {
+                officialLitSkipped.add(target)
+                continue
+            }
+            runnable.add(target)
+        }
+        return ManualMakeupBatchPlan(
+            targetsToRun = runnable,
+            officialLitSkippedTargets = officialLitSkipped,
+        )
+    }
+
+    /**
+     * 定时发送在「定时跳过今日抖音已亮火花」开启并完成实时预检后的二级过滤：
+     * - 安全底线：若存在 `UNKNOWN_REQUIRES_REVIEW` / `SENDING` / `CONFIRMING`，绝不按“已亮”跳过，交由下游闸门显式拦截；
+     * - 仅当 `officialSparkLitStore` 明确记录今日已亮（`litToday == true`）时归入跳过名单，其余（灰火/未观察到）一律保守发送。
+     */
+    fun filterScheduledTargetsByOfficialLit(
+        dueTargets: List<ContractTargetEntity>,
+        jobsByTarget: Map<String, List<SendJobEntity>>,
+        businessDate: String,
+        officialSparkLitStore: OfficialSparkLitStore?,
+    ): ManualMakeupBatchPlan {
+        val runnable = ArrayList<ContractTargetEntity>(dueTargets.size)
+        val officialLitSkipped = ArrayList<ContractTargetEntity>()
+        for (target in dueTargets) {
+            val targetJobs = jobsByTarget[target.id].orEmpty()
+            if (SendGuard.hasBlockingUnknownOrInflight(targetJobs)) {
                 continue
             }
             if (officialSparkLitStore?.isOfficiallyLitToday(target.id, businessDate) == true) {

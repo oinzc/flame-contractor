@@ -83,6 +83,8 @@ export interface SchedulerStatus {
   autoScanIntervalHours: number
   /** 定时到点是否忽略当天已发送记录再发一遍（「到点重发」开关） */
   scheduledAlwaysSend: boolean
+  /** 定时到点前是否先只读核对抖音官方火花，今日已亮则自动跳过（默认关闭） */
+  scheduledSkipOfficialLitToday?: boolean
   /** 固定发送时刻的宽限期（分钟）：超过才算错过、当天不再补发 */
   fixedTimeGraceMinutes: number
   /** 是否已配置 Bark 推送（页面配置或环境变量，绝不暴露完整 device_key） */
@@ -105,6 +107,7 @@ export interface NotificationTestResult {
 export interface SchedulerSettingsPatch {
   autoScanIntervalHours?: number
   scheduledAlwaysSend?: boolean
+  scheduledSkipOfficialLitToday?: boolean
   fixedTimeGraceMinutes?: number
   barkUrl?: string
 }

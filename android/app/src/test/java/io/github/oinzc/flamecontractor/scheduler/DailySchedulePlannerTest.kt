@@ -578,4 +578,46 @@ class DailySchedulePlannerTest {
         assertEquals(listOf("t-pending"), eval.pendingTargets.map { it.target.id })
         assertEquals(instantAt("2026-11-21T21:00:00"), eval.nextWakeAt)
     }
+
+    @Test
+    fun skipsOfficiallyLitTargetsWhenOptInIdsProvidedToPreventRewakeLoop() {
+        val acc = account(windowStart = "20:00", windowEnd = "22:00")
+        val tLit = target(id = "t-lit", enabled = true, sendTimeHhmm = "20:00")
+        val tGray = target(id = "t-gray", enabled = true, sendTimeHhmm = "20:00")
+
+        // 默认不传 skipOfficialLitTargetIds：两者均到期派发
+        val defaultEval = DailySchedulePlanner.evaluateNow(
+            now = instantAt("2026-11-21T20:00:00"),
+            account = acc,
+            targets = listOf(tLit, tGray),
+            todayJobs = emptyList(),
+            zoneId = zoneId,
+        )
+        assertEquals(setOf("t-lit", "t-gray"), defaultEval.dueTargets.map { it.target.id }.toSet())
+
+        // 开启开关且 t-lit 已记录今日抖音已亮：仅 t-gray 派发，t-lit 不再触发重复唤醒
+        val optInEval = DailySchedulePlanner.evaluateNow(
+            now = instantAt("2026-11-21T20:00:00"),
+            account = acc,
+            targets = listOf(tLit, tGray),
+            todayJobs = emptyList(),
+            zoneId = zoneId,
+            skipOfficialLitTargetIds = setOf("t-lit"),
+        )
+        assertEquals(listOf("t-gray"), optInEval.dueTargets.map { it.target.id })
+        assertTrue(optInEval.pendingTargets.isEmpty())
+
+        // 全部已亮时当日无 due 也无 pending，直接顺排到次日闹钟，绝不在当日循环唤醒
+        val allLitEval = DailySchedulePlanner.evaluateNow(
+            now = instantAt("2026-11-21T20:00:00"),
+            account = acc,
+            targets = listOf(tLit),
+            todayJobs = emptyList(),
+            zoneId = zoneId,
+            skipOfficialLitTargetIds = setOf("t-lit"),
+        )
+        assertTrue(allLitEval.dueTargets.isEmpty())
+        assertTrue(allLitEval.pendingTargets.isEmpty())
+        assertEquals(instantAt("2026-11-22T20:00:00"), allLitEval.nextWakeAt)
+    }
 }

@@ -123,6 +123,7 @@ export function SettingsView({
   const [scanInterval, setScanInterval] = useState('6')
   const [graceMinutes, setGraceMinutes] = useState('30')
   const [alwaysSend, setAlwaysSend] = useState(false)
+  const [skipOfficialLitToday, setSkipOfficialLitToday] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
   const [barkUrlInput, setBarkUrlInput] = useState('')
@@ -165,6 +166,7 @@ export function SettingsView({
     setScanInterval(String(schedulerStatus.autoScanIntervalHours))
     setGraceMinutes(String(schedulerStatus.fixedTimeGraceMinutes))
     setAlwaysSend(schedulerStatus.scheduledAlwaysSend)
+    setSkipOfficialLitToday(Boolean(schedulerStatus.scheduledSkipOfficialLitToday))
   }, [schedulerStatus])
 
   const loadSessions = () => {
@@ -219,7 +221,12 @@ export function SettingsView({
   async function handleSaveScheduler(e: FormEvent) {
     e.preventDefault()
     if (savingScheduler) return
-    const parsed = parseSchedulerSettingsForm(scanInterval, graceMinutes, alwaysSend)
+    const parsed = parseSchedulerSettingsForm(
+      scanInterval,
+      graceMinutes,
+      alwaysSend,
+      skipOfficialLitToday,
+    )
     if (!parsed.ok) {
       setError(parsed.error)
       return
@@ -555,6 +562,22 @@ export function SettingsView({
                         onChange={(e) => setGraceMinutes(e.target.value)}
                       />
                     </div>
+                  </div>
+
+                  <div className="fc-settings-row">
+                    <div>
+                      <div style={{ fontWeight: 500 }}>定时跳过今日抖音已亮火花</div>
+                      <div className="fc-hint">
+                        {alwaysSend
+                          ? '已开启「到点强制再发一遍」时以强制重发为准；关闭强制重发后本项生效'
+                          : '默认关闭（按本机今日记录照常发）；开启后到点先只读核对官方火花，今日已亮自动跳过、仅发灰火或未续好友'}
+                      </div>
+                    </div>
+                    <Switch
+                      checked={skipOfficialLitToday}
+                      label="定时跳过今日抖音已亮火花"
+                      onChange={setSkipOfficialLitToday}
+                    />
                   </div>
 
                   <div className="fc-settings-row" style={{ borderBottom: 'none', paddingBottom: 0 }}>

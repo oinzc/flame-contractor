@@ -514,6 +514,7 @@ fun SettingsRoute(
             SettingsSection.SCHEDULE -> SettingsSchedulePage(
                 uiState = uiState,
                 onAccountEnabledChanged = viewModel::onAccountEnabledChanged,
+                onSkipScheduledOfficialLitChanged = viewModel::onSkipScheduledOfficialLitChanged,
                 onSendWindowStartChanged = viewModel::onSendWindowStartChanged,
                 onSendWindowEndChanged = viewModel::onSendWindowEndChanged,
                 onSendTimeHhmmChanged = viewModel::onSendTimeHhmmChanged,

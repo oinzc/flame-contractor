@@ -666,6 +666,7 @@ class SchedulerSettingsPatch(APIBase):
     )
     # None 表示「不改」，因此不能只靠真假判断是否传值（用 model_fields_set 区分）。
     scheduled_always_send: bool | None = None
+    scheduled_skip_official_lit_today: bool | None = None
     fixed_time_grace_minutes: int | None = Field(
         default=None,
         ge=FIXED_TIME_GRACE_MINUTES_MIN,
@@ -682,6 +683,7 @@ class SchedulerStatusRead(APIBase):
     today_schedules: list[SendScheduleRead]
     auto_scan_interval_hours: int
     scheduled_always_send: bool
+    scheduled_skip_official_lit_today: bool = False
     fixed_time_grace_minutes: int
     bark_configured: bool = False
     bark_masked_url: str | None = None
@@ -792,6 +794,7 @@ class ScanChatItem(APIBase):
     streak_days: int | None = None
     streak_kind: str | None = None
     streak_label: str | None = None
+    spark_lit_today: bool | None = None
 
 
 class ScanChatsRead(APIBase):

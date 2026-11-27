@@ -94,6 +94,7 @@ def test_scan_collects_sec_uid_from_user_info_response():
                 "streak_days": None,
                 "streak_kind": None,
                 "streak_label": None,
+                "spark_lit_today": None,
                 "platform_user_id": "sec-user-1",
                 "platform_handle": "friend_handle",
                 "identity_status": "bound",

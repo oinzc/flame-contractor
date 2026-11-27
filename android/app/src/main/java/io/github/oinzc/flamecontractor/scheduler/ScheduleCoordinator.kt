@@ -9,6 +9,8 @@ import android.util.Log
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import io.github.oinzc.flamecontractor.core.storage.OfficialSparkLitStore
+import io.github.oinzc.flamecontractor.core.storage.SchedulePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountDao
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
@@ -80,6 +82,8 @@ internal object MultiAccountSchedulePlanner {
         scanRunDao: ScanRunDao,
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
+        officialSparkLitStore: OfficialSparkLitStore? = null,
+        schedulePreferencesStore: SchedulePreferencesStore? = null,
     ): ScheduleReadSnapshot {
         val zoneId = DailySchedulePlanner.resolveZoneId(account.timezone)
         val todayStr = ZonedDateTime.ofInstant(now, zoneId).toLocalDate().toString()
@@ -112,6 +116,12 @@ internal object MultiAccountSchedulePlanner {
             todayJobs
         }
 
+        val skipOfficialLitIds = if (schedulePreferencesStore?.isSkipOfficialLitToday(account.id) == true) {
+            officialSparkLitStore?.todayLitTargetIds(account.id, todayStr).orEmpty()
+        } else {
+            emptySet()
+        }
+
         val evaluation = DailySchedulePlanner.evaluateNow(
             now = now,
             account = account,
@@ -119,6 +129,7 @@ internal object MultiAccountSchedulePlanner {
             todayJobs = effectiveJobs,
             zoneId = zoneId,
             networkDeferCountToday = networkDeferCountToday,
+            skipOfficialLitTargetIds = skipOfficialLitIds,
         )
 
         val latestCompletedScan = scanRunDao.getLatestCompletedScanRun(account.id)
@@ -149,6 +160,8 @@ internal object MultiAccountSchedulePlanner {
         scanRunDao: ScanRunDao,
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
+        officialSparkLitStore: OfficialSparkLitStore? = null,
+        schedulePreferencesStore: SchedulePreferencesStore? = null,
     ): MultiAccountScheduleAggregation {
         val accounts = accountDao.listAll()
         if (accounts.isEmpty()) {
@@ -162,6 +175,8 @@ internal object MultiAccountSchedulePlanner {
                 scanRunDao = scanRunDao,
                 now = now,
                 staleCrashRecoveryMillis = staleCrashRecoveryMillis,
+                officialSparkLitStore = officialSparkLitStore,
+                schedulePreferencesStore = schedulePreferencesStore,
             )
         }
         return aggregate(snapshots)
@@ -272,6 +287,12 @@ class ScheduleCoordinator private constructor(
     private val alarmManager: AlarmManager?
         get() = appContext.getSystemService(AlarmManager::class.java)
 
+    private fun resolveOfficialSparkLitStore(): OfficialSparkLitStore =
+        OfficialSparkLitStore.globalOrNull() ?: OfficialSparkLitStore(appContext)
+
+    private fun resolveSchedulePreferencesStore(): SchedulePreferencesStore =
+        SchedulePreferencesStore.resolve(appContext)
+
     internal suspend fun evaluateCurrentSchedule(
         now: Instant = Instant.now(),
         staleCrashRecoveryMillis: Long? = null,
@@ -286,6 +307,8 @@ class ScheduleCoordinator private constructor(
             scanRunDao = db.scanRunDao(),
             now = now,
             staleCrashRecoveryMillis = staleCrashRecoveryMillis,
+            officialSparkLitStore = resolveOfficialSparkLitStore(),
+            schedulePreferencesStore = resolveSchedulePreferencesStore(),
         )
     }
 
@@ -302,6 +325,8 @@ class ScheduleCoordinator private constructor(
             scanRunDao = db.scanRunDao(),
             now = now,
             staleCrashRecoveryMillis = staleCrashRecoveryMillis,
+            officialSparkLitStore = resolveOfficialSparkLitStore(),
+            schedulePreferencesStore = resolveSchedulePreferencesStore(),
         )
         for (plan in aggregation.dispatchPlans) {
             ExecutionDispatchContract.dispatchEvaluationIfNeeded(
@@ -346,6 +371,8 @@ class ScheduleCoordinator private constructor(
             scanRunDao = db.scanRunDao(),
             now = now,
             staleCrashRecoveryMillis = null,
+            officialSparkLitStore = resolveOfficialSparkLitStore(),
+            schedulePreferencesStore = resolveSchedulePreferencesStore(),
         )
         if (!aggregation.hasAnySchedulableAccount) {
             cancelAllAlarms()

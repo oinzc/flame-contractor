@@ -24,6 +24,7 @@ import io.github.oinzc.flamecontractor.core.notify.NotifyLevel
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundle
 import io.github.oinzc.flamecontractor.core.selectors.SelectorBundleStore
 import io.github.oinzc.flamecontractor.core.storage.AndroidTemplateImageStore
+import io.github.oinzc.flamecontractor.core.storage.SchedulePreferencesStore
 import io.github.oinzc.flamecontractor.data.db.AccountEntity
 import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.ContractTargetEntity
@@ -157,6 +158,7 @@ data class SettingsUiState(
     val accountTimezone: String = java.time.ZoneId.systemDefault().id,
     val enabledTargetCount: Int = 0,
     val enabledInput: Boolean = true,
+    val skipScheduledOfficialLitInput: Boolean = false,
     val sendWindowStartInput: String = "20:00",
     val sendWindowEndInput: String = "22:00",
     val sendTimeHhmmInput: String = "",
@@ -247,6 +249,7 @@ class SettingsViewModel(
     private val recentSkipSummaryProvider: () -> String? = {
         ExecutionRuntimeBus.state.value.lastSkipSummary
     },
+    private val schedulePreferencesStore: SchedulePreferencesStore? = SchedulePreferencesStore.globalOrNull(),
 ) : ViewModel() {
 
     private val scope: CoroutineScope = coroutineScope ?: viewModelScope
@@ -324,8 +327,10 @@ class SettingsViewModel(
                         nextAutoScanTimeText = nextAutoScanText,
                     )
                     if (!scheduleFormDirty) {
+                        val skipOfficialLit = schedulePreferencesStore?.isSkipOfficialLitToday(accountId) == true
                         nextState = nextState.copy(
                             enabledInput = account.enabled,
+                            skipScheduledOfficialLitInput = skipOfficialLit,
                             sendWindowStartInput = account.sendWindowStart,
                             sendWindowEndInput = account.sendWindowEnd,
                             sendTimeHhmmInput = account.sendTimeHhmm.orEmpty(),
@@ -431,6 +436,18 @@ class SettingsViewModel(
         }
     }
 
+    fun onSkipScheduledOfficialLitChanged(enabled: Boolean) {
+        scheduleFormDirty = true
+        _uiState.update {
+            it.copy(
+                skipScheduledOfficialLitInput = enabled,
+                hasUnsavedScheduleChanges = true,
+                scheduleError = null,
+                scheduleMessage = null,
+            )
+        }
+    }
+
     fun onSendWindowStartChanged(value: String) {
         scheduleFormDirty = true
         _uiState.update {
@@ -507,9 +524,11 @@ class SettingsViewModel(
         scheduleFormDirty = false
         scope.launch {
             val saved = withContext(ioDispatcher) { accountRepo.getAccount(accountId) } ?: return@launch
+            val savedSkipOfficialLit = schedulePreferencesStore?.isSkipOfficialLitToday(accountId) == true
             _uiState.update {
                 it.copy(
                     enabledInput = saved.enabled,
+                    skipScheduledOfficialLitInput = savedSkipOfficialLit,
                     sendWindowStartInput = saved.sendWindowStart,
                     sendWindowEndInput = saved.sendWindowEnd,
                     sendTimeHhmmInput = saved.sendTimeHhmm.orEmpty(),
@@ -590,6 +609,10 @@ class SettingsViewModel(
                         updatedAt = clockMillis(),
                     )
                     accountRepo.updateAccount(nextAccount)
+                    schedulePreferencesStore?.setSkipOfficialLitToday(
+                        accountId = accountId,
+                        enabled = current.skipScheduledOfficialLitInput,
+                    )
                     val wakeAt = scheduleGateway.rescheduleAll()
                     val autoScanAt = scheduleGateway.inspectNextAutoScanAt(accountId)
                     Triple(nextAccount, wakeAt, autoScanAt)
@@ -610,6 +633,7 @@ class SettingsViewModel(
                         accountStatus = updated.status,
                         accountTimezone = updated.timezone,
                         enabledInput = updated.enabled,
+                        skipScheduledOfficialLitInput = current.skipScheduledOfficialLitInput,
                         sendWindowStartInput = updated.sendWindowStart,
                         sendWindowEndInput = updated.sendWindowEnd,
                         sendTimeHhmmInput = updated.sendTimeHhmm.orEmpty(),
@@ -1566,6 +1590,7 @@ class SettingsViewModel(
                             recentSkipSummaryProvider = {
                                 ExecutionRuntimeBus.state.value.lastSkipSummary
                             },
+                            schedulePreferencesStore = SchedulePreferencesStore.resolve(appContext),
                         ) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

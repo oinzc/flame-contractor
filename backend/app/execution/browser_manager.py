@@ -2390,6 +2390,43 @@ class BrowserManager:
 
     # ------------------------------------------------------------ send
 
+    @staticmethod
+    def _resolve_official_lit_target_ids(
+        targets: list[ContractTarget], entries: list[dict]
+    ) -> set[str]:
+        """仅在扫描明确观测到今日已点亮（spark_lit_today=True）且身份无歧义时返回待跳过 target_id。"""
+        if not targets or not entries:
+            return set()
+        snapshots = [target_snapshot(target) for target in targets]
+        title_counts: dict[str, int] = {}
+        for target in targets:
+            title = (target.nickname_snapshot or "").strip()
+            if title:
+                title_counts[title] = title_counts.get(title, 0) + 1
+        lit_ids: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("spark_lit_today") is not True:
+                continue
+            if (
+                entry.get("identity_status") == "ambiguous"
+                or entry.get("conversation_status") == "ambiguous"
+            ):
+                continue
+            matched = match_scan_entry_to_target(entry, snapshots)
+            if matched is None:
+                continue
+            has_stable_id = bool(
+                (entry.get("platform_user_id") or "").strip()
+                or (entry.get("platform_conversation_id") or "").strip()
+            )
+            entry_title = (entry.get("title") or "").strip()
+            if not has_stable_id and entry_title and title_counts.get(entry_title, 0) > 1:
+                continue
+            target_id = matched.get("targetId")
+            if isinstance(target_id, str) and target_id:
+                lit_ids.add(target_id)
+        return lit_ids
+
     async def run_send(
         self,
         account_id: str,
@@ -2397,6 +2434,7 @@ class BrowserManager:
         force: bool = False,
         exclude_scheduled: bool = False,
         force_run_id: str | None = None,
+        skip_official_lit_today: bool = False,
     ) -> dict:
         """对账号批量发送。手动「立即发送/强制发送全部」包含全部启用好友；
         自动账号级调度传 exclude_scheduled=True，只发「未设置独立发送时刻」的好友
@@ -2450,10 +2488,20 @@ class BrowserManager:
             return blocked
 
         force_run_id = force_run_id or (uuid4().hex[:12] if force else None)
-        return await self._execute_send(account, targets, force_run_id=force_run_id)
+        return await self._execute_send(
+            account,
+            targets,
+            force_run_id=force_run_id,
+            skip_official_lit_today=skip_official_lit_today and not force,
+        )
 
     async def run_send_for_targets(
-        self, account_id: str, target_ids: list[str], *, force_run_id: str | None = None
+        self,
+        account_id: str,
+        target_ids: list[str],
+        *,
+        force_run_id: str | None = None,
+        skip_official_lit_today: bool = False,
     ) -> dict:
         """对指定好友集发送（自动按好友精确时刻派发用）。
 
@@ -2491,7 +2539,12 @@ class BrowserManager:
         if blocked is not None:
             return blocked
 
-        return await self._execute_send(account, targets, force_run_id=force_run_id)
+        return await self._execute_send(
+            account,
+            targets,
+            force_run_id=force_run_id,
+            skip_official_lit_today=skip_official_lit_today,
+        )
 
     async def send_target(
         self,
@@ -2591,6 +2644,7 @@ class BrowserManager:
         force_run_id: str | None = None,
         template_id_override: str | None = None,
         content_override: str | None = None,
+        skip_official_lit_today: bool = False,
     ) -> dict:
         """打开浏览器 + 登录检查 + 逐条发送 + 工件落盘。批量 run_send 与单好友 send_target 共用。"""
         account_id = account.id
@@ -2634,21 +2688,79 @@ class BrowserManager:
                 )
             else:
                 business_date = datetime.now(ZoneInfo(account.timezone)).date()
+                official_lit_target_ids: set[str] = set()
+                if skip_official_lit_today and force_run_id is None:
+                    self._update_send_progress(account_id, stage="核对今日火花状态")
+                    try:
+                        pre_scan_entries = await chat.scan_all_chats()
+                        if isinstance(pre_scan_entries, list):
+                            official_lit_target_ids = self._resolve_official_lit_target_ids(
+                                targets, pre_scan_entries
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "账号 %s 定时发送前实时核对官方火花失败，回退保守发送：%s",
+                            account_id,
+                            describe_exception(exc),
+                        )
+
                 self._update_send_progress(account_id, stage="定位好友")
+                sent_attempts = 0
                 for index, target in enumerate(targets):
+                    if target.id in official_lit_target_ids:
+                        with Session(self._engine) as session:
+                            blocking_jobs = session.exec(
+                                select(SendJob).where(
+                                    SendJob.account_id == account.id,
+                                    SendJob.target_id == target.id,
+                                    SendJob.business_date == business_date,
+                                )
+                            ).all()
+                        has_blocking = any(
+                            job.status
+                            in (
+                                JobStatus.UNKNOWN_REQUIRES_REVIEW,
+                                JobStatus.SENDING,
+                                JobStatus.CONFIRMING,
+                            )
+                            for job in blocking_jobs
+                        )
+                        if not has_blocking:
+                            result = {
+                                "target": target.nickname_snapshot,
+                                "target_id": target.id,
+                                "status": "skipped",
+                                "skip_code": "official_lit_today",
+                                "detail": "今日抖音已点亮火花，定时已跳过",
+                                "failure_class": None,
+                                "message": None,
+                            }
+                            results.append(result)
+                            self._update_send_progress(
+                                account_id,
+                                completed=index + 1,
+                                current_target=target.nickname_snapshot,
+                                last_result=result["status"],
+                                stage="今日已亮，已跳过",
+                            )
+                            continue
+
                     self._update_send_progress(
                         account_id,
                         completed=index,
                         current_target=target.nickname_snapshot,
-                        stage="冷却中" if index > 0 and self._send_cooldown > 0 else "定位并发送",
+                        stage="冷却中" if sent_attempts > 0 and self._send_cooldown > 0 else "定位并发送",
                     )
                     # M6-2 发送冷却：好友之间留出随机间隔，降低频率风险（首轮不等待）。
-                    if index > 0 and self._send_cooldown > 0:
+                    if sent_attempts > 0 and self._send_cooldown > 0:
                         await self._sleep(self._cooldown_delay())
                         self._update_send_progress(
                             account_id,
                             stage="定位并发送",
                         )
+                    sent_attempts += 1
                     result = await self._send_one(
                         chat,
                         account,

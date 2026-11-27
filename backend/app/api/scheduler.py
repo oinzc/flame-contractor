@@ -55,6 +55,9 @@ def _scheduler_read(
         today_schedules=_today_schedules(session, scheduler, user_id),
         auto_scan_interval_hours=getattr(scheduler, "auto_scan_interval_hours", 24),
         scheduled_always_send=getattr(scheduler, "scheduled_always_send", False),
+        scheduled_skip_official_lit_today=getattr(
+            scheduler, "scheduled_skip_official_lit_today", False
+        ),
         fixed_time_grace_minutes=getattr(scheduler, "fixed_time_grace_minutes", 30),
         bark_configured=bool(getattr(scheduler, "notifier_enabled", False)),
         bark_masked_url=getattr(scheduler, "bark_masked_url", None),
@@ -99,6 +102,10 @@ def update_scheduler_settings(
         scheduler.update_auto_scan_interval(payload.auto_scan_interval_hours)
     if "scheduled_always_send" in provided:
         scheduler.update_scheduled_always_send(payload.scheduled_always_send)
+    if "scheduled_skip_official_lit_today" in provided:
+        scheduler.update_scheduled_skip_official_lit_today(
+            payload.scheduled_skip_official_lit_today
+        )
     if "fixed_time_grace_minutes" in provided:
         scheduler.update_fixed_time_grace_minutes(payload.fixed_time_grace_minutes)
     return _scheduler_read(request, session, user.id)

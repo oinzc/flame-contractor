@@ -148,6 +148,7 @@ def create_app(
                 notify_on_success=settings.notify_on_success,
                 failure_streak_limit=settings.failure_streak_limit,
                 scheduled_always_send=settings.scheduled_always_send,
+                scheduled_skip_official_lit_today=settings.scheduled_skip_official_lit_today,
                 fixed_time_grace_minutes=settings.fixed_time_grace_minutes,
                 auto_scan_timeout=settings.scan_timeout_seconds + 120.0,
                 max_concurrent_sends=settings.max_concurrent_sends,

@@ -92,6 +92,7 @@ FIXED_TIME_GRACE_MINUTES_MAX = 24 * 60
 SCHEDULER_PAUSED_SETTING_KEY = "scheduler.paused"
 SCHEDULER_AUTO_SCAN_INTERVAL_SETTING_KEY = "scheduler.auto_scan_interval_hours"
 SCHEDULER_ALWAYS_SEND_SETTING_KEY = "scheduler.scheduled_always_send"
+SCHEDULER_SKIP_OFFICIAL_LIT_SETTING_KEY = "scheduler.skip_official_lit_today"
 SCHEDULER_FIXED_GRACE_SETTING_KEY = "scheduler.fixed_time_grace_minutes"
 NOTIFICATIONS_BARK_URL_SETTING_KEY = "notifications.bark_url"
 
@@ -169,6 +170,7 @@ class Scheduler:
         notify_on_success: bool = True,
         failure_streak_limit: int = 3,
         scheduled_always_send: bool = False,
+        scheduled_skip_official_lit_today: bool = False,
         fixed_time_grace_minutes: int = FIXED_TIME_GRACE_MINUTES_DEFAULT,
         max_concurrent_sends: int = 1,
         rng: random.Random | None = None,
@@ -209,6 +211,7 @@ class Scheduler:
         self._notify_on_success = notify_on_success
         self._failure_streak_limit = failure_streak_limit
         self._scheduled_always_send = scheduled_always_send
+        self._scheduled_skip_official_lit_today = scheduled_skip_official_lit_today
         self._fixed_time_grace_minutes = max(0, int(fixed_time_grace_minutes))
         # 全局发送并发上限：多账号同时到点时未派发的计划保持 pending，由下一轮
         # tick 重试形成错峰，避免同一出口 IP / 设备同一时刻并行多个浏览器会话。
@@ -240,6 +243,9 @@ class Scheduler:
         # 好友级准点失败推送去重：(target_ids, 业务日)。派发每 tick 重试，
         # 条件一直不解除时会重复撞同一堵墙，非要把手机刷成通知墙没有意义。
         self._target_failure_notices: set[tuple[str, str]] = set()
+        # 好友级准点因「今日抖音已亮火花」跳过后的当日记忆：(account_id, target_id, business_date)，
+        # 防止开启跳过开关后同一好友在宽限期内每 60 秒被重复派发并反复启动浏览器预检。
+        self._official_lit_skipped_today: set[tuple[str, str, date]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -264,6 +270,10 @@ class Scheduler:
     @property
     def scheduled_always_send(self) -> bool:
         return self._scheduled_always_send
+
+    @property
+    def scheduled_skip_official_lit_today(self) -> bool:
+        return self._scheduled_skip_official_lit_today
 
     @property
     def fixed_time_grace_minutes(self) -> int:
@@ -363,6 +373,14 @@ class Scheduler:
             )
             if always_send_setting is not None:
                 self._scheduled_always_send = always_send_setting.value == "1"
+            skip_official_lit_setting = session.get(
+                AppSetting,
+                SCHEDULER_SKIP_OFFICIAL_LIT_SETTING_KEY,
+            )
+            if skip_official_lit_setting is not None:
+                self._scheduled_skip_official_lit_today = (
+                    skip_official_lit_setting.value == "1"
+                )
             grace_setting = session.get(
                 AppSetting,
                 SCHEDULER_FIXED_GRACE_SETTING_KEY,
@@ -460,6 +478,27 @@ class Scheduler:
         # 先写库再切换内存值，避免持久化失败时运行态与重启后的配置不一致。
         self._persist_scheduled_always_send(enabled)
         self._scheduled_always_send = bool(enabled)
+
+    def _persist_scheduled_skip_official_lit_today(self, enabled: bool) -> None:
+        with Session(self._engine) as session:
+            setting = session.get(AppSetting, SCHEDULER_SKIP_OFFICIAL_LIT_SETTING_KEY)
+            if setting is None:
+                setting = AppSetting(
+                    key=SCHEDULER_SKIP_OFFICIAL_LIT_SETTING_KEY,
+                    value="1" if enabled else "0",
+                )
+            else:
+                setting.value = "1" if enabled else "0"
+                setting.updated_at = utc_now()
+            session.add(setting)
+            session.commit()
+
+    def update_scheduled_skip_official_lit_today(self, enabled: bool) -> None:
+        """持久化「定时跳过今日抖音已亮火花」可选开关（默认关闭）。"""
+        self._persist_scheduled_skip_official_lit_today(enabled)
+        self._scheduled_skip_official_lit_today = bool(enabled)
+        if not self._scheduled_skip_official_lit_today:
+            self._official_lit_skipped_today.clear()
 
     def update_fixed_time_grace_minutes(self, minutes: int) -> None:
         """持久化固定时刻宽限期（分钟）；下一次 tick 即按新值判断「是否已错过」。"""
@@ -870,6 +909,13 @@ class Scheduler:
         """
         with Session(self._engine) as session:
             business_date = self._clock().astimezone(ZoneInfo(account.timezone)).date()
+            if (
+                self._scheduled_skip_official_lit_today
+                and not self._scheduled_always_send
+                and (account.id, target.id, business_date)
+                in self._official_lit_skipped_today
+            ):
+                return True
             statement = select(SendJob).where(
                 SendJob.account_id == account.id,
                 SendJob.target_id == target.id,
@@ -924,9 +970,30 @@ class Scheduler:
                     )
                 await self._notify("准点发送未完成", message, "timeSensitive")
         else:
+            self._record_official_lit_skips(account_id, target_ids, result or {})
             await self._notify_target_result(account_id, label, result or {})
         finally:
             self._running.discard(account_id)
+
+    def _record_official_lit_skips(
+        self, account_id: str, target_ids: list[str], result: dict
+    ) -> None:
+        items = result.get("results") or []
+        if not items:
+            return
+        with Session(self._engine) as session:
+            account = session.get(Account, account_id)
+        tz = ZoneInfo(account.timezone) if account is not None else ZoneInfo("UTC")
+        today = self._clock().astimezone(tz).date()
+        for key in [k for k in self._official_lit_skipped_today if k[2] != today]:
+            self._official_lit_skipped_today.discard(key)
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") == "skipped" and item.get("skip_code") == "official_lit_today":
+                tid = item.get("target_id") or (target_ids[idx] if idx < len(target_ids) else None)
+                if tid:
+                    self._official_lit_skipped_today.add((account_id, str(tid), today))
 
     def _claim_target_failure_notice(
         self, account_id: str, target_ids: list[str]
@@ -1009,13 +1076,23 @@ class Scheduler:
         """调用单好友发送执行器，兼容旧签名（send_targets(account_id, ids)）。"""
         if self._send_targets is None:
             raise RuntimeError("未配置单好友发送执行器")
+        skip_lit = self._scheduled_skip_official_lit_today and not self._scheduled_always_send
         kwargs: dict = {}
         if force_run_id is not None:
             kwargs["force_run_id"] = force_run_id
+        if skip_lit:
+            kwargs["skip_official_lit_today"] = True
         try:
             result = self._send_targets(account_id, target_ids, **kwargs)
         except TypeError:
-            result = self._send_targets(account_id, target_ids)
+            if "skip_official_lit_today" in kwargs:
+                fallback_kwargs = {k: v for k, v in kwargs.items() if k != "skip_official_lit_today"}
+                try:
+                    result = self._send_targets(account_id, target_ids, **fallback_kwargs)
+                except TypeError:
+                    result = self._send_targets(account_id, target_ids)
+            else:
+                result = self._send_targets(account_id, target_ids)
         if asyncio.iscoroutine(result):
             return result
         return asyncio.ensure_future(result)  # type: ignore[return-value]
@@ -1026,15 +1103,25 @@ class Scheduler:
         """调用发送执行器，兼容旧签名（send_account(account_id)）与新签名（支持 exclude_scheduled）。"""
         if self._send_account is None:
             raise RuntimeError("未配置发送执行器")
+        skip_lit = self._scheduled_skip_official_lit_today and not self._scheduled_always_send
         kwargs: dict = {"exclude_scheduled": exclude_scheduled}
         if force_run_id is not None:
             kwargs["force_run_id"] = force_run_id
+        if skip_lit:
+            kwargs["skip_official_lit_today"] = True
         try:
             # 新签名：browser_manager.run_send(account_id, exclude_scheduled=True)
             result = self._send_account(account_id, **kwargs)
         except TypeError:
-            # 旧签名：send_account(account_id)（测试替身等），忽略该参数
-            result = self._send_account(account_id)
+            if "skip_official_lit_today" in kwargs:
+                fallback_kwargs = {k: v for k, v in kwargs.items() if k != "skip_official_lit_today"}
+                try:
+                    result = self._send_account(account_id, **fallback_kwargs)
+                except TypeError:
+                    result = self._send_account(account_id)
+            else:
+                # 旧签名：send_account(account_id)（测试替身等），忽略该参数
+                result = self._send_account(account_id)
         if asyncio.iscoroutine(result):
             return result
         return asyncio.ensure_future(result)  # type: ignore[return-value]

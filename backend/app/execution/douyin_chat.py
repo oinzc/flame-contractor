@@ -65,6 +65,37 @@ def parse_flame_icon_kind(src: str | None) -> str | None:
         if segment in KNOWN_SPARK_KINDS:
             return segment
     return "normal"
+
+
+def parse_flame_lit_today(
+    src: str | None,
+    streak_days: int | None,
+    streak_label: str | None,
+) -> bool | None:
+    """与 Android 端保持一致的保守判定：
+    - 图标文件名含 `gray_` -> `False`（灰火，今日未点亮）；
+    - 仅当命中非灰官方 `flame_icon`、正整数天数 `streak_days > 0` 且无「重燃 / 消失 / 点亮中」特殊标签 -> `True`（今日已点亮）；
+    - 其余一律返回 `None`（未知/无火花/特殊态），绝不误判为今日已亮。
+    """
+    if not isinstance(src, str):
+        return None
+    cleaned = src.strip()
+    if not cleaned:
+        return None
+    path = cleaned.split("?", 1)[0].split("#", 1)[0].lower()
+    if "flame_icon" not in path:
+        return None
+    file_name = path.rsplit("/", 1)[-1]
+    if "gray_" in file_name:
+        return False
+    if not file_name:
+        return None
+    if not isinstance(streak_days, int) or isinstance(streak_days, bool) or streak_days <= 0:
+        return None
+    label = (streak_label or "").strip()
+    if label and any(token in label for token in ("重燃", "消失", "点亮中")):
+        return None
+    return True
 # 「身份验证」风控弹窗里已知的验证方式文案（2026-10-14 真实弹窗截图核准，
 # 注意不是想当然的「手机发送验证码/邮箱验证码」——抖音实际文案如下）。
 # 点击按可见文案匹配，抖音改版后新增方式不会被点（UI 只展示检测到的）。
@@ -1375,6 +1406,7 @@ class DouyinChat:
                 streak_days: int | None = None
                 streak_kind: str | None = None
                 streak_label: str | None = None
+                spark_lit_today: bool | None = None
                 streak_el = await item.query_selector(_s.CONVERSATION_STREAK)
                 if streak_el is not None:
                     days_el = await streak_el.query_selector(_s.CONVERSATION_STREAK_DAYS)
@@ -1396,6 +1428,7 @@ class DouyinChat:
                     if streak_kind is None and icon is not None:
                         # 容器内确已命中官方 flame_icon 节点，但 src 形态特殊/未提供时兜底为 normal
                         streak_kind = "normal"
+                    spark_lit_today = parse_flame_lit_today(src, streak_days, streak_label)
 
                 lines = [line.strip() for line in ((await item.inner_text()) or "").splitlines() if line.strip()]
                 # 行结构：[名字, (火花标记), 时间, 最后消息…]；滤掉名字与火花标记行后取消息
@@ -1409,6 +1442,7 @@ class DouyinChat:
                         "streak_days": streak_days,
                         "streak_kind": streak_kind,
                         "streak_label": streak_label,
+                        "spark_lit_today": spark_lit_today,
                     }
                 )
                 if progress_callback is not None:

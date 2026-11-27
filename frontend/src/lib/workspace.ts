@@ -281,6 +281,7 @@ export type SchedulerFormValidation =
         autoScanIntervalHours: number
         fixedTimeGraceMinutes: number
         scheduledAlwaysSend: boolean
+        scheduledSkipOfficialLitToday: boolean
       }
     }
   | { ok: false; error: string }
@@ -289,6 +290,7 @@ export function parseSchedulerSettingsForm(
   scanHoursRaw: string,
   graceMinutesRaw: string,
   scheduledAlwaysSend: boolean,
+  scheduledSkipOfficialLitToday = false,
 ): SchedulerFormValidation {
   const hours = Number.parseInt(scanHoursRaw.trim(), 10)
   if (Number.isNaN(hours) || hours < 1 || hours > 168) {
@@ -304,6 +306,7 @@ export function parseSchedulerSettingsForm(
       autoScanIntervalHours: hours,
       fixedTimeGraceMinutes: grace,
       scheduledAlwaysSend,
+      scheduledSkipOfficialLitToday,
     },
   }
 }
