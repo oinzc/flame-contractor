@@ -38,7 +38,7 @@ jobs:
           java-version: "17"
 
       - name: 配置 Gradle 缓存
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: 赋予 gradlew 执行权限
         run: chmod +x android/gradlew
