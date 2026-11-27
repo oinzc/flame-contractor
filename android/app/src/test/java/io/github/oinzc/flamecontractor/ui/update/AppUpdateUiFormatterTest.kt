@@ -266,4 +266,62 @@ class AppUpdateUiFormatterTest {
             ),
         )
     }
+
+    @Test
+    fun `parseUpdateChangelog formats markdown sections, clean bullets, and filters CI noise`() {
+        val rawMarkdown = """
+            ### 新增
+            - **默认极简模式**：打开应用后默认进入极简首页，`0px` 无感切换。
+              - 保留直达反馈按钮。
+
+            ### 修复与改进
+            - **修复四栏闪烁**：底部标签切换更顺滑。
+        """.trimIndent()
+
+        val parsedMd = parseUpdateChangelog(rawMarkdown)
+        assertEquals(2, parsedMd.size)
+        assertEquals("新增功能", parsedMd[0].title)
+        assertEquals(UpdateChangelogTone.FEATURE, parsedMd[0].tone)
+        assertEquals(2, parsedMd[0].items.size)
+        assertEquals("默认极简模式", parsedMd[0].items[0].lead)
+        assertEquals("打开应用后默认进入极简首页，0px 无感切换。", parsedMd[0].items[0].body)
+        assertFalse(parsedMd[0].items[0].isSubItem)
+        assertTrue(parsedMd[0].items[1].isSubItem)
+        assertEquals("保留直达反馈按钮。", parsedMd[0].items[1].body)
+
+        assertEquals("修复与优化", parsedMd[1].title)
+        assertEquals(UpdateChangelogTone.FIX, parsedMd[1].tone)
+        assertEquals("修复四栏闪烁", parsedMd[1].items[0].lead)
+
+        val cleanManifestNotes = """
+            【新增功能】
+            • 闹钟滚轮选时：不再需要手输冒号。
+              · 兼容平板居中弹窗
+
+            【修复与优化】
+            • 修复标准模式闪烁
+        """.trimIndent()
+        val parsedClean = parseUpdateChangelog(cleanManifestNotes)
+        assertEquals(2, parsedClean.size)
+        assertEquals("闹钟滚轮选时", parsedClean[0].items[0].lead)
+        assertTrue(parsedClean[0].items[1].isSubItem)
+        assertEquals("修复标准模式闪烁", parsedClean[1].items[0].body)
+
+        val dependabotOnly = """
+            ## What's Changed
+            * chore(ci): bump actions/setup-java from 4 to 6 by @dependabot[bot] in https://github.com/o/r/pull/28
+            * chore(ci): bump gradle/actions from 4 to 6 by @dependabot[bot] in https://github.com/o/r/pull/26
+
+            ## New Contributors
+            * @dependabot[bot] made their first contribution in https://github.com/o/r/pull/28
+
+            **Full Changelog**: https://github.com/o/r/compare/v0.7.2...v0.8.0
+        """.trimIndent()
+        val parsedNoise = parseUpdateChangelog(dependabotOnly)
+        assertEquals(1, parsedNoise.size)
+        assertEquals("本次更新包含稳定性改进与体验优化。", parsedNoise[0].items.single().body)
+
+        val parsedBlank = parseUpdateChangelog("   \n  ")
+        assertEquals("本次更新包含稳定性改进与体验优化。", parsedBlank.single().items.single().body)
+    }
 }

@@ -251,6 +251,154 @@ def build_android_latest_manifest(
     }
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+_MD_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
+_MD_CODE_RE = re.compile(r"`([^`]+)`")
+_PR_META_SUFFIX_RE = re.compile(
+    r"\s+(?:by\s+@[\w\-\[\]]+\s+in\s+https?://\S+|\(#\d+\))\s*$",
+    re.IGNORECASE,
+)
+_NOISE_PATTERNS = (
+    "dependabot[bot]",
+    "chore(ci):",
+    "chore(deps):",
+    "chore(deps-dev):",
+    "bump actions/",
+    "bump gradle/",
+)
+
+
+def extract_changelog_section(changelog_md: str, version: str) -> str:
+    """从 CHANGELOG.md 中精确提取目标版本段落（不含顶层版本标题行）。"""
+    normalized_version, _, _, _ = _parse_semver_components(version)
+    lines = changelog_md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    heading_re = re.compile(
+        rf"^\s*##\s+\[?v?{re.escape(normalized_version)}\]?(?:\s+-\s+.*|\s*)$",
+        re.IGNORECASE,
+    )
+    next_h2_re = re.compile(r"^\s*##\s+")
+
+    start_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if heading_re.match(line):
+            start_idx = idx + 1
+            break
+    if start_idx is None:
+        return ""
+
+    end_idx = len(lines)
+    for idx in range(start_idx, len(lines)):
+        if next_h2_re.match(lines[idx]):
+            end_idx = idx
+            break
+
+    return "\n".join(lines[start_idx:end_idx]).strip()
+
+
+def _clean_inline_markdown(text: str) -> str:
+    cleaned = _MD_LINK_RE.sub(r"\1", text)
+    cleaned = _MD_BOLD_RE.sub(lambda m: m.group(1) or m.group(2) or "", cleaned)
+    cleaned = _MD_CODE_RE.sub(r"\1", cleaned)
+    cleaned = _PR_META_SUFFIX_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _map_section_heading(raw_heading: str) -> str | None:
+    title = _clean_inline_markdown(re.sub(r"^#{1,6}\s*", "", raw_heading)).strip("【】 ")
+    lower = title.lower()
+    if not title:
+        return None
+    if lower in ("what's changed", "whats changed", "changes"):
+        return None
+    if any(k in title for k in ("新增", "新特性")) or any(k in lower for k in ("added", "feature")):
+        return "【新增功能】"
+    if any(k in title for k in ("修复", "优化", "改进")) or any(k in lower for k in ("fixed", "fix", "improved", "improvement")):
+        return "【修复与优化】"
+    if any(k in title for k in ("变更", "注意")) or "breaking" in lower:
+        return "【重要变更】"
+    return f"【{title}】"
+
+
+def _is_noise_line(line_lower: str) -> bool:
+    if line_lower.startswith("**full changelog**") or line_lower.startswith("full changelog:"):
+        return True
+    return any(pat in line_lower for pat in _NOISE_PATTERNS)
+
+
+def format_user_facing_changelog(raw_text: str) -> str:
+    """将 Markdown / GitHub 自动日志清洗为面向上线弹窗的简洁中文纯文本。"""
+    without_comments = _HTML_COMMENT_RE.sub("", raw_text.replace("\r\n", "\n").replace("\r", "\n"))
+    sections: list[tuple[str | None, list[str]]] = []
+    current_heading: str | None = None
+    current_items: list[str] = []
+    skip_contributors_section = False
+
+    def flush_section() -> None:
+        nonlocal current_heading, current_items
+        if current_items:
+            sections.append((current_heading, list(current_items)))
+        current_heading = None
+        current_items = []
+
+    for raw_line in without_comments.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+
+        if re.match(r"^#{1,6}\s+", stripped):
+            heading_body = re.sub(r"^#{1,6}\s*", "", stripped).strip().lower()
+            if "new contributors" in heading_body:
+                flush_section()
+                skip_contributors_section = True
+                continue
+            skip_contributors_section = False
+            mapped = _map_section_heading(stripped)
+            if mapped is not None:
+                flush_section()
+                current_heading = mapped
+            continue
+
+        if skip_contributors_section or _is_noise_line(lower):
+            continue
+
+        if stripped.startswith("【") and stripped.endswith("】") and len(stripped) <= 24:
+            flush_section()
+            current_heading = stripped
+            continue
+
+        leading_spaces = len(raw_line) - len(raw_line.lstrip(" "))
+        sub_bullet_match = re.match(r"^(?:[-*+]|·)\s+(.*)$", stripped)
+        primary_bullet_match = re.match(r"^(?:[-*+]|•)\s+(.*)$", stripped)
+
+        if sub_bullet_match and (leading_spaces >= 2 or stripped.startswith("· ")):
+            cleaned = _clean_inline_markdown(sub_bullet_match.group(1))
+            if cleaned and not _is_noise_line(cleaned.lower()):
+                current_items.append(f"  · {cleaned}")
+        elif primary_bullet_match:
+            cleaned = _clean_inline_markdown(primary_bullet_match.group(1))
+            if cleaned and not _is_noise_line(cleaned.lower()):
+                current_items.append(f"• {cleaned}")
+        else:
+            cleaned = _clean_inline_markdown(stripped)
+            if cleaned and not _is_noise_line(cleaned.lower()):
+                current_items.append(f"• {cleaned}")
+
+    flush_section()
+    if not sections:
+        return ""
+
+    blocks: list[str] = []
+    for heading, items in sections:
+        if heading:
+            blocks.append("\n".join([heading, *items]))
+        else:
+            blocks.append("\n".join(items))
+    return "\n\n".join(blocks).strip()
+
+
 def _safe_reconfigure_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -277,6 +425,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="读取 APK 文件并生成 latest.json 更新清单",
     )
+    mode.add_argument(
+        "--extract-changelog",
+        type=Path,
+        metavar="CHANGELOG_MD",
+        dest="extract_changelog_path",
+        help="从 CHANGELOG.md 中提取指定 --version-name 的更新说明",
+    )
+    mode.add_argument(
+        "--format-changelog-file",
+        type=Path,
+        metavar="RAW_FILE",
+        dest="format_changelog_path",
+        help="将原始 Markdown / GitHub 自动日志清洗为面向用户的纯文本更新说明",
+    )
 
     parser.add_argument("--apk", type=Path, help="已签名的 APK 文件路径")
     parser.add_argument("--version-name", help="发布版本号（如 0.6.1）")
@@ -300,13 +462,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-page-url", default="", help="可选 HTTPS GitHub Release 页面地址")
     parser.add_argument("--changelog", default=None, help="内联更新说明文本")
     parser.add_argument("--changelog-file", type=Path, default=None, help="UTF-8 更新说明文件路径")
+    parser.add_argument(
+        "--user-facing",
+        action="store_true",
+        help="仅与 --extract-changelog 同用：输出面向弹窗展示的清洗后纯文本",
+    )
     parser.add_argument("--min-version-code", type=int, default=0, help="强制更新最低版本码（默认 0）")
     parser.add_argument(
         "--published-at",
         default=None,
         help="可选发布时间（YYYY-MM-DDTHH:MM:SSZ，默认取当前 UTC 时间）",
     )
-    parser.add_argument("--output", type=Path, default=None, help="输出 latest.json 文件路径（省略则打印到 stdout）")
+    parser.add_argument("--output", type=Path, default=None, help="输出文件路径（省略则打印到 stdout）")
     return parser
 
 
@@ -318,6 +485,37 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.compute_version_code_ver is not None:
             print(compute_version_code(args.compute_version_code_ver))
+            return 0
+
+        if args.extract_changelog_path is not None:
+            if args.version_name is None:
+                raise ValueError("--extract-changelog 模式必须提供 --version-name")
+            if not args.extract_changelog_path.is_file():
+                raise FileNotFoundError(f"找不到 CHANGELOG 文件：{args.extract_changelog_path}")
+            md_text = args.extract_changelog_path.read_bytes().decode("utf-8")
+            section_text = extract_changelog_section(md_text, args.version_name)
+            result_text = (
+                format_user_facing_changelog(section_text) if args.user_facing else section_text
+            )
+            payload = (result_text + "\n") if result_text else ""
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_bytes(payload.encode("utf-8"))
+            else:
+                sys.stdout.write(payload)
+            return 0
+
+        if args.format_changelog_path is not None:
+            if not args.format_changelog_path.is_file():
+                raise FileNotFoundError(f"找不到原始更新说明文件：{args.format_changelog_path}")
+            raw_text = args.format_changelog_path.read_bytes().decode("utf-8")
+            cleaned = format_user_facing_changelog(raw_text)
+            payload = (cleaned + "\n") if cleaned else ""
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_bytes(payload.encode("utf-8"))
+            else:
+                sys.stdout.write(payload)
             return 0
 
         if args.apk is None:

@@ -67,9 +67,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.update.AppUpdateInstallOutcome
 import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
@@ -671,16 +675,223 @@ private fun UpdateReleaseMetaRow(
     }
 }
 
+internal enum class UpdateChangelogTone {
+    FEATURE,
+    FIX,
+    NOTICE,
+    GENERAL,
+}
+
+internal data class UpdateChangelogItem(
+    val lead: String?,
+    val body: String,
+    val isSubItem: Boolean = false,
+)
+
+internal data class UpdateChangelogSection(
+    val title: String?,
+    val tone: UpdateChangelogTone,
+    val items: List<UpdateChangelogItem>,
+)
+
+private const val DEFAULT_UPDATE_CHANGELOG_FALLBACK = "本次更新包含稳定性改进与体验优化。"
+private val CHANGELOG_MD_LINK_REGEX = Regex("\\[([^\\]]+)\\]\\((https?://[^)]+)\\)")
+private val CHANGELOG_PR_META_REGEX = Regex(
+    "(?:\\s+by\\s+@[^\\s]+\\s+in\\s+https?://\\S+|\\s*\\(#\\d+\\))\\s*$",
+    RegexOption.IGNORE_CASE,
+)
+private val CHANGELOG_HASH_HEADER_REGEX = Regex("^#{1,6}\\s*(.+)$")
+private val CHANGELOG_BRACKET_HEADER_REGEX = Regex("^【(.+)】$")
+private val CHANGELOG_NOISE_PATTERNS = listOf(
+    "dependabot[bot]",
+    "chore(ci):",
+    "chore(deps):",
+    "chore(deps-dev):",
+    "bump actions/",
+    "bump gradle/",
+)
+
+private fun isChangelogNoiseLine(lowerLine: String): Boolean {
+    if (lowerLine.startsWith("**full changelog**") || lowerLine.startsWith("full changelog:")) {
+        return true
+    }
+    return CHANGELOG_NOISE_PATTERNS.any { lowerLine.contains(it) }
+}
+
+private fun cleanChangelogInlineText(raw: String): String {
+    var text = CHANGELOG_MD_LINK_REGEX.replace(raw) { match -> match.groupValues[1] }
+    text = text.replace("`", "")
+    text = CHANGELOG_PR_META_REGEX.replace(text, "")
+    return text.trim().replace(Regex("\\s{2,}"), " ")
+}
+
+private fun classifyChangelogSection(rawTitle: String): Pair<String?, UpdateChangelogTone> {
+    val cleanTitle = cleanChangelogInlineText(rawTitle)
+        .replace("**", "")
+        .replace("__", "")
+        .trim('【', '】', ' ')
+    val lower = cleanTitle.lowercase(Locale.ROOT)
+    if (cleanTitle.isEmpty()) return null to UpdateChangelogTone.GENERAL
+    if (lower in setOf("what's changed", "whats changed", "changes")) {
+        return null to UpdateChangelogTone.GENERAL
+    }
+    if (cleanTitle.contains("新增") || cleanTitle.contains("新特性") ||
+        lower.contains("added") || lower.contains("feature")
+    ) {
+        return "新增功能" to UpdateChangelogTone.FEATURE
+    }
+    if (cleanTitle.contains("修复") || cleanTitle.contains("优化") || cleanTitle.contains("改进") ||
+        lower.contains("fixed") || lower.contains("fix") || lower.contains("improved")
+    ) {
+        return "修复与优化" to UpdateChangelogTone.FIX
+    }
+    if (cleanTitle.contains("变更") || cleanTitle.contains("注意") || lower.contains("breaking")) {
+        return "重要变更" to UpdateChangelogTone.NOTICE
+    }
+    return cleanTitle to UpdateChangelogTone.GENERAL
+}
+
+private fun parseChangelogItemText(
+    rawBody: String,
+    isSubItem: Boolean,
+): UpdateChangelogItem? {
+    val cleaned = cleanChangelogInlineText(rawBody)
+    if (cleaned.isEmpty() || isChangelogNoiseLine(cleaned.lowercase(Locale.ROOT))) {
+        return null
+    }
+
+    val boldLeadMatch = Regex("^\\*\\*([^*]+)\\*\\*[：:](.*)$").matchEntire(cleaned)
+    if (boldLeadMatch != null) {
+        val lead = boldLeadMatch.groupValues[1].trim()
+        val rest = boldLeadMatch.groupValues[2].replace("**", "").replace("__", "").trim()
+        if (lead.isNotEmpty() && rest.isNotEmpty()) {
+            return UpdateChangelogItem(lead = lead, body = rest, isSubItem = isSubItem)
+        }
+    }
+
+    val stripped = cleaned.replace("**", "").replace("__", "").trim()
+    if (stripped.isEmpty()) return null
+
+    if (!isSubItem) {
+        val colonIdx = stripped.indexOfFirst { it == '：' || it == ':' }
+        if (colonIdx in 1..28) {
+            val candidateLead = stripped.substring(0, colonIdx).trim()
+            val candidateBody = stripped.substring(colonIdx + 1).trim()
+            if (candidateBody.isNotEmpty() && !candidateLead.contains("http", ignoreCase = true)) {
+                return UpdateChangelogItem(
+                    lead = candidateLead,
+                    body = candidateBody,
+                    isSubItem = false,
+                )
+            }
+        }
+    }
+
+    return UpdateChangelogItem(lead = null, body = stripped, isSubItem = isSubItem)
+}
+
+internal fun parseUpdateChangelog(raw: String): List<UpdateChangelogSection> {
+    val normalized = raw
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")
+
+    val sections = mutableListOf<UpdateChangelogSection>()
+    var currentTitle: String? = null
+    var currentTone = UpdateChangelogTone.GENERAL
+    val currentItems = mutableListOf<UpdateChangelogItem>()
+    var skipContributorsSection = false
+
+    fun flushSection() {
+        if (currentItems.isNotEmpty()) {
+            sections.add(
+                UpdateChangelogSection(
+                    title = currentTitle,
+                    tone = currentTone,
+                    items = currentItems.toList(),
+                ),
+            )
+        }
+        currentTitle = null
+        currentTone = UpdateChangelogTone.GENERAL
+        currentItems.clear()
+    }
+
+    for (rawLine in normalized.split('\n')) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty()) continue
+        val lower = trimmed.lowercase(Locale.ROOT)
+
+        val hashHeader = CHANGELOG_MD_LINK_REGEX.let {
+            CHANGELOG_HASH_HEADER_REGEX.matchEntire(trimmed)
+        }
+        if (hashHeader != null) {
+            val headerContent = hashHeader.groupValues[1].trim()
+            if (headerContent.lowercase(Locale.ROOT).contains("new contributors")) {
+                flushSection()
+                skipContributorsSection = true
+                continue
+            }
+            skipContributorsSection = false
+            val (mappedTitle, mappedTone) = classifyChangelogSection(headerContent)
+            if (mappedTitle != null) {
+                flushSection()
+                currentTitle = mappedTitle
+                currentTone = mappedTone
+            }
+            continue
+        }
+
+        if (skipContributorsSection || isChangelogNoiseLine(lower)) {
+            continue
+        }
+
+        val bracketHeader = CHANGELOG_BRACKET_HEADER_REGEX.matchEntire(trimmed)
+        if (bracketHeader != null && trimmed.length <= 26) {
+            flushSection()
+            val (mappedTitle, mappedTone) = classifyChangelogSection(bracketHeader.groupValues[1])
+            currentTitle = mappedTitle ?: bracketHeader.groupValues[1].trim()
+            currentTone = mappedTone
+            continue
+        }
+
+        val leadingSpaces = rawLine.length - rawLine.trimStart(' ').length
+        val isSubBullet = (leadingSpaces >= 2 && (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ "))) ||
+            trimmed.startsWith("· ")
+        val bulletBody = when {
+            trimmed.startsWith("• ") -> trimmed.removePrefix("• ")
+            trimmed.startsWith("· ") -> trimmed.removePrefix("· ")
+            trimmed.startsWith("- ") -> trimmed.removePrefix("- ")
+            trimmed.startsWith("* ") -> trimmed.removePrefix("* ")
+            trimmed.startsWith("+ ") -> trimmed.removePrefix("+ ")
+            else -> trimmed
+        }
+        parseChangelogItemText(bulletBody, isSubItem = isSubBullet)?.let { currentItems.add(it) }
+    }
+
+    flushSection()
+    if (sections.isEmpty()) {
+        return listOf(
+            UpdateChangelogSection(
+                title = null,
+                tone = UpdateChangelogTone.GENERAL,
+                items = listOf(UpdateChangelogItem(lead = null, body = DEFAULT_UPDATE_CHANGELOG_FALLBACK)),
+            ),
+        )
+    }
+    return sections
+}
+
 @Composable
 private fun UpdateChangelogBox(
     changelog: String,
 ) {
     val palette = FlameThemeTokens.palette
-    val displayLog = changelog.trim().ifEmpty { "本次更新包含稳定性改进与体验优化。" }
+    val sections = remember(changelog) { parseUpdateChangelog(changelog) }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 220.dp),
+            .heightIn(max = 260.dp),
         shape = RoundedCornerShape(14.dp),
         color = palette.surfaceSubtle,
         border = BorderStroke(1.dp, palette.hairline),
@@ -689,8 +900,8 @@ private fun UpdateChangelogBox(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 13.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
                 text = "更新内容",
@@ -698,11 +909,58 @@ private fun UpdateChangelogBox(
                 fontWeight = FontWeight.SemiBold,
                 color = palette.inkTertiary,
             )
-            Text(
-                text = displayLog,
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.ink,
-            )
+
+            sections.forEach { section ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    section.title?.let { sectionTitle ->
+                        val tagTone = when (section.tone) {
+                            UpdateChangelogTone.FEATURE -> FlameTone.EMBER
+                            UpdateChangelogTone.FIX -> FlameTone.HEALTHY
+                            UpdateChangelogTone.NOTICE -> FlameTone.WARNING
+                            UpdateChangelogTone.GENERAL -> FlameTone.NEUTRAL
+                        }
+                        FlameMiniTag(text = sectionTitle, tone = tagTone)
+                    }
+
+                    section.items.forEach { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = if (item.isSubItem) 12.dp else 0.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Text(
+                                text = if (item.isSubItem) "·" else "•",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (item.isSubItem) palette.inkTertiary else palette.inkSecondary,
+                            )
+                            Text(
+                                text = buildAnnotatedString {
+                                    if (!item.lead.isNullOrBlank()) {
+                                        withStyle(
+                                            SpanStyle(
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.ink,
+                                            ),
+                                        ) {
+                                            append(item.lead)
+                                            append("：")
+                                        }
+                                    }
+                                    withStyle(SpanStyle(color = palette.inkSecondary)) {
+                                        append(item.body)
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                lineHeight = 19.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

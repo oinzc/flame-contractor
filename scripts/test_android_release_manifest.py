@@ -510,6 +510,99 @@ class TestCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
         self.assertEqual(proc.stdout.strip(), "10203")
 
+    def test_extract_changelog_section_matches_semver_and_stops_at_next_version(self) -> None:
+        sample_md = (
+            "# 更新日志\n\n"
+            "## [v0.9.0] - 2026-11-28\n\n"
+            "### 新增\n"
+            "- **极简模式默认开启**：打开即可一键续火。\n\n"
+            "### 修复与改进\n"
+            "- **切换更顺滑**：修复闪烁问题。\n\n"
+            "## [v0.8.0] - 2026-11-28\n\n"
+            "### 新增\n"
+            "- 旧版本条目。\n"
+        )
+        extracted = manifest_mod.extract_changelog_section(sample_md, "0.9.0")
+        self.assertIn("极简模式默认开启", extracted)
+        self.assertIn("切换更顺滑", extracted)
+        self.assertNotIn("旧版本条目", extracted)
+
+        self.assertEqual(manifest_mod.extract_changelog_section(sample_md, "v0.8.0"), "### 新增\n- 旧版本条目。")
+        self.assertEqual(manifest_mod.extract_changelog_section(sample_md, "9.9.9"), "")
+
+    def test_format_user_facing_changelog_cleans_markdown_and_filters_ci_noise(self) -> None:
+        raw_md = (
+            "### 新增\n"
+            "- **闹钟式选时**：使用 `24小时` 滚轮替代手输。\n"
+            "  - 支持 [查看详情](https://example.com) 快捷预设。\n\n"
+            "### 修复与改进\n"
+            "- **切换闪烁修复**：切页过渡更稳定。\n"
+        )
+        cleaned = manifest_mod.format_user_facing_changelog(raw_md)
+        expected = (
+            "【新增功能】\n"
+            "• 闹钟式选时：使用 24小时 滚轮替代手输。\n"
+            "  · 支持 查看详情 快捷预设。\n\n"
+            "【修复与优化】\n"
+            "• 切换闪烁修复：切页过渡更稳定。"
+        )
+        self.assertEqual(cleaned, expected)
+
+        github_auto_noise = (
+            "## What's Changed\n"
+            "* chore(ci): bump actions/setup-java from 4 to 6 by @dependabot[bot] in https://github.com/o/r/pull/28\n"
+            "* feat(app): 支持好友单独定时 by @oinzc in https://github.com/o/r/pull/29\n\n"
+            "## New Contributors\n"
+            "* @dependabot[bot] made their first contribution in https://github.com/o/r/pull/28\n\n"
+            "**Full Changelog**: https://github.com/o/r/compare/v0.8.0...v0.9.0\n"
+        )
+        cleaned_auto = manifest_mod.format_user_facing_changelog(github_auto_noise)
+        self.assertEqual(cleaned_auto, "• feat(app): 支持好友单独定时")
+
+        only_noise = (
+            "## What's Changed\n"
+            "* chore(ci): bump gradle/actions from 4 to 6 by @dependabot[bot] in https://github.com/o/r/pull/26\n"
+            "## New Contributors\n"
+            "* @dependabot[bot] made their first contribution in https://github.com/o/r/pull/26\n"
+            "**Full Changelog**: https://github.com/o/r/compare/v0.7.2...v0.8.0\n"
+        )
+        self.assertEqual(manifest_mod.format_user_facing_changelog(only_noise), "")
+
+    def test_cli_extract_changelog_and_format_file(self) -> None:
+        md_path = self.tmp_dir / "CHANGELOG.md"
+        out_path = self.tmp_dir / "notes.txt"
+        md_path.write_text(
+            "## [v0.9.0] - 2026-11-28\n\n### 新增\n- **功能**：更顺滑。\n",
+            encoding="utf-8",
+        )
+        code, _, err = self._run_main(
+            [
+                "--extract-changelog",
+                str(md_path),
+                "--version-name",
+                "0.9.0",
+                "--user-facing",
+                "--output",
+                str(out_path),
+            ]
+        )
+        self.assertEqual(code, 0, msg=err)
+        self.assertEqual(out_path.read_text(encoding="utf-8"), "【新增功能】\n• 功能：更顺滑。\n")
+
+        fmt_out = self.tmp_dir / "formatted.txt"
+        raw_path = self.tmp_dir / "raw.md"
+        raw_path.write_text("### 修复\n- **问题**：已修复 `bug`。\n", encoding="utf-8")
+        code2, _, err2 = self._run_main(
+            [
+                "--format-changelog-file",
+                str(raw_path),
+                "--output",
+                str(fmt_out),
+            ]
+        )
+        self.assertEqual(code2, 0, msg=err2)
+        self.assertEqual(fmt_out.read_text(encoding="utf-8"), "【修复与优化】\n• 问题：已修复 bug。\n")
+
 
 if __name__ == "__main__":
     unittest.main()

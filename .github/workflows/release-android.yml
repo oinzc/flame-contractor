@@ -147,27 +147,48 @@ jobs:
           APK_FILENAME="FlameContractor-${VERSION}-android-universal-release.apk"
           APK_PATH="android/build-dist/${APK_FILENAME}"
           MANIFEST_PATH="android/build-dist/latest.json"
+          RAW_NOTES_FILE="${RUNNER_TEMP}/android-release-raw-notes.md"
           NOTES_FILE="${RUNNER_TEMP}/android-release-notes.md"
 
+          python3 scripts/android_release_manifest.py \
+            --extract-changelog CHANGELOG.md \
+            --version-name "${VERSION}" \
+            --output "${RAW_NOTES_FILE}" || true
+
           if ! gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release create "${TAG}" --generate-notes || gh release view "${TAG}" >/dev/null 2>&1
+            if [[ -s "${RAW_NOTES_FILE}" ]]; then
+              gh release create "${TAG}" --title "${TAG}" --notes-file "${RAW_NOTES_FILE}" || gh release view "${TAG}" >/dev/null 2>&1
+            else
+              gh release create "${TAG}" --generate-notes || gh release view "${TAG}" >/dev/null 2>&1
+            fi
           fi
 
           gh release upload "${TAG}" "${APK_PATH}" --clobber
 
-          RELEASE_BODY="$(gh release view "${TAG}" --json body -q .body || true)"
-          if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
-            PREV_TAG="$(git describe --tags --match "v*" --abbrev=0 "${TAG}^" 2>/dev/null || true)"
-            if [[ -n "${PREV_TAG}" ]]; then
-              RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s' -n 30 || true)"
-              if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
-                RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --pretty=format:'- %s' -n 30 || true)"
+          python3 scripts/android_release_manifest.py \
+            --extract-changelog CHANGELOG.md \
+            --version-name "${VERSION}" \
+            --user-facing \
+            --output "${NOTES_FILE}" || true
+
+          if [[ -z "$(tr -d '[:space:]' < "${NOTES_FILE}" 2>/dev/null || true)" ]]; then
+            RELEASE_BODY="$(gh release view "${TAG}" --json body -q .body || true)"
+            if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
+              PREV_TAG="$(git describe --tags --match "v*" --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+              if [[ -n "${PREV_TAG}" ]]; then
+                RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s' -n 30 || true)"
+                if [[ -z "${RELEASE_BODY//[[:space:]]/}" ]]; then
+                  RELEASE_BODY="$(git log "${PREV_TAG}..HEAD" --pretty=format:'- %s' -n 30 || true)"
+                fi
+              else
+                RELEASE_BODY="$(git log -n 20 --no-merges --pretty=format:'- %s' || true)"
               fi
-            else
-              RELEASE_BODY="$(git log -n 20 --no-merges --pretty=format:'- %s' || true)"
             fi
+            printf '%s\n' "${RELEASE_BODY}" > "${RAW_NOTES_FILE}"
+            python3 scripts/android_release_manifest.py \
+              --format-changelog-file "${RAW_NOTES_FILE}" \
+              --output "${NOTES_FILE}" || true
           fi
-          printf '%s\n' "${RELEASE_BODY}" > "${NOTES_FILE}"
 
           MIN_VERSION_CODE="$(printf '%s' "${FLAME_UPDATE_MIN_VERSION_CODE:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           if [[ -z "${MIN_VERSION_CODE}" ]]; then
