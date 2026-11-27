@@ -14,6 +14,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.graphics.vector.ImageVector
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
+import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 
 enum class MainTab(
@@ -100,7 +101,15 @@ data class MainNavState(
 
     fun navigateBack(
         displayMode: UiDisplayMode = UiDisplayMode.STANDARD,
+        isSplitSettingsPane: Boolean = false,
     ): Pair<MainNavState, Boolean> = when {
+        isSettingsOpen && isSplitSettingsPane ->
+            copy(
+                isSettingsOpen = false,
+                activeSettingsSection = null,
+                returnToTabOnBack = false,
+            ) to true
+
         isSettingsOpen && activeSettingsSection != null && returnToTabOnBack ->
             copy(
                 isSettingsOpen = false,
@@ -233,4 +242,20 @@ fun buildAccountDeleteNotice(
             detailMessage = "删除后将立即清空该账号下的所有好友、模板、发送历史与登录态 Cookie，并回收无引用本地图片；该账号的独立 WebView Profile 将在下次冷启动彻底销毁。此操作不可恢复。",
         )
     }
+}
+
+/**
+ * 双栏 Master-Detail 设置模式下，当 `activeSettingsSection == null` 时解析右侧默认展示的设置子页，
+ * 避免右窗格出现空白：
+ * - `DOM_BROKEN` 时优先直达「网页诊断与定位器维护」；
+ * - 核心后台权限未就绪时优先直达「初始化与权限清单」；
+ * - 其余常规状态默认展示「外观与主题」。
+ */
+fun resolveDefaultSplitSettingsSection(
+    accountStatus: AccountStatus,
+    coreSurvivalReady: Boolean,
+): SettingsSection = when {
+    accountStatus == AccountStatus.DOM_BROKEN -> SettingsSection.DIAGNOSTICS
+    !coreSurvivalReady -> SettingsSection.SURVIVAL
+    else -> SettingsSection.APPEARANCE
 }

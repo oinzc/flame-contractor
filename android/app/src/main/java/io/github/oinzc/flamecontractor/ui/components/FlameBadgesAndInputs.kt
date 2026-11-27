@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -41,12 +42,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,7 +61,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 
 @Immutable
@@ -588,16 +595,135 @@ fun FlameModalSheet(
     title: String? = null,
     subtitle: String? = null,
     trailingHeader: (@Composable () -> Unit)? = null,
+    maxDialogWidth: Dp = 560.dp,
+    dismissOnClickOutside: Boolean = true,
+    dismissOnBackPress: Boolean = true,
+    showCloseButton: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
     val isDark = FlameThemeTokens.isDark
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val maxSheetHeight = (LocalConfiguration.current.screenHeightDp * 0.88f).dp
+    val layout = LocalFlameWindowLayout.current
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
+
+    if (layout.useCenterDialogForSheets) {
+        val maxDialogHeight = (screenHeightDp * 0.86f).dp
+        val dialogHorizontalPadding = if (layout.isShortLandscape) 20.dp else 24.dp
+        val dialogVerticalPadding = if (layout.isShortLandscape) 12.dp else 20.dp
+        val showHeader = !title.isNullOrBlank() ||
+            !subtitle.isNullOrBlank() ||
+            trailingHeader != null ||
+            showCloseButton
+
+        Dialog(
+            onDismissRequest = onDismissRequest,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = dismissOnClickOutside,
+                dismissOnBackPress = dismissOnBackPress,
+            ),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .imePadding()
+                    .padding(horizontal = dialogHorizontalPadding, vertical = dialogVerticalPadding)
+                    .widthIn(max = maxDialogWidth)
+                    .fillMaxWidth()
+                    .heightIn(max = maxDialogHeight),
+                shape = RoundedCornerShape(24.dp),
+                color = palette.surface,
+                contentColor = palette.ink,
+                border = BorderStroke(1.dp, palette.hairlineStrong),
+                shadowElevation = if (isDark) 18.dp else 14.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = if (layout.isShortLandscape) 18.dp else 22.dp,
+                            vertical = if (layout.isShortLandscape) 14.dp else 20.dp,
+                        ),
+                ) {
+                    if (showHeader) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                if (!title.isNullOrBlank()) {
+                                    Text(
+                                        text = title,
+                                        style = if (layout.isShortLandscape) {
+                                            MaterialTheme.typography.titleMedium
+                                        } else {
+                                            MaterialTheme.typography.titleLarge
+                                        },
+                                        color = palette.ink,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (!subtitle.isNullOrBlank()) {
+                                    Text(
+                                        text = subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.inkSecondary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            trailingHeader?.invoke()
+                            if (showCloseButton) {
+                                Surface(
+                                    onClick = onDismissRequest,
+                                    modifier = Modifier.size(34.dp),
+                                    shape = CircleShape,
+                                    color = palette.surfaceSubtle,
+                                    contentColor = palette.inkSecondary,
+                                    border = BorderStroke(1.dp, palette.hairline),
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Close,
+                                            contentDescription = "关闭",
+                                            modifier = Modifier.size(17.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(if (layout.isShortLandscape) 10.dp else 12.dp))
+                        HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+                        Spacer(modifier = Modifier.height(if (layout.isShortLandscape) 10.dp else 12.dp))
+                    }
+                    content()
+                }
+            }
+        }
+        return
+    }
+
+    val latestDismissOnClickOutside by rememberUpdatedState(dismissOnClickOutside)
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { targetValue ->
+            latestDismissOnClickOutside || targetValue != SheetValue.Hidden
+        },
+    )
+    val maxSheetHeight = (screenHeightDp * 0.88f).dp
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
+        properties = ModalBottomSheetProperties(
+            shouldDismissOnBackPress = dismissOnBackPress,
+        ),
         shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
         containerColor = palette.surface,
         contentColor = palette.ink,

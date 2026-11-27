@@ -2,6 +2,7 @@ package io.github.oinzc.flamecontractor.ui.shell
 
 import io.github.oinzc.flamecontractor.core.notify.UrgentCategory
 import io.github.oinzc.flamecontractor.core.theme.UiDisplayMode
+import io.github.oinzc.flamecontractor.data.db.AccountStatus
 import io.github.oinzc.flamecontractor.data.db.DEFAULT_ACCOUNT_ID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -244,5 +245,84 @@ class MainNavigationStateTest {
             MainNavState(MainTab.TODAY),
             base.applyLaunchIntent(MainNavState.SHORTCUT_HISTORY, false, UiDisplayMode.SIMPLE),
         )
+    }
+
+    @Test
+    fun `resolveDefaultSplitSettingsSection prioritizes dom broken then survival then appearance`() {
+        assertEquals(
+            SettingsSection.DIAGNOSTICS,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.DOM_BROKEN,
+                coreSurvivalReady = true,
+            ),
+        )
+        assertEquals(
+            SettingsSection.DIAGNOSTICS,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.DOM_BROKEN,
+                coreSurvivalReady = false,
+            ),
+        )
+        assertEquals(
+            SettingsSection.SURVIVAL,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.HEALTHY,
+                coreSurvivalReady = false,
+            ),
+        )
+        assertEquals(
+            SettingsSection.SURVIVAL,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.AUTH_EXPIRED,
+                coreSurvivalReady = false,
+            ),
+        )
+        assertEquals(
+            SettingsSection.APPEARANCE,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.HEALTHY,
+                coreSurvivalReady = true,
+            ),
+        )
+        assertEquals(
+            SettingsSection.APPEARANCE,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.RUNNING,
+                coreSurvivalReady = true,
+            ),
+        )
+        assertEquals(
+            SettingsSection.APPEARANCE,
+            resolveDefaultSplitSettingsSection(
+                accountStatus = AccountStatus.PENDING_LOGIN,
+                coreSurvivalReady = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `split settings pane back press exits settings directly and tab switch closes settings`() {
+        val inSplitSchedule = MainNavState(MainTab.TEMPLATES)
+            .openSettings(section = SettingsSection.SCHEDULE)
+
+        val (afterBack, consumed) = inSplitSchedule.navigateBack(
+            displayMode = UiDisplayMode.STANDARD,
+            isSplitSettingsPane = true,
+        )
+        assertTrue(consumed)
+        assertEquals(
+            MainNavState(
+                selectedTab = MainTab.TEMPLATES,
+                isSettingsOpen = false,
+                activeSettingsSection = null,
+                returnToTabOnBack = false,
+            ),
+            afterBack,
+        )
+
+        val afterTabClick = inSplitSchedule.selectTab(MainTab.TARGETS)
+        assertFalse(afterTabClick.isSettingsOpen)
+        assertNull(afterTabClick.activeSettingsSection)
+        assertEquals(MainTab.TARGETS, afterTabClick.selectedTab)
     }
 }
