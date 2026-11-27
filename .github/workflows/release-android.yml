@@ -126,7 +126,7 @@ jobs:
           fi
 
       - name: 上传 Android APK 构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flame-contractor-android-apk
           path: android/build-dist/*.apk
