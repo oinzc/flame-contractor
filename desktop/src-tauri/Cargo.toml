@@ -1,6 +1,6 @@
 [package]
 name = "flame-contractor-desktop"
-version = "0.7.2"
+version = "0.8.0"
 description = "Flame Contractor · 焰之契约者桌面端"
 authors = ["oinzc"]
 edition = "2021"
