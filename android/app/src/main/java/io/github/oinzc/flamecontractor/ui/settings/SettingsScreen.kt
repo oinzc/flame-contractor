@@ -22,26 +22,36 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Info
@@ -49,7 +59,9 @@ import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -59,6 +71,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldColors
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -103,11 +116,17 @@ import io.github.oinzc.flamecontractor.data.db.ScanRunEntity
 import io.github.oinzc.flamecontractor.data.db.ScanRunStatus
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FLAME_SETTINGS_SPLIT_MIN_WIDTH
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
+import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import io.github.oinzc.flamecontractor.ui.components.rememberReducedMotion
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
+import io.github.oinzc.flamecontractor.ui.setup.SetupReadinessBuilder
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
+import io.github.oinzc.flamecontractor.ui.shell.resolveDefaultSplitSettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -415,100 +434,32 @@ fun SettingsRoute(
     }
 
     val reducedMotion = rememberReducedMotion()
-    AnimatedContent(
-        targetState = activeSection,
-        modifier = modifier.fillMaxSize(),
-        transitionSpec = {
-            when {
-                reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
-                targetState != null && initialState == null -> {
-                    (fadeIn(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    ) + slideInHorizontally(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                        initialOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
-                    )) togetherWith (fadeOut(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    ) + slideOutHorizontally(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                        targetOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
-                    ))
-                }
+    val layout = LocalFlameWindowLayout.current
+    val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
+    val readiness = remember(
+        uiState.survivalSnapshot,
+        uiState.accountStatus,
+        uiState.enabledTargetCount,
+    ) {
+        SetupReadinessBuilder.build(
+            survivalSnapshot = uiState.survivalSnapshot,
+            accountStatus = uiState.accountStatus,
+            enabledTargetCount = uiState.enabledTargetCount,
+        )
+    }
 
-                targetState == null && initialState != null -> {
-                    (fadeIn(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    ) + slideInHorizontally(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                        initialOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
-                    )) togetherWith (fadeOut(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    ) + slideOutHorizontally(
-                        animationSpec = tween(
-                            durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                        targetOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
-                    ))
-                }
-
-                else -> {
-                    fadeIn(
-                        animationSpec = tween(
-                            durationMillis = 160,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    ) togetherWith fadeOut(
-                        animationSpec = tween(
-                            durationMillis = 130,
-                            easing = FlameMotionSpec.easeOut,
-                        ),
-                    )
-                }
-            }
-        },
-        label = "settings_section_transition",
-    ) { section ->
+    @Composable
+    fun renderSectionPage(
+        section: SettingsSection,
+        embeddedInSplitPane: Boolean,
+    ) {
         when (section) {
-            null -> SettingsHubScreen(
-                uiState = uiState,
-                themePreference = themePreference,
-                onSelectSection = { target -> onSelectSection(target) },
-                onStartOnboardingWizard = onStartOnboardingWizard,
-                onBack = onBack,
-                updateUiState = updateUiState,
-                onOpenUpdateDialog = { appUpdateManager?.reopenUpdateDialog() },
-                onSwitchToStandardMode = {
-                    resolvedThemeStore.setDisplayMode(UiDisplayMode.STANDARD)
-                },
-            )
-
             SettingsSection.APPEARANCE -> SettingsAppearancePage(
                 themePreference = themePreference,
                 onSelectThemeMode = resolvedThemeStore::setThemeMode,
                 onSelectDisplayMode = resolvedThemeStore::setDisplayMode,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.SCHEDULE -> SettingsSchedulePage(
@@ -529,6 +480,7 @@ fun SettingsRoute(
                 onSaveAutoScanConfig = viewModel::saveAutoScanConfig,
                 onResetAutoScanDraft = viewModel::resetAutoScanDraftFromSaved,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.NOTIFICATIONS -> SettingsNotificationsPage(
@@ -540,6 +492,7 @@ fun SettingsRoute(
                 onRequestOrOpenNotifications = requestOrOpenNotifications,
                 onOpenChannelSettings = openChannelSettings,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.SURVIVAL -> SettingsSurvivalPage(
@@ -553,6 +506,7 @@ fun SettingsRoute(
                 onOpenTargets = onOpenTargetsTab,
                 onStartOnboardingWizard = onStartOnboardingWizard,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.BACKUP -> SettingsBackupPage(
@@ -566,6 +520,7 @@ fun SettingsRoute(
                 onConfirmImportBackup = viewModel::confirmImportBackup,
                 onDismissBackupPreview = viewModel::dismissBackupPreviewDialog,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.DIAGNOSTICS -> SettingsDiagnosticsPage(
@@ -609,12 +564,14 @@ fun SettingsRoute(
                     )
                 },
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.UPDATES -> SettingsUpdatesPage(
                 appUpdateManager = appUpdateManager,
                 updateUiState = updateUiState,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
 
             SettingsSection.ABOUT -> SettingsAboutPage(
@@ -623,7 +580,239 @@ fun SettingsRoute(
                 onConsumePreFillDraft = onConsumeFeedbackDraft,
                 onBuildDiagnosticsReportText = viewModel::buildDiagnosticsReportText,
                 onBack = onBack,
+                embeddedInSplitPane = embeddedInSplitPane,
             )
+        }
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val useSplitPane = layout.supportsEmbeddedSettingsPane && maxWidth >= FLAME_SETTINGS_SPLIT_MIN_WIDTH
+        if (useSplitPane) {
+            val palette = FlameThemeTokens.palette
+            val resolvedSection = activeSection ?: resolveDefaultSplitSettingsSection(
+                accountStatus = uiState.accountStatus,
+                coreSurvivalReady = readiness.allRequiredCompleted,
+            )
+            val directoryWidth = if (layout.isShortLandscape) 224.dp else 256.dp
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(palette.canvas),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(palette.surface)
+                        .statusBarsPadding()
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(
+                                if (chromeHandlesGlobalNav) {
+                                    WindowInsetsSides.End
+                                } else {
+                                    WindowInsetsSides.Horizontal
+                                },
+                            ),
+                        )
+                        .padding(
+                            start = if (chromeHandlesGlobalNav) 20.dp else 8.dp,
+                            end = 20.dp,
+                            top = if (layout.isShortLandscape) 6.dp else 10.dp,
+                            bottom = if (layout.isShortLandscape) 6.dp else 10.dp,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (!chromeHandlesGlobalNav) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                contentDescription = "返回",
+                                tint = palette.ink,
+                            )
+                        }
+                    }
+                    Text(
+                        text = "设置与维护",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (uiState.accountDisplayName.isNotBlank()) {
+                        Text(
+                            text = uiState.accountDisplayName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.inkSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 128.dp),
+                        )
+                    }
+                    FlameStatusPill(
+                        text = settingsAccountStatusLabel(uiState.accountStatus),
+                        tone = settingsAccountStatusTone(uiState.accountStatus),
+                    )
+                }
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(
+                                if (chromeHandlesGlobalNav) {
+                                    WindowInsetsSides.End
+                                } else {
+                                    WindowInsetsSides.Horizontal
+                                },
+                            ),
+                        ),
+                ) {
+                    SettingsMasterDirectoryPane(
+                        uiState = uiState,
+                        themePreference = themePreference,
+                        selectedSection = resolvedSection,
+                        onSelectSection = { target -> onSelectSection(target) },
+                        onStartOnboardingWizard = onStartOnboardingWizard,
+                        updateUiState = updateUiState,
+                        onOpenUpdateDialog = { appUpdateManager?.reopenUpdateDialog() },
+                        onSwitchToStandardMode = {
+                            resolvedThemeStore.setDisplayMode(UiDisplayMode.STANDARD)
+                        },
+                        modifier = Modifier
+                            .width(directoryWidth)
+                            .fillMaxHeight(),
+                    )
+                    VerticalDivider(thickness = 1.dp, color = palette.hairline)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                    ) {
+                        AnimatedContent(
+                            targetState = resolvedSection,
+                            modifier = Modifier.fillMaxSize(),
+                            transitionSpec = {
+                                if (reducedMotion) {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                } else {
+                                    fadeIn(
+                                        animationSpec = tween(
+                                            durationMillis = 150,
+                                            easing = FlameMotionSpec.easeOut,
+                                        ),
+                                    ) togetherWith fadeOut(
+                                        animationSpec = tween(
+                                            durationMillis = 110,
+                                            easing = FlameMotionSpec.easeOut,
+                                        ),
+                                    )
+                                }
+                            },
+                            label = "settings_split_detail",
+                        ) { section ->
+                            renderSectionPage(section = section, embeddedInSplitPane = true)
+                        }
+                    }
+                }
+            }
+        } else {
+            AnimatedContent(
+                targetState = activeSection,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    when {
+                        reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
+                        targetState != null && initialState == null -> {
+                            (fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideInHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                initialOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                            )) togetherWith (fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideOutHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                targetOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
+                            ))
+                        }
+
+                        targetState == null && initialState != null -> {
+                            (fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideInHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_ENTER_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                initialOffsetX = { -it / (FlameMotionSpec.SUBPAGE_SLIDE_FRACTION * 2) },
+                            )) togetherWith (fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) + slideOutHorizontally(
+                                animationSpec = tween(
+                                    durationMillis = FlameMotionSpec.SUBPAGE_EXIT_MS,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                                targetOffsetX = { it / FlameMotionSpec.SUBPAGE_SLIDE_FRACTION },
+                            ))
+                        }
+
+                        else -> {
+                            fadeIn(
+                                animationSpec = tween(
+                                    durationMillis = 160,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            ) togetherWith fadeOut(
+                                animationSpec = tween(
+                                    durationMillis = 130,
+                                    easing = FlameMotionSpec.easeOut,
+                                ),
+                            )
+                        }
+                    }
+                },
+                label = "settings_section_transition",
+            ) { section ->
+                if (section == null) {
+                    SettingsHubScreen(
+                        uiState = uiState,
+                        themePreference = themePreference,
+                        onSelectSection = { target -> onSelectSection(target) },
+                        onStartOnboardingWizard = onStartOnboardingWizard,
+                        onBack = onBack,
+                        updateUiState = updateUiState,
+                        onOpenUpdateDialog = { appUpdateManager?.reopenUpdateDialog() },
+                        onSwitchToStandardMode = {
+                            resolvedThemeStore.setDisplayMode(UiDisplayMode.STANDARD)
+                        },
+                    )
+                } else {
+                    renderSectionPage(section = section, embeddedInSplitPane = false)
+                }
+            }
         }
     }
 }
@@ -632,10 +821,15 @@ fun SettingsRoute(
 internal fun SettingsPageScrollColumn(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
-    verticalSpacing: Dp = 14.dp,
+    verticalSpacing: Dp? = null,
+    fullWidthInPane: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val layout = LocalFlameWindowLayout.current
     val scrollState = rememberScrollState()
+    val resolvedSpacing = verticalSpacing ?: if (layout.isShortLandscape) 10.dp else 14.dp
+    val verticalPad = if (layout.isShortLandscape) 10.dp else 14.dp
+    val horizontalPad = if (fullWidthInPane) 16.dp else layout.horizontalGutter
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -645,11 +839,11 @@ internal fun SettingsPageScrollColumn(
     ) {
         Column(
             modifier = Modifier
+                .widthIn(max = if (fullWidthInPane) 820.dp else 760.dp)
                 .fillMaxWidth()
-                .widthIn(max = 760.dp)
                 .verticalScroll(scrollState)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(verticalSpacing),
+                .padding(horizontal = horizontalPad, vertical = verticalPad),
+            verticalArrangement = Arrangement.spacedBy(resolvedSpacing),
         ) {
             content()
             Spacer(modifier = Modifier.height(12.dp))

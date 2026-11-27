@@ -109,12 +109,14 @@ import io.github.oinzc.flamecontractor.data.db.SendAttemptEntity
 import io.github.oinzc.flamecontractor.domain.DailyJobBucket
 import io.github.oinzc.flamecontractor.domain.HistoryStatsSummary
 import io.github.oinzc.flamecontractor.ui.components.DiagnosticScreenshotCard
+import io.github.oinzc.flamecontractor.ui.components.FLAME_TWO_PANE_CONTENT_MIN_WIDTH
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipItem
 import io.github.oinzc.flamecontractor.ui.components.FlameFilterChipRow
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameMotionSpec
@@ -130,6 +132,9 @@ import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
+import io.github.oinzc.flamecontractor.ui.components.flameContentBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.resolveFlameToneColors
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
@@ -310,6 +315,7 @@ fun HistoryScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
     var searchQuery by remember { mutableStateOf("") }
     val trimmedQuery = searchQuery.trim()
     val displayJobs = remember(state.filteredJobs, trimmedQuery) {
@@ -356,6 +362,9 @@ fun HistoryScreen(
     val startDate = remember(state.today, state.windowDays) {
         state.today.minusDays((state.windowDays - 1).toLong())
     }
+    val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
+    val dockBottomClearance = flameDockBottomPadding()
+    val contentBottomPadding = flameContentBottomPadding(layout.hasBottomFloatingDock)
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -367,12 +376,19 @@ fun HistoryScreen(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .navigationBarsPadding()
-                    .padding(bottom = 86.dp),
+                    .padding(
+                        bottom = if (layout.hasBottomFloatingDock) dockBottomClearance - 12.dp else 16.dp,
+                    ),
             )
         },
         topBar = {
             FlameTopBar(
                 title = "记录",
+                subtitle = if (chromeHandlesGlobalNav) {
+                    "近 ${state.windowDays} 天统计与执行明细"
+                } else {
+                    null
+                },
                 actions = {
                     FlameTopPillButton(
                         text = if (isExportingCsv) "导出中…" else "导出 CSV",
@@ -380,211 +396,398 @@ fun HistoryScreen(
                         enabled = !isExportingCsv,
                         onClick = onExportCsvClick,
                     )
-                    FlameFeedbackTopButton(
-                        onClick = onOpenFeedback,
-                    )
-                    FlameIconButton(
-                        icon = Icons.Outlined.Settings,
-                        contentDescription = "设置与维护",
-                        onClick = onOpenSettings,
-                    )
+                    if (!chromeHandlesGlobalNav) {
+                        FlameFeedbackTopButton(
+                            onClick = onOpenFeedback,
+                        )
+                        FlameIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            onClick = onOpenSettings,
+                        )
+                    }
                 },
             )
         },
     ) { innerPadding ->
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
             contentAlignment = Alignment.TopCenter,
         ) {
-            LazyColumn(
-                modifier = Modifier
-                    .widthIn(max = 860.dp)
-                    .fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = 4.dp,
-                    bottom = flameDockBottomPadding(),
-                ),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // 时间窗分段器 + 区间说明
-                item(key = "window_chips") {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FlameFilterChipRow(
-                            items = windowChips,
-                            selectedKey = state.windowDays.toString(),
-                            onSelect = { key ->
-                                key.toIntOrNull()?.let(onSelectWindowDays)
+            val useTwoPane = maxWidth >= FLAME_TWO_PANE_CONTENT_MIN_WIDTH
+            val fixTabletPortraitPane = !useTwoPane &&
+                layout.formFactor == FlameFormFactor.TABLET_PORTRAIT &&
+                maxHeight >= 820.dp
+            val chartBarMaxHeightDp = if (layout.isShortLandscape) 64f else 96f
+
+            when {
+                useTwoPane -> {
+                    val paneGap = if (layout.isShortLandscape) 12.dp else 16.dp
+                    val leftMaxWidthDp = (maxWidth - layout.horizontalGutter * 2 - paneGap) * 0.45f
+                    val compactMetrics = leftMaxWidthDp < 340.dp
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = layout.horizontalGutter)
+                            .navigationBarsPadding(),
+                        horizontalArrangement = Arrangement.spacedBy(paneGap),
+                    ) {
+                        // 左栏：时间窗 + KPI + 30日趋势柱图（独立微滚，柱子永远在视野中）
+                        Column(
+                            modifier = Modifier
+                                .weight(0.45f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 4.dp, bottom = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 8.dp else 12.dp),
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FlameFilterChipRow(
+                                    items = windowChips,
+                                    selectedKey = state.windowDays.toString(),
+                                    onSelect = { key ->
+                                        key.toIntOrNull()?.let(onSelectWindowDays)
+                                    },
+                                )
+                                Text(
+                                    text = "统计区间：$startDate 至 ${state.today} · CSV 导出仅含脱敏字段",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.inkTertiary,
+                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                )
+                            }
+
+                            HistoryBentoRow(
+                                summary = state.summary,
+                                compactMetrics = compactMetrics,
+                                onNavigateToTodayReview = onNavigateToTodayReview,
+                            )
+
+                            DailyTrendChartCard(
+                                summary = state.summary,
+                                selectedDate = state.selectedDate,
+                                maxBarHeightDp = chartBarMaxHeightDp,
+                                onToggleDate = onToggleDate,
+                                onClearDateFilter = onClearDateFilter,
+                            )
+                        }
+
+                        // 右栏：执行明细固定框架 + 内部独立滚动
+                        HistoryDetailCardPane(
+                            state = state,
+                            displayJobs = displayJobs,
+                            groupedByDate = groupedByDate,
+                            statusChips = statusChips,
+                            searchQuery = searchQuery,
+                            trimmedQuery = trimmedQuery,
+                            compactToolbar = layout.isShortLandscape,
+                            userToggledDates = userToggledDates,
+                            expandAllOverride = expandAllOverride,
+                            showAllForDates = showAllForDates,
+                            onSearchQueryChange = { searchQuery = it },
+                            onSelectStatusFilter = onSelectStatusFilter,
+                            onToggleExpandAll = {
+                                val showAllGroups = expandAllOverride == true
+                                userToggledDates = emptyMap()
+                                expandAllOverride = if (showAllGroups) null else true
                             },
-                        )
-                        Text(
-                            text = "统计区间：$startDate 至 ${state.today} · CSV 导出仅含脱敏字段",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.inkTertiary,
-                            modifier = Modifier.padding(horizontal = 4.dp),
+                            onToggleDateExpand = { dateKey, next ->
+                                userToggledDates = userToggledDates + (dateKey to next)
+                            },
+                            onToggleDateShowAll = { dateKey, currentlyShown ->
+                                showAllForDates = if (currentlyShown) {
+                                    showAllForDates - dateKey
+                                } else {
+                                    showAllForDates + dateKey
+                                }
+                            },
+                            onClearAllFilters = {
+                                searchQuery = ""
+                                onClearAllFilters()
+                            },
+                            onSelectJob = onSelectJob,
+                            modifier = Modifier
+                                .weight(0.55f)
+                                .fillMaxHeight()
+                                .padding(top = 4.dp, bottom = 16.dp),
                         )
                     }
                 }
 
-                // 3 列等宽 Bento 指标块（成功率 / 总成功 / 待核对）
-                item(key = "bento_kpis") {
-                    HistoryBentoRow(
-                        summary = state.summary,
-                        onNavigateToTodayReview = onNavigateToTodayReview,
-                    )
-                }
+                fixTabletPortraitPane -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = layout.horizontalGutter)
+                            .navigationBarsPadding(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(top = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            FlameFilterChipRow(
+                                items = windowChips,
+                                selectedKey = state.windowDays.toString(),
+                                onSelect = { key ->
+                                    key.toIntOrNull()?.let(onSelectWindowDays)
+                                },
+                            )
+                            Text(
+                                text = "统计区间：$startDate 至 ${state.today} · CSV 导出仅含脱敏字段",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkTertiary,
+                                modifier = Modifier.padding(horizontal = 4.dp),
+                            )
+                        }
 
-                // 可交互圆角堆叠每日趋势柱状图卡（含当前连胜 · 最佳连胜）
-                item(key = "trend_chart") {
-                    DailyTrendChartCard(
-                        summary = state.summary,
-                        selectedDate = state.selectedDate,
-                        onToggleDate = onToggleDate,
-                        onClearDateFilter = onClearDateFilter,
-                    )
-                }
+                        HistoryBentoRow(
+                            summary = state.summary,
+                            onNavigateToTodayReview = onNavigateToTodayReview,
+                        )
 
-                // 明细筛选区：标题 + 展开控制 + 状态筛选芯片 + 胶囊搜索框
-                item(key = "detail_filters") {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(
+                        DailyTrendChartCard(
+                            summary = state.summary,
+                            selectedDate = state.selectedDate,
+                            onToggleDate = onToggleDate,
+                            onClearDateFilter = onClearDateFilter,
+                        )
+
+                        HistoryDetailCardPane(
+                            state = state,
+                            displayJobs = displayJobs,
+                            groupedByDate = groupedByDate,
+                            statusChips = statusChips,
+                            searchQuery = searchQuery,
+                            trimmedQuery = trimmedQuery,
+                            compactToolbar = false,
+                            userToggledDates = userToggledDates,
+                            expandAllOverride = expandAllOverride,
+                            showAllForDates = showAllForDates,
+                            onSearchQueryChange = { searchQuery = it },
+                            onSelectStatusFilter = onSelectStatusFilter,
+                            onToggleExpandAll = {
+                                val showAllGroups = expandAllOverride == true
+                                userToggledDates = emptyMap()
+                                expandAllOverride = if (showAllGroups) null else true
+                            },
+                            onToggleDateExpand = { dateKey, next ->
+                                userToggledDates = userToggledDates + (dateKey to next)
+                            },
+                            onToggleDateShowAll = { dateKey, currentlyShown ->
+                                showAllForDates = if (currentlyShown) {
+                                    showAllForDates - dateKey
+                                } else {
+                                    showAllForDates + dateKey
+                                }
+                            },
+                            onClearAllFilters = {
+                                searchQuery = ""
+                                onClearAllFilters()
+                            },
+                            onSelectJob = onSelectJob,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = if (state.selectedDate != null) {
-                                    "执行明细 · ${state.selectedDate}"
-                                } else {
-                                    "近 ${state.windowDays} 天执行明细"
-                                },
-                                style = MaterialTheme.typography.titleMedium,
-                                color = palette.ink,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            FlameMiniTag(
-                                text = "${displayJobs.size} 条",
-                                tone = FlameTone.NEUTRAL,
-                            )
-                            if (groupedByDate.size > 1) {
-                                val showAllGroups = expandAllOverride == true
-                                Text(
-                                    text = if (showAllGroups) "仅看最新" else "展开全部日期",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = palette.inkSecondary,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .clickable {
-                                            userToggledDates = emptyMap()
-                                            expandAllOverride = if (showAllGroups) null else true
-                                        }
-                                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                                )
-                            }
-                        }
-
-                        FlameFilterChipRow(
-                            items = statusChips,
-                            selectedKey = state.statusFilter.name,
-                            onSelect = { key ->
-                                HistoryStatusFilter.entries
-                                    .firstOrNull { it.name == key }
-                                    ?.let(onSelectStatusFilter)
-                            },
-                        )
-
-                        FlameSearchPill(
-                            query = searchQuery,
-                            onQueryChange = { searchQuery = it },
-                            placeholder = "按好友名、日期或摘要筛选明细…",
+                                .weight(1f)
+                                .padding(bottom = 16.dp),
                         )
                     }
                 }
 
-                // 明细列表：加载态 / 空态 / 按日期折叠分组的 FlameGroupedSection
-                if (state.isLoading) {
-                    item(key = "loading") {
-                        FlameCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentPadding = PaddingValues(vertical = 28.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(28.dp),
-                                    strokeWidth = 2.5.dp,
-                                    color = palette.monoCtaContainer,
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .widthIn(max = 860.dp)
+                            .fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = layout.horizontalGutter,
+                            end = layout.horizontalGutter,
+                            top = 4.dp,
+                            bottom = contentBottomPadding,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        // 时间窗分段器 + 区间说明
+                        item(key = "window_chips") {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FlameFilterChipRow(
+                                    items = windowChips,
+                                    selectedKey = state.windowDays.toString(),
+                                    onSelect = { key ->
+                                        key.toIntOrNull()?.let(onSelectWindowDays)
+                                    },
+                                )
+                                Text(
+                                    text = "统计区间：$startDate 至 ${state.today} · CSV 导出仅含脱敏字段",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.inkTertiary,
+                                    modifier = Modifier.padding(horizontal = 4.dp),
                                 )
                             }
                         }
-                    }
-                } else if (displayJobs.isEmpty()) {
-                    item(key = "empty") {
-                        val hasActiveFilter = state.selectedDate != null ||
-                            state.statusFilter != HistoryStatusFilter.ALL ||
-                            trimmedQuery.isNotEmpty()
-                        FlameEmptyStateCard(
-                            icon = Icons.Outlined.History,
-                            title = if (state.totalJobsInWindow == 0) {
-                                "近 ${state.windowDays} 天暂无执行记录"
-                            } else {
-                                "当前筛选条件下无记录"
-                            },
-                            subtitle = if (state.totalJobsInWindow == 0) {
-                                "当每日自动续火或单发测试产生执行记录后，可在此回溯每日趋势与尝试耗时。"
-                            } else {
-                                "可尝试切换状态筛选芯片、清除日期过滤或清空搜索关键词。"
-                            },
-                            actionLabel = if (hasActiveFilter) "重置全部筛选" else null,
-                            onAction = if (hasActiveFilter) {
-                                {
-                                    searchQuery = ""
-                                    onClearAllFilters()
-                                }
-                            } else {
-                                null
-                            },
-                        )
-                    }
-                } else {
-                    groupedByDate.forEachIndexed { groupIndex, entry ->
-                        val dateKey = entry.key
-                        val groupItems = entry.value
-                        val defaultExpanded = state.selectedDate != null ||
-                            state.statusFilter != HistoryStatusFilter.ALL ||
-                            trimmedQuery.isNotEmpty() ||
-                            groupIndex == 0
-                        val isExpanded = userToggledDates[dateKey] ?: expandAllOverride ?: defaultExpanded
-                        val showAllForDate = dateKey in showAllForDates
 
-                        item(key = "date_group_$dateKey") {
-                            HistoryDateGroupSection(
-                                businessDate = dateKey,
-                                groupItems = groupItems,
-                                isExpanded = isExpanded,
-                                showAllForDate = showAllForDate,
-                                onToggleExpand = {
-                                    userToggledDates = userToggledDates + (dateKey to !isExpanded)
-                                },
-                                onToggleShowAll = {
-                                    showAllForDates = if (showAllForDate) {
-                                        showAllForDates - dateKey
-                                    } else {
-                                        showAllForDates + dateKey
-                                    }
-                                },
-                                onSelectJob = onSelectJob,
+                        // 3 列等宽 Bento 指标块（成功率 / 总成功 / 待核对）
+                        item(key = "bento_kpis") {
+                            HistoryBentoRow(
+                                summary = state.summary,
+                                onNavigateToTodayReview = onNavigateToTodayReview,
                             )
+                        }
+
+                        // 可交互圆角堆叠每日趋势柱状图卡（含当前连胜 · 最佳连胜）
+                        item(key = "trend_chart") {
+                            DailyTrendChartCard(
+                                summary = state.summary,
+                                selectedDate = state.selectedDate,
+                                maxBarHeightDp = chartBarMaxHeightDp,
+                                onToggleDate = onToggleDate,
+                                onClearDateFilter = onClearDateFilter,
+                            )
+                        }
+
+                        // 明细筛选区：标题 + 展开控制 + 状态筛选芯片 + 胶囊搜索框
+                        item(key = "detail_filters") {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = if (state.selectedDate != null) {
+                                            "执行明细 · ${state.selectedDate}"
+                                        } else {
+                                            "近 ${state.windowDays} 天执行明细"
+                                        },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = palette.ink,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    FlameMiniTag(
+                                        text = "${displayJobs.size} 条",
+                                        tone = FlameTone.NEUTRAL,
+                                    )
+                                    if (groupedByDate.size > 1) {
+                                        val showAllGroups = expandAllOverride == true
+                                        Text(
+                                            text = if (showAllGroups) "仅看最新" else "展开全部日期",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.inkSecondary,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .clickable {
+                                                    userToggledDates = emptyMap()
+                                                    expandAllOverride = if (showAllGroups) null else true
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                                        )
+                                    }
+                                }
+
+                                FlameFilterChipRow(
+                                    items = statusChips,
+                                    selectedKey = state.statusFilter.name,
+                                    onSelect = { key ->
+                                        HistoryStatusFilter.entries
+                                            .firstOrNull { it.name == key }
+                                            ?.let(onSelectStatusFilter)
+                                    },
+                                )
+
+                                FlameSearchPill(
+                                    query = searchQuery,
+                                    onQueryChange = { searchQuery = it },
+                                    placeholder = "按好友名、日期或摘要筛选明细…",
+                                )
+                            }
+                        }
+
+                        // 明细列表：加载态 / 空态 / 按日期折叠分组的 FlameGroupedSection
+                        if (state.isLoading) {
+                            item(key = "loading") {
+                                FlameCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(vertical = 28.dp),
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(28.dp),
+                                            strokeWidth = 2.5.dp,
+                                            color = palette.monoCtaContainer,
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (displayJobs.isEmpty()) {
+                            item(key = "empty") {
+                                val hasActiveFilter = state.selectedDate != null ||
+                                    state.statusFilter != HistoryStatusFilter.ALL ||
+                                    trimmedQuery.isNotEmpty()
+                                FlameEmptyStateCard(
+                                    icon = Icons.Outlined.History,
+                                    title = if (state.totalJobsInWindow == 0) {
+                                        "近 ${state.windowDays} 天暂无执行记录"
+                                    } else {
+                                        "当前筛选条件下无记录"
+                                    },
+                                    subtitle = if (state.totalJobsInWindow == 0) {
+                                        "当每日自动续火或单发测试产生执行记录后，可在此回溯每日趋势与尝试耗时。"
+                                    } else {
+                                        "可尝试切换状态筛选芯片、清除日期过滤或清空搜索关键词。"
+                                    },
+                                    actionLabel = if (hasActiveFilter) "重置全部筛选" else null,
+                                    onAction = if (hasActiveFilter) {
+                                        {
+                                            searchQuery = ""
+                                            onClearAllFilters()
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        } else {
+                            groupedByDate.forEachIndexed { groupIndex, entry ->
+                                val dateKey = entry.key
+                                val groupItems = entry.value
+                                val defaultExpanded = state.selectedDate != null ||
+                                    state.statusFilter != HistoryStatusFilter.ALL ||
+                                    trimmedQuery.isNotEmpty() ||
+                                    groupIndex == 0
+                                val isExpanded = userToggledDates[dateKey] ?: expandAllOverride ?: defaultExpanded
+                                val showAllForDate = dateKey in showAllForDates
+
+                                item(key = "date_group_$dateKey") {
+                                    HistoryDateGroupSection(
+                                        businessDate = dateKey,
+                                        groupItems = groupItems,
+                                        isExpanded = isExpanded,
+                                        showAllForDate = showAllForDate,
+                                        onToggleExpand = {
+                                            userToggledDates = userToggledDates + (dateKey to !isExpanded)
+                                        },
+                                        onToggleShowAll = {
+                                            showAllForDates = if (showAllForDate) {
+                                                showAllForDates - dateKey
+                                            } else {
+                                                showAllForDates + dateKey
+                                            }
+                                        },
+                                        onSelectJob = onSelectJob,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -614,8 +817,205 @@ fun HistoryScreen(
 }
 
 @Composable
+private fun HistoryDetailCardPane(
+    state: HistoryUiState,
+    displayJobs: List<HistoryJobItem>,
+    groupedByDate: List<Map.Entry<String, List<HistoryJobItem>>>,
+    statusChips: List<FlameFilterChipItem>,
+    searchQuery: String,
+    trimmedQuery: String,
+    compactToolbar: Boolean,
+    userToggledDates: Map<String, Boolean>,
+    expandAllOverride: Boolean?,
+    showAllForDates: Set<String>,
+    onSearchQueryChange: (String) -> Unit,
+    onSelectStatusFilter: (HistoryStatusFilter) -> Unit,
+    onToggleExpandAll: () -> Unit,
+    onToggleDateExpand: (String, Boolean) -> Unit,
+    onToggleDateShowAll: (String, Boolean) -> Unit,
+    onClearAllFilters: () -> Unit,
+    onSelectJob: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = palette.surface,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairline),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 固定头部：标题 + 展开控制 + 状态筛选 + 搜索
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = if (compactToolbar) 10.dp else 13.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(if (compactToolbar) 8.dp else 10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = if (state.selectedDate != null) {
+                            "执行明细 · ${state.selectedDate}"
+                        } else {
+                            "近 ${state.windowDays} 天执行明细"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    FlameMiniTag(
+                        text = "${displayJobs.size} 条",
+                        tone = FlameTone.NEUTRAL,
+                    )
+                    if (groupedByDate.size > 1) {
+                        val showAllGroups = expandAllOverride == true
+                        Text(
+                            text = if (showAllGroups) "仅看最新" else "展开全部日期",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .clickable(onClick = onToggleExpandAll)
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+
+                if (compactToolbar) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlameFilterChipRow(
+                            items = statusChips,
+                            selectedKey = state.statusFilter.name,
+                            onSelect = { key ->
+                                HistoryStatusFilter.entries
+                                    .firstOrNull { it.name == key }
+                                    ?.let(onSelectStatusFilter)
+                            },
+                            modifier = Modifier.weight(0.56f),
+                        )
+                        FlameSearchPill(
+                            query = searchQuery,
+                            onQueryChange = onSearchQueryChange,
+                            placeholder = "筛选明细…",
+                            modifier = Modifier.weight(0.44f),
+                        )
+                    }
+                } else {
+                    FlameFilterChipRow(
+                        items = statusChips,
+                        selectedKey = state.statusFilter.name,
+                        onSelect = { key ->
+                            HistoryStatusFilter.entries
+                                .firstOrNull { it.name == key }
+                                ?.let(onSelectStatusFilter)
+                        },
+                    )
+                    FlameSearchPill(
+                        query = searchQuery,
+                        onQueryChange = onSearchQueryChange,
+                        placeholder = "按好友名、日期或摘要筛选明细…",
+                    )
+                }
+            }
+
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+            // 仅列表内容在卡片内独立滚动
+            if (state.isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 2.5.dp,
+                        color = palette.monoCtaContainer,
+                    )
+                }
+            } else if (displayJobs.isEmpty()) {
+                val hasActiveFilter = state.selectedDate != null ||
+                    state.statusFilter != HistoryStatusFilter.ALL ||
+                    trimmedQuery.isNotEmpty()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlameEmptyStateCard(
+                        icon = Icons.Outlined.History,
+                        title = if (state.totalJobsInWindow == 0) {
+                            "近 ${state.windowDays} 天暂无执行记录"
+                        } else {
+                            "当前筛选条件下无记录"
+                        },
+                        subtitle = if (state.totalJobsInWindow == 0) {
+                            "当每日自动续火或单发测试产生执行记录后，可在此回溯每日趋势与尝试耗时。"
+                        } else {
+                            "可尝试切换状态筛选芯片、清除日期过滤或清空搜索关键词。"
+                        },
+                        actionLabel = if (hasActiveFilter) "重置全部筛选" else null,
+                        onAction = if (hasActiveFilter) onClearAllFilters else null,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    groupedByDate.forEachIndexed { groupIndex, entry ->
+                        val dateKey = entry.key
+                        val groupItems = entry.value
+                        val defaultExpanded = state.selectedDate != null ||
+                            state.statusFilter != HistoryStatusFilter.ALL ||
+                            trimmedQuery.isNotEmpty() ||
+                            groupIndex == 0
+                        val isExpanded = userToggledDates[dateKey] ?: expandAllOverride ?: defaultExpanded
+                        val showAllForDate = dateKey in showAllForDates
+
+                        item(key = "pane_date_group_$dateKey") {
+                            HistoryDateGroupSection(
+                                businessDate = dateKey,
+                                groupItems = groupItems,
+                                isExpanded = isExpanded,
+                                showAllForDate = showAllForDate,
+                                onToggleExpand = { onToggleDateExpand(dateKey, !isExpanded) },
+                                onToggleShowAll = { onToggleDateShowAll(dateKey, showAllForDate) },
+                                onSelectJob = onSelectJob,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HistoryBentoRow(
     summary: HistoryStatsSummary,
+    compactMetrics: Boolean = false,
     onNavigateToTodayReview: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
@@ -628,7 +1028,7 @@ private fun HistoryBentoRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Max),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compactMetrics) 6.dp else 8.dp),
     ) {
         FlameBentoCard(
             label = "成功率",
@@ -724,6 +1124,7 @@ private fun HistoryBentoRow(
 private fun DailyTrendChartCard(
     summary: HistoryStatsSummary,
     selectedDate: LocalDate?,
+    maxBarHeightDp: Float = 96f,
     onToggleDate: (LocalDate) -> Unit,
     onClearDateFilter: () -> Unit,
 ) {
@@ -843,6 +1244,7 @@ private fun DailyTrendChartCard(
                                     reserveLabelSpace = true,
                                     maxBarWidth = 30.dp,
                                     horizontalPadding = 2.dp,
+                                    maxBarHeightDp = maxBarHeightDp,
                                     onClick = { onToggleDate(bucket.date) },
                                     modifier = Modifier.weight(1f),
                                 )
@@ -869,6 +1271,7 @@ private fun DailyTrendChartCard(
                                         reserveLabelSpace = false,
                                         maxBarWidth = 18.dp,
                                         horizontalPadding = 1.dp,
+                                        maxBarHeightDp = maxBarHeightDp,
                                         onClick = { onToggleDate(bucket.date) },
                                         modifier = Modifier.weight(1f),
                                     )
@@ -926,6 +1329,7 @@ private fun DailyTrendChartCard(
                                     reserveLabelSpace = true,
                                     maxBarWidth = 18.dp,
                                     horizontalPadding = 2.dp,
+                                    maxBarHeightDp = maxBarHeightDp,
                                     onClick = { onToggleDate(bucket.date) },
                                     modifier = Modifier.width(42.dp),
                                 )
@@ -1005,17 +1409,18 @@ private fun DayStackedBarColumn(
     horizontalPadding: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    maxBarHeightDp: Float = 96f,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
     val haptics = LocalHapticFeedback.current
     val reducedMotion = rememberReducedMotion()
-    val maxBarHeightDp = 96f
+    val resolvedMaxBarHeightDp = maxBarHeightDp
     val targetBarHeight = if (bucket.total == 0) {
         3.dp
     } else {
-        (maxBarHeightDp * (bucket.total.toFloat() / maxDayTotal.toFloat()))
-            .coerceIn(14f, maxBarHeightDp)
+        (resolvedMaxBarHeightDp * (bucket.total.toFloat() / maxDayTotal.toFloat()))
+            .coerceIn(14f, resolvedMaxBarHeightDp)
             .dp
     }
     val animatedHeight by animateDpAsState(
@@ -1049,7 +1454,7 @@ private fun DayStackedBarColumn(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(98.dp),
+                .height((resolvedMaxBarHeightDp + 2f).dp),
             contentAlignment = Alignment.BottomCenter,
         ) {
             if (bucket.total == 0) {

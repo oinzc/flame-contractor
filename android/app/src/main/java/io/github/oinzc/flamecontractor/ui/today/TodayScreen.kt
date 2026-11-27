@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -127,11 +128,13 @@ import io.github.oinzc.flamecontractor.execution.ExecutionLiveState
 import io.github.oinzc.flamecontractor.execution.LoginWebViewActivity
 import io.github.oinzc.flamecontractor.scheduler.DailySchedulePlanner
 import io.github.oinzc.flamecontractor.ui.components.DiagnosticScreenshotCard
+import io.github.oinzc.flamecontractor.ui.components.FLAME_TWO_PANE_CONTENT_MIN_WIDTH
 import io.github.oinzc.flamecontractor.ui.components.FlameAlertStrip
 import io.github.oinzc.flamecontractor.ui.components.FlameBentoCard
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
 import io.github.oinzc.flamecontractor.ui.components.FlameGroupedSection
 import io.github.oinzc.flamecontractor.ui.components.FlameIconButton
 import io.github.oinzc.flamecontractor.ui.components.FlameListRow
@@ -143,6 +146,9 @@ import io.github.oinzc.flamecontractor.ui.components.FlameSheetActionRow
 import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
+import io.github.oinzc.flamecontractor.ui.components.flameContentBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.flamePressScale
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
@@ -293,6 +299,7 @@ fun TodayRoute(
             onDismissManualBatchFeedback = viewModel::dismissManualBatchFeedback,
             onOpenTab = onOpenTab,
             onOpenSettings = onOpenSettings,
+            onOpenFeedback = onOpenFeedback,
             onCopyDiagnosticsLog = handleCopyDiagnosticsLog,
             onFeedbackIssue = handleFeedbackIssue,
             onOpenAccountSwitcher = onOpenAccountSwitcher,
@@ -385,8 +392,12 @@ fun TodayScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
+    val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
     val dockBottomClearance = flameDockBottomPadding()
+    val contentBottomPadding = flameContentBottomPadding(layout.hasBottomFloatingDock)
     var timelineJobId by remember { mutableStateOf<String?>(null) }
+    var recentFilter by remember { mutableStateOf(TodayRecentFilter.ALL) }
 
     val openJobTimeline: (RecentJobItem) -> Unit = { item ->
         timelineJobId = item.job.id
@@ -400,7 +411,9 @@ fun TodayScreen(
             .fillMaxSize()
             .background(palette.canvas),
     ) {
-        val isWideScreen = maxWidth >= 600.dp
+        val useTwoPane = maxWidth >= FLAME_TWO_PANE_CONTENT_MIN_WIDTH
+        val isTabletPortrait = !useTwoPane && layout.formFactor == FlameFormFactor.TABLET_PORTRAIT
+        val fixTabletPortraitPane = isTabletPortrait && maxHeight >= 780.dp
         val compactFeedbackButton = maxWidth < 370.dp
 
         Scaffold(
@@ -409,52 +422,122 @@ fun TodayScreen(
             contentColor = palette.ink,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
-                FlameTopBar(title = "今日") {
-                    TodayAccountSwitcherPill(
-                        account = state.account,
-                        otherAccountAlertBadge = otherAccountAlertBadge,
-                        onClick = onOpenAccountSwitcher,
-                    )
-                    FlameFeedbackTopButton(
-                        onClick = onOpenFeedback,
-                        compact = compactFeedbackButton,
-                    )
-                    FlameIconButton(
-                        icon = Icons.Outlined.Settings,
-                        contentDescription = "设置与维护",
-                        onClick = { onOpenSettings(null) },
-                    )
+                FlameTopBar(
+                    title = "今日",
+                    subtitle = if (chromeHandlesGlobalNav) {
+                        state.businessDate.takeIf { it.isNotBlank() }
+                    } else {
+                        null
+                    },
+                ) {
+                    if (!chromeHandlesGlobalNav) {
+                        TodayAccountSwitcherPill(
+                            account = state.account,
+                            otherAccountAlertBadge = otherAccountAlertBadge,
+                            onClick = onOpenAccountSwitcher,
+                        )
+                        FlameFeedbackTopButton(
+                            onClick = onOpenFeedback,
+                            compact = compactFeedbackButton,
+                        )
+                        FlameIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置与维护",
+                            onClick = { onOpenSettings(null) },
+                        )
+                    }
                 }
             },
             snackbarHost = {
                 SnackbarHost(
                     hostState = snackbarHostState,
                     modifier = Modifier.padding(
-                        bottom = if (isWideScreen) 16.dp else dockBottomClearance - 12.dp,
+                        bottom = if (layout.hasBottomFloatingDock) dockBottomClearance - 12.dp else 16.dp,
                     ),
                 )
             },
         ) { innerPadding ->
-            if (isWideScreen) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                        .padding(horizontal = 20.dp)
-                        .navigationBarsPadding(),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                ) {
+            when {
+                useTwoPane -> {
+                    val leftWeight = if (layout.isShortLandscape) 0.45f else 0.44f
+                    val rightWeight = if (layout.isShortLandscape) 0.55f else 0.56f
+                    val paneGap = if (layout.isShortLandscape) 14.dp else 20.dp
+                    val hasUrgentAlert = state.unknownReviewJobs.isNotEmpty() ||
+                        state.account?.status in setOf(
+                            AccountStatus.COOLDOWN,
+                            AccountStatus.DOM_BROKEN,
+                            AccountStatus.VERIFICATION_REQUIRED,
+                            AccountStatus.AUTH_EXPIRED,
+                        )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                            .padding(horizontal = layout.horizontalGutter)
+                            .navigationBarsPadding(),
+                        horizontalArrangement = Arrangement.spacedBy(paneGap),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(leftWeight)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 4.dp, bottom = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            TodayOverviewColumn(
+                                state = state,
+                                setupReadiness = setupReadiness,
+                                showBentoRow = true,
+                                alertStripsFirst = hasUrgentAlert,
+                                showScheduleReadinessCard = true,
+                                onStartOnboardingWizard = onStartOnboardingWizard,
+                                onReloginClick = onReloginClick,
+                                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                                onOpenUnknownReview = onOpenUnknownReview,
+                                onOpenCooldownDetail = onOpenCooldownDetail,
+                                onTriggerForceAllBatch = onTriggerForceAllBatch,
+                                onTriggerManualBatch = onTriggerManualBatch,
+                                onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+                                onFeedbackIssue = onFeedbackIssue,
+                                onOpenTab = onOpenTab,
+                                onOpenSettings = onOpenSettings,
+                            )
+                        }
+
+                        TodayRecentJobsPane(
+                            sectionTitle = state.recentJobsSectionTitle,
+                            businessDate = state.businessDate,
+                            recentJobs = state.recentJobs,
+                            selectedFilter = recentFilter,
+                            onSelectFilter = { recentFilter = it },
+                            onOpenJobTimeline = openJobTimeline,
+                            onOpenUnknownReview = onOpenUnknownReview,
+                            onScanTargets = { onOpenTab(MainTab.TARGETS) },
+                            modifier = Modifier
+                                .weight(rightWeight)
+                                .fillMaxHeight()
+                                .padding(top = 4.dp, bottom = 16.dp),
+                        )
+                    }
+                }
+
+                fixTabletPortraitPane -> {
                     Column(
                         modifier = Modifier
-                            .weight(0.46f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(top = 4.dp, bottom = 24.dp),
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                            .padding(horizontal = layout.horizontalGutter)
+                            .navigationBarsPadding(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         TodayOverviewColumn(
                             state = state,
                             setupReadiness = setupReadiness,
+                            showBentoRow = false,
+                            alertStripsFirst = false,
+                            showScheduleReadinessCard = false,
                             onStartOnboardingWizard = onStartOnboardingWizard,
                             onReloginClick = onReloginClick,
                             onOpenAccountSwitcher = onOpenAccountSwitcher,
@@ -467,15 +550,88 @@ fun TodayScreen(
                             onOpenTab = onOpenTab,
                             onOpenSettings = onOpenSettings,
                         )
-                    }
 
+                        TodayTabletPortraitBentoRow(
+                            state = state,
+                            setupReadiness = setupReadiness,
+                            onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+                            onOpenScheduleOrSurvival = {
+                                if (setupReadiness != null && !setupReadiness.allCompleted) {
+                                    onOpenSettings(SettingsSection.SURVIVAL)
+                                } else {
+                                    onOpenSettings(SettingsSection.SCHEDULE)
+                                }
+                            },
+                        )
+
+                        TodayRecentJobsPane(
+                            sectionTitle = state.recentJobsSectionTitle,
+                            businessDate = state.businessDate,
+                            recentJobs = state.recentJobs,
+                            selectedFilter = recentFilter,
+                            onSelectFilter = { recentFilter = it },
+                            onOpenJobTimeline = openJobTimeline,
+                            onOpenUnknownReview = onOpenUnknownReview,
+                            onScanTargets = { onOpenTab(MainTab.TARGETS) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(bottom = 16.dp),
+                        )
+                    }
+                }
+
+                else -> {
                     LazyColumn(
                         modifier = Modifier
-                            .weight(0.54f)
-                            .fillMaxHeight(),
-                        contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+                            .fillMaxSize()
+                            .padding(innerPadding),
+                        contentPadding = PaddingValues(
+                            start = layout.horizontalGutter,
+                            end = layout.horizontalGutter,
+                            top = 4.dp,
+                            bottom = contentBottomPadding,
+                        ),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        item(key = "overview_section") {
+                            TodayOverviewColumn(
+                                state = state,
+                                setupReadiness = setupReadiness,
+                                showBentoRow = !isTabletPortrait,
+                                alertStripsFirst = false,
+                                showScheduleReadinessCard = false,
+                                onStartOnboardingWizard = onStartOnboardingWizard,
+                                onReloginClick = onReloginClick,
+                                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                                onOpenUnknownReview = onOpenUnknownReview,
+                                onOpenCooldownDetail = onOpenCooldownDetail,
+                                onTriggerForceAllBatch = onTriggerForceAllBatch,
+                                onTriggerManualBatch = onTriggerManualBatch,
+                                onCopyDiagnosticsLog = onCopyDiagnosticsLog,
+                                onFeedbackIssue = onFeedbackIssue,
+                                onOpenTab = onOpenTab,
+                                onOpenSettings = onOpenSettings,
+                            )
+                        }
+
+                        if (isTabletPortrait) {
+                            item(key = "tablet_portrait_bento") {
+                                TodayTabletPortraitBentoRow(
+                                    state = state,
+                                    setupReadiness = setupReadiness,
+                                    onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+                                    onOpenScheduleOrSurvival = {
+                                        if (setupReadiness != null && !setupReadiness.allCompleted) {
+                                            onOpenSettings(SettingsSection.SURVIVAL)
+                                        } else {
+                                            onOpenSettings(SettingsSection.SCHEDULE)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+
                         item(key = "recent_jobs_section") {
                             TodayRecentJobsSection(
                                 sectionTitle = state.recentJobsSectionTitle,
@@ -486,48 +642,6 @@ fun TodayScreen(
                                 onScanTargets = { onOpenTab(MainTab.TARGETS) },
                             )
                         }
-                    }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding),
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
-                        top = 4.dp,
-                        bottom = dockBottomClearance,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    item(key = "overview_section") {
-                        TodayOverviewColumn(
-                            state = state,
-                            setupReadiness = setupReadiness,
-                            onStartOnboardingWizard = onStartOnboardingWizard,
-                            onReloginClick = onReloginClick,
-                            onOpenAccountSwitcher = onOpenAccountSwitcher,
-                            onOpenUnknownReview = onOpenUnknownReview,
-                            onOpenCooldownDetail = onOpenCooldownDetail,
-                            onTriggerForceAllBatch = onTriggerForceAllBatch,
-                            onTriggerManualBatch = onTriggerManualBatch,
-                            onCopyDiagnosticsLog = onCopyDiagnosticsLog,
-                            onFeedbackIssue = onFeedbackIssue,
-                            onOpenTab = onOpenTab,
-                            onOpenSettings = onOpenSettings,
-                        )
-                    }
-
-                    item(key = "recent_jobs_section") {
-                        TodayRecentJobsSection(
-                            sectionTitle = state.recentJobsSectionTitle,
-                            businessDate = state.businessDate,
-                            recentJobs = state.recentJobs,
-                            onOpenJobTimeline = openJobTimeline,
-                            onOpenUnknownReview = onOpenUnknownReview,
-                            onScanTargets = { onOpenTab(MainTab.TARGETS) },
-                        )
                     }
                 }
             }
@@ -748,6 +862,9 @@ private fun TodayAccountSwitcherPill(
 private fun TodayOverviewColumn(
     state: TodayUiState,
     setupReadiness: SetupReadinessSnapshot?,
+    showBentoRow: Boolean = true,
+    alertStripsFirst: Boolean = false,
+    showScheduleReadinessCard: Boolean = false,
     onStartOnboardingWizard: () -> Unit,
     onReloginClick: () -> Unit,
     onOpenAccountSwitcher: () -> Unit,
@@ -761,6 +878,18 @@ private fun TodayOverviewColumn(
     onOpenSettings: (SettingsSection?) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (alertStripsFirst) {
+            TodayConditionalAlertStrips(
+                state = state,
+                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                onOpenUnknownReview = onOpenUnknownReview,
+                onOpenCooldownDetail = onOpenCooldownDetail,
+                onReloginClick = onReloginClick,
+                onOpenTab = onOpenTab,
+                onOpenSettings = onOpenSettings,
+            )
+        }
+
         TodayHeroStatusCard(
             state = state,
             onTriggerForceAllBatch = onTriggerForceAllBatch,
@@ -778,20 +907,176 @@ private fun TodayOverviewColumn(
             )
         }
 
-        TodayConditionalAlertStrips(
-            state = state,
-            onOpenAccountSwitcher = onOpenAccountSwitcher,
-            onOpenUnknownReview = onOpenUnknownReview,
-            onOpenCooldownDetail = onOpenCooldownDetail,
-            onReloginClick = onReloginClick,
-            onOpenTab = onOpenTab,
-            onOpenSettings = onOpenSettings,
-        )
+        if (!alertStripsFirst) {
+            TodayConditionalAlertStrips(
+                state = state,
+                onOpenAccountSwitcher = onOpenAccountSwitcher,
+                onOpenUnknownReview = onOpenUnknownReview,
+                onOpenCooldownDetail = onOpenCooldownDetail,
+                onReloginClick = onReloginClick,
+                onOpenTab = onOpenTab,
+                onOpenSettings = onOpenSettings,
+            )
+        }
 
-        TodayBentoMetricsRow(
-            state = state,
-            onOpenTargets = { onOpenTab(MainTab.TARGETS) },
-        )
+        if (showBentoRow) {
+            TodayBentoMetricsRow(
+                state = state,
+                onOpenTargets = { onOpenTab(MainTab.TARGETS) },
+            )
+        }
+
+        if (showScheduleReadinessCard) {
+            TodayScheduleReadinessSummaryCard(
+                state = state,
+                setupReadiness = setupReadiness,
+                onManageSettings = {
+                    if (setupReadiness != null && !setupReadiness.allCompleted) {
+                        onOpenSettings(SettingsSection.SURVIVAL)
+                    } else {
+                        onOpenSettings(SettingsSection.SCHEDULE)
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TodayScheduleReadinessSummaryCard(
+    state: TodayUiState,
+    setupReadiness: SetupReadinessSnapshot?,
+    onManageSettings: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val account = state.account
+    val autoEnabled = account?.enabled == true && account.status != AccountStatus.PAUSED
+    val readyCount = setupReadiness?.completedCount ?: 0
+    val totalCount = setupReadiness?.totalCount ?: 7
+    val allReady = setupReadiness?.allCompleted == true
+    val tone = when {
+        account == null -> FlameTone.NEUTRAL
+        !autoEnabled -> FlameTone.WARNING
+        setupReadiness != null && !setupReadiness.allRequiredCompleted -> FlameTone.WARNING
+        allReady -> FlameTone.HEALTHY
+        else -> FlameTone.NEUTRAL
+    }
+    val nextTriggerText = when {
+        account == null -> "尚未绑定抖音号"
+        !autoEnabled -> "自动调度已暂停"
+        state.nextAutoTriggerAtEpochMs != null -> formatWakeTime(state.nextAutoTriggerAtEpochMs, account.timezone)
+        else -> "窗口 ${account.sendWindowStart}–${account.sendWindowEnd}"
+    }
+    val autoScanText = when {
+        account == null -> "待初始化"
+        account.autoScanEnabled -> "每 ${account.autoScanIntervalHours}h 自动同步"
+        else -> "自动扫描已关闭"
+    }
+
+    FlameCard(
+        cornerRadius = 20.dp,
+        contentPadding = PaddingValues(15.dp),
+        onClick = onManageSettings,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FlameRowAvatar(tone = tone) {
+                Icon(
+                    imageVector = Icons.Outlined.Schedule,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "今日排程与运行就绪",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (setupReadiness != null) {
+                        "权限与配置 $readyCount/$totalCount · ${if (allReady) "全部就绪" else "可按需补齐"}"
+                    } else {
+                        "调度窗口与权限状态"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = palette.surfaceSubtle,
+                contentColor = palette.inkSecondary,
+                border = BorderStroke(1.dp, palette.hairline),
+            ) {
+                Text(
+                    text = "管理设置",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+        HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "下次自动续火",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                )
+                Text(
+                    text = nextTriggerText,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (autoEnabled) palette.ink else semantics.warning,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "自动扫描周期",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkTertiary,
+                )
+                Text(
+                    text = autoScanText,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
@@ -1319,6 +1604,35 @@ private fun HeroFooterActionBar(
     }
 }
 
+internal fun resolveHeroLiveStripTone(executionState: ExecutionLiveState): FlameTone {
+    if (executionState.running) return FlameTone.EMBER
+    val lastMsg = executionState.lastMessage?.trim().orEmpty()
+    val skipSummary = executionState.lastSkipSummary?.trim().orEmpty()
+    val errorSummary = executionState.lastErrorSummary?.trim().orEmpty()
+
+    val hasNonZeroFail = Regex("""失败\s*[:：=]?\s*[1-9]\d*""").containsMatchIn(lastMsg)
+    val hasZeroFailOnly = Regex("""失败\s*[:：=]?\s*0(?!\d)""").containsMatchIn(lastMsg)
+    val hasErrorKeyword = (lastMsg.contains("失败") && !hasZeroFailOnly) ||
+        lastMsg.contains("异常") ||
+        lastMsg.contains("未明") ||
+        lastMsg.contains("超时") ||
+        lastMsg.contains("中断") ||
+        lastMsg.contains("拦截")
+    if (errorSummary.isNotEmpty() || hasNonZeroFail || hasErrorKeyword) {
+        return FlameTone.DANGER
+    }
+
+    val hasNonZeroSkip = Regex("""跳过\s*[:：=]?\s*[1-9]\d*""").containsMatchIn(lastMsg)
+    val hasZeroSkipOnly = Regex("""跳过\s*[:：=]?\s*0(?!\d)""").containsMatchIn(lastMsg)
+    val hasSkipKeyword = (lastMsg.contains("跳过") && !hasZeroSkipOnly) ||
+        lastMsg.contains("未绑定")
+    if (skipSummary.isNotEmpty() || hasNonZeroSkip || hasSkipKeyword) {
+        return FlameTone.WARNING
+    }
+
+    return FlameTone.HEALTHY
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeroLiveProgressStrip(
@@ -1328,38 +1642,41 @@ private fun HeroLiveProgressStrip(
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
-    val semantics = FlameThemeTokens.semanticColors
     val reducedMotion = rememberReducedMotion()
     val lastMsg = executionState.lastMessage?.trim().orEmpty()
     val skipSummary = executionState.lastSkipSummary?.trim().orEmpty()
     val errorSummary = executionState.lastErrorSummary?.trim().orEmpty()
-    val hasErrorHint = !executionState.running && (
-        errorSummary.isNotEmpty() ||
-            lastMsg.contains("失败") ||
-            lastMsg.contains("异常") ||
-            lastMsg.contains("未明")
-        )
-    val hasSkipHint = !executionState.running && (
-        skipSummary.isNotEmpty() ||
-            lastMsg.contains("跳过") ||
-            lastMsg.contains("未绑定")
-        )
+    val tone = resolveHeroLiveStripTone(executionState)
+    val toneColors = resolveFlameToneColors(tone)
+    val hasErrorHint = !executionState.running && tone == FlameTone.DANGER
+    val hasSkipHint = !executionState.running && tone == FlameTone.WARNING
     val hasSkipOrErrorHint = hasErrorHint || hasSkipHint
 
-    val containerColor = when {
-        hasErrorHint -> semantics.dangerContainer
-        hasSkipHint -> semantics.warningContainer
-        else -> palette.surfaceSubtle
+    val containerColor = when (tone) {
+        FlameTone.EMBER -> palette.surfaceSubtle
+        FlameTone.NEUTRAL -> palette.surfaceSubtle
+        FlameTone.HEALTHY,
+        FlameTone.WARNING,
+        FlameTone.DANGER,
+        -> toneColors.container
     }
-    val borderColor = when {
-        hasErrorHint -> semantics.dangerBorder
-        hasSkipHint -> semantics.warningBorder
-        else -> null
+    val borderColor = when (tone) {
+        FlameTone.EMBER,
+        FlameTone.NEUTRAL,
+        -> null
+        FlameTone.HEALTHY,
+        FlameTone.WARNING,
+        FlameTone.DANGER,
+        -> toneColors.border
     }
-    val messageColor = when {
-        hasErrorHint -> semantics.onDangerContainer
-        hasSkipHint -> semantics.onWarningContainer
-        else -> palette.inkSecondary
+    val messageColor = when (tone) {
+        FlameTone.EMBER,
+        FlameTone.NEUTRAL,
+        -> palette.inkSecondary
+        FlameTone.HEALTHY,
+        FlameTone.WARNING,
+        FlameTone.DANGER,
+        -> toneColors.onContainer
     }
 
     Surface(
@@ -1826,6 +2143,309 @@ private fun TodayBentoMetricsRow(
 }
 
 @Composable
+private fun TodayTabletPortraitBentoRow(
+    state: TodayUiState,
+    setupReadiness: SetupReadinessSnapshot?,
+    onOpenTargets: () -> Unit,
+    onOpenScheduleOrSurvival: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val reducedMotion = rememberReducedMotion()
+    val completionRatio = if (state.enabledTargetCount > 0) {
+        (state.succeededTodayCount.toFloat() / state.enabledTargetCount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val animatedCompletion by animateFloatAsState(
+        targetValue = completionRatio,
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 220,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "today_tablet_bento_completion",
+    )
+    val allCompleted = state.enabledTargetCount > 0 && state.succeededTodayCount >= state.enabledTargetCount
+    val maxOfficialSpark = state.maxOfficialSparkDays
+    val account = state.account
+    val autoEnabled = account?.enabled == true && account.status != AccountStatus.PAUSED
+    val readyCount = setupReadiness?.completedCount ?: 0
+    val totalCount = setupReadiness?.totalCount ?: 7
+    val allReady = setupReadiness?.allCompleted == true
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Max),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        FlameBentoCard(
+            label = "今日已完成",
+            value = state.succeededTodayCount.toString(),
+            valueSuffix = "/ ${state.enabledTargetCount}",
+            valueColor = if (allCompleted) semantics.healthy else palette.ink,
+            onClick = onOpenTargets,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(palette.surfaceSubtle),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(animatedCompletion)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (allCompleted) semantics.healthy else palette.monoCtaContainer),
+                        )
+                    }
+                    Text(
+                        text = when {
+                            state.issueTodayCount > 0 -> "异常 ${state.issueTodayCount} · 待发 ${state.pendingTargetCount}"
+                            state.enabledTargetCount == 0 -> "尚未启用续火好友"
+                            state.pendingTargetCount == 0 -> "今日已全部处理"
+                            else -> "待发 ${state.pendingTargetCount} 位"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state.issueTodayCount > 0) semantics.danger else palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+        )
+
+        FlameBentoCard(
+            label = if (maxOfficialSpark != null) "最高官方火花" else "本机续火记录",
+            value = (maxOfficialSpark ?: state.maxLocalStreakDays).toString(),
+            valueSuffix = "天",
+            valueColor = if (maxOfficialSpark != null || state.maxLocalStreakDays > 0) {
+                semantics.sparkGold
+            } else {
+                palette.ink
+            },
+            onClick = onOpenTargets,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Text(
+                        text = if (maxOfficialSpark != null) {
+                            "启用 ${state.enabledTargetCount} 位 · 本机最高 ${state.maxLocalStreakDays} 天"
+                        } else {
+                            "启用 ${state.enabledTargetCount} 位 · 暂停 ${state.pausedTargetCount} 位"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+        )
+
+        FlameBentoCard(
+            label = "排程与保活就绪",
+            value = if (setupReadiness != null) "$readyCount/$totalCount" else if (autoEnabled) "已开" else "暂停",
+            valueSuffix = if (setupReadiness != null) "项" else null,
+            valueColor = when {
+                !autoEnabled -> semantics.warning
+                allReady -> semantics.healthy
+                else -> palette.ink
+            },
+            onClick = onOpenScheduleOrSurvival,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            footer = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Spacer(modifier = Modifier.height(5.dp))
+                    val nextLabel = when {
+                        !autoEnabled -> "自动续火已暂停"
+                        state.nextAutoTriggerAtEpochMs != null ->
+                            "下次 ${formatWakeTime(state.nextAutoTriggerAtEpochMs, account.timezone)}"
+                        else -> "窗口 ${account.sendWindowStart}–${account.sendWindowEnd}"
+                    }
+                    Text(
+                        text = nextLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+        )
+    }
+}
+
+private enum class TodayRecentFilter(val label: String) {
+    ALL("全部"),
+    ATTENTION("待处理"),
+    CONFIRMED("已确认"),
+}
+
+@Composable
+private fun TodayRecentJobsPane(
+    sectionTitle: String,
+    businessDate: String,
+    recentJobs: List<RecentJobItem>,
+    selectedFilter: TodayRecentFilter,
+    onSelectFilter: (TodayRecentFilter) -> Unit,
+    onOpenJobTimeline: (RecentJobItem) -> Unit,
+    onOpenUnknownReview: (String?) -> Unit,
+    onScanTargets: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    val filteredJobs = remember(recentJobs, selectedFilter) {
+        when (selectedFilter) {
+            TodayRecentFilter.ALL -> recentJobs
+            TodayRecentFilter.ATTENTION -> recentJobs.filter {
+                it.job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW ||
+                    it.job.status == JobStatus.FAILED_RETRYABLE ||
+                    it.job.status == JobStatus.FAILED_TERMINAL
+            }
+
+            TodayRecentFilter.CONFIRMED -> recentJobs.filter {
+                it.job.status == JobStatus.SUCCEEDED ||
+                    it.job.status == JobStatus.CANCELLED
+            }
+        }
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = palette.surface,
+        contentColor = palette.ink,
+        border = BorderStroke(1.dp, palette.hairline),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = sectionTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "共 ${filteredJobs.size} 条 · 点击看时间线",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TodayRecentFilter.entries.forEach { filter ->
+                        val selected = filter == selectedFilter
+                        Surface(
+                            onClick = { onSelectFilter(filter) },
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (selected) palette.monoCtaContainer else palette.surfaceSubtle,
+                            contentColor = if (selected) palette.monoCtaContent else palette.inkSecondary,
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) palette.monoCtaContainer else palette.hairline,
+                            ),
+                        ) {
+                            Text(
+                                text = filter.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+            if (recentJobs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlameEmptyStateCard(
+                        icon = Icons.Outlined.LocalFireDepartment,
+                        title = "暂无发送记录",
+                        subtitle = "先前往「好友」页扫描导入有火花的好友，即可在每日定时或首页手动执行续火。",
+                        actionLabel = "前往扫描好友",
+                        onAction = onScanTargets,
+                    )
+                }
+            } else if (filteredJobs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlameEmptyStateCard(
+                        icon = Icons.Outlined.CheckCircle,
+                        title = "当前筛选下暂无记录",
+                        subtitle = "可切回「全部」查看近期全部发送动态。",
+                        actionLabel = "查看全部",
+                        onAction = { onSelectFilter(TodayRecentFilter.ALL) },
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 8.dp),
+                ) {
+                    itemsIndexed(
+                        items = filteredJobs,
+                        key = { _, item -> item.job.id },
+                    ) { index, item ->
+                        TodayRecentJobRow(
+                            item = item,
+                            businessDate = businessDate,
+                            showDivider = index < filteredJobs.lastIndex,
+                            onOpenJobTimeline = onOpenJobTimeline,
+                            onOpenUnknownReview = onOpenUnknownReview,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TodayRecentJobsSection(
     sectionTitle: String,
     businessDate: String,
@@ -1857,103 +2477,121 @@ private fun TodayRecentJobsSection(
         },
     ) {
         recentJobs.forEachIndexed { index, item ->
-            val job = item.job
-            val meta = resolveJobVisualMeta(job.status)
-            val isTodayJob = businessDate.isNotBlank() && job.businessDate == businessDate
-            val nonTodayBadge = if (!isTodayJob) {
-                formatNonTodayDateBadge(job.businessDate, businessDate)
-            } else {
-                null
-            }
-            val slotBadge = resolveSlotShortBadge(job.messageSlotId, item.isDailySlot)
-            val subtitleText = buildString {
-                if (!isTodayJob && job.businessDate.isNotBlank()) {
-                    append(job.businessDate)
-                    append(" · ")
-                }
-                append(item.templateLabel)
-                append(" · ")
-                append(formatEpochTimestamp(job.confirmedAt ?: job.updatedAt))
-                val detail = job.summaryDetail?.trim().orEmpty()
-                if (detail.isNotEmpty()) {
-                    append("\n")
-                    append(detail)
-                }
-            }
-
-            FlameListRow(
-                title = item.targetName,
-                subtitle = subtitleText,
-                titleTag = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (nonTodayBadge != null) {
-                            FlameMiniTag(text = nonTodayBadge, tone = FlameTone.NEUTRAL)
-                        }
-                        FlameMiniTag(
-                            text = slotBadge,
-                            tone = FlameTone.NEUTRAL,
-                        )
-                        if (item.isImageMissing) {
-                            FlameMiniTag(text = "待补图", tone = FlameTone.WARNING)
-                        }
-                    }
-                },
-                leading = {
-                    FlameRowAvatar(tone = meta.tone) {
-                        Icon(
-                            imageVector = meta.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                },
-                trailing = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
-                            val dangerTone = resolveFlameToneColors(FlameTone.DANGER)
-                            Surface(
-                                onClick = { onOpenUnknownReview(job.id) },
-                                shape = RoundedCornerShape(999.dp),
-                                color = dangerTone.container,
-                                contentColor = dangerTone.fg,
-                                border = BorderStroke(1.dp, dangerTone.border),
-                            ) {
-                                Text(
-                                    text = "去核对",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                )
-                            }
-                        } else {
-                            FlameStatusPill(
-                                text = meta.label,
-                                tone = meta.tone,
-                                showDot = false,
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                            contentDescription = "查看任务时间线",
-                            tint = palette.inkTertiary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                },
+            TodayRecentJobRow(
+                item = item,
+                businessDate = businessDate,
                 showDivider = index < recentJobs.lastIndex,
-                dividerIndent = 60.dp,
-                onClick = { onOpenJobTimeline(item) },
+                onOpenJobTimeline = onOpenJobTimeline,
+                onOpenUnknownReview = onOpenUnknownReview,
             )
         }
     }
+}
+
+@Composable
+private fun TodayRecentJobRow(
+    item: RecentJobItem,
+    businessDate: String,
+    showDivider: Boolean,
+    onOpenJobTimeline: (RecentJobItem) -> Unit,
+    onOpenUnknownReview: (String?) -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val job = item.job
+    val meta = resolveJobVisualMeta(job.status)
+    val isTodayJob = businessDate.isNotBlank() && job.businessDate == businessDate
+    val nonTodayBadge = if (!isTodayJob) {
+        formatNonTodayDateBadge(job.businessDate, businessDate)
+    } else {
+        null
+    }
+    val slotBadge = resolveSlotShortBadge(job.messageSlotId, item.isDailySlot)
+    val subtitleText = buildString {
+        if (!isTodayJob && job.businessDate.isNotBlank()) {
+            append(job.businessDate)
+            append(" · ")
+        }
+        append(item.templateLabel)
+        append(" · ")
+        append(formatEpochTimestamp(job.confirmedAt ?: job.updatedAt))
+        val detail = job.summaryDetail?.trim().orEmpty()
+        if (detail.isNotEmpty()) {
+            append("\n")
+            append(detail)
+        }
+    }
+
+    FlameListRow(
+        title = item.targetName,
+        subtitle = subtitleText,
+        titleTag = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (nonTodayBadge != null) {
+                    FlameMiniTag(text = nonTodayBadge, tone = FlameTone.NEUTRAL)
+                }
+                FlameMiniTag(
+                    text = slotBadge,
+                    tone = FlameTone.NEUTRAL,
+                )
+                if (item.isImageMissing) {
+                    FlameMiniTag(text = "待补图", tone = FlameTone.WARNING)
+                }
+            }
+        },
+        leading = {
+            FlameRowAvatar(tone = meta.tone) {
+                Icon(
+                    imageVector = meta.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+        },
+        trailing = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (job.status == JobStatus.UNKNOWN_REQUIRES_REVIEW) {
+                    val dangerTone = resolveFlameToneColors(FlameTone.DANGER)
+                    Surface(
+                        onClick = { onOpenUnknownReview(job.id) },
+                        shape = RoundedCornerShape(999.dp),
+                        color = dangerTone.container,
+                        contentColor = dangerTone.fg,
+                        border = BorderStroke(1.dp, dangerTone.border),
+                    ) {
+                        Text(
+                            text = "去核对",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        )
+                    }
+                } else {
+                    FlameStatusPill(
+                        text = meta.label,
+                        tone = meta.tone,
+                        showDot = false,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = "查看任务时间线",
+                    tint = palette.inkTertiary,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        },
+        showDivider = showDivider,
+        dividerIndent = 60.dp,
+        onClick = { onOpenJobTimeline(item) },
+    )
 }
 
 @Composable

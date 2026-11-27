@@ -82,6 +82,7 @@ internal fun SettingsUpdatesPage(
     updateUiState: AppUpdateUiState?,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -117,8 +118,12 @@ internal fun SettingsUpdatesPage(
         onBack = onBack,
         snackbarHostState = snackbarHostState,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 应用版本与自动更新主卡片
             AppUpdateSectionCard(
                 versionLabel = versionLabel,

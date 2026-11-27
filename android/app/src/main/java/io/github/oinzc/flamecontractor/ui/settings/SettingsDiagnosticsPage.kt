@@ -80,6 +80,7 @@ internal fun SettingsDiagnosticsPage(
     onOpenFeedbackWithDiagnostics: (SanitizedDiagnosticsReport?) -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
 
@@ -87,8 +88,12 @@ internal fun SettingsDiagnosticsPage(
         title = SettingsSection.DIAGNOSTICS.title,
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             if (uiState.accountStatus == AccountStatus.DOM_BROKEN) {
                 SettingsFeedbackBanner(
                     message = "当前账号处于页面结构异常（DOM_BROKEN）。请运行「网页结构体检」或保存有效「定位器覆写」以恢复运行。",

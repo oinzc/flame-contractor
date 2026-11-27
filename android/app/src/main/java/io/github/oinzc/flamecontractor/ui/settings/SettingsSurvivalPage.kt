@@ -67,6 +67,7 @@ internal fun SettingsSurvivalPage(
     onStartOnboardingWizard: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
     val reducedMotion = rememberReducedMotion()
@@ -135,6 +136,7 @@ internal fun SettingsSurvivalPage(
         title = SettingsSection.SURVIVAL.title,
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
         trailingAction = {
             FlameTopPillButton(
                 text = "刷新",
@@ -143,7 +145,10 @@ internal fun SettingsSurvivalPage(
             )
         },
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 顶部整体完成度摘要卡
             FlameCard(contentPadding = PaddingValues(15.dp)) {
                 Row(

@@ -25,17 +25,22 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -88,7 +93,10 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.github.oinzc.flamecontractor.ui.components.FlameFormFactor
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.oinzc.flamecontractor.execution.LoginMode
 import io.github.oinzc.flamecontractor.execution.login.DouyinClientVariant
@@ -272,16 +280,23 @@ private fun LoginTopBar(
     onClearCacheAndReload: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(palette.surface)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                .padding(
+                    start = 6.dp,
+                    end = 12.dp,
+                    top = if (layout.isShortLandscape) 2.dp else 6.dp,
+                    bottom = if (layout.isShortLandscape) 2.dp else 6.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -432,6 +447,7 @@ private fun NativeQrWorkspace(
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
+    val layout = LocalFlameWindowLayout.current
     val reducedMotion = rememberReducedMotion()
     val scrollState = rememberScrollState()
 
@@ -451,14 +467,12 @@ private fun NativeQrWorkspace(
         !state.validatedIndexUrl.isNullOrBlank() &&
         qrReadyForUse
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(horizontal = 18.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
+    val useLandscapeTwoPane = layout.formFactor == FlameFormFactor.TABLET_LANDSCAPE ||
+        layout.isShortLandscape
+    val qrStageSize = if (layout.isShortLandscape) 168.dp else 224.dp
+
+    @Composable
+    fun jumpedBanner() {
         if (state.jumpedToDouyin && state.stage != QrVisualStage.EXPIRED) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -485,16 +499,22 @@ private fun NativeQrWorkspace(
                 }
             }
         }
+    }
 
+    @Composable
+    fun qrCard(modifier: Modifier = Modifier) {
         FlameCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
             cornerRadius = 24.dp,
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
+            contentPadding = PaddingValues(
+                horizontal = if (layout.isShortLandscape) 14.dp else 18.dp,
+                vertical = if (layout.isShortLandscape) 12.dp else 20.dp,
+            ),
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 10.dp else 14.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -563,15 +583,16 @@ private fun NativeQrWorkspace(
                     state = state,
                     onRefreshQr = onRefreshQr,
                     onSwitchWebMode = onSwitchWebMode,
+                    stageSize = qrStageSize,
                 )
 
                 Text(
                     text = when {
                         variant != null && canDirectJump ->
-                            "单部手机推荐直接点下方按钮拉起${variant.displayName}确认；备用机或平板可直接用主力手机扫码"
+                            "单部手机推荐直接点${if (useLandscapeTwoPane) "右侧" else "下方"}按钮拉起${variant.displayName}确认；备用机或平板可直接用主力手机扫码"
 
                         variant == null ->
-                            "当前设备未检测到抖音客户端，请用手机抖音扫上方二维码，或切换短信验证码登录"
+                            "当前设备未检测到抖音客户端，请用手机抖音扫${if (useLandscapeTwoPane) "左侧" else "上方"}二维码，或切换短信验证码登录"
 
                         else -> state.statusHint
                     },
@@ -582,8 +603,10 @@ private fun NativeQrWorkspace(
                 )
             }
         }
+    }
 
-        // 单手机操作区：主按钮直跳抖音授权，次按钮宽白边存码跳扫一扫，底部网页短信兜底
+    @Composable
+    fun actionControls() {
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -643,6 +666,97 @@ private fun NativeQrWorkspace(
             }
         }
     }
+
+    if (useLandscapeTwoPane) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .padding(
+                    horizontal = layout.horizontalGutter,
+                    vertical = if (layout.isShortLandscape) 8.dp else 18.dp,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 880.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 14.dp else 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    qrCard()
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(scrollState),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    jumpedBanner()
+                    FlameCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 18.dp,
+                        contentPadding = PaddingValues(
+                            horizontal = 16.dp,
+                            vertical = if (layout.isShortLandscape) 11.dp else 14.dp,
+                        ),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "扫码或本机授权登录",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.ink,
+                            )
+                            Text(
+                                text = "平板可直接用手机抖音扫码；若本机已安装抖音，可直接点击下方按钮完成一键授权。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkSecondary,
+                            )
+                        }
+                    }
+                    actionControls()
+                }
+            }
+        }
+    } else if (layout.formFactor == FlameFormFactor.TABLET_PORTRAIT) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .verticalScroll(scrollState)
+                .padding(horizontal = layout.horizontalGutter, vertical = 20.dp),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 520.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                jumpedBanner()
+                qrCard()
+                actionControls()
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            jumpedBanner()
+            qrCard()
+            actionControls()
+        }
+    }
 }
 
 @Composable
@@ -650,6 +764,7 @@ private fun QrCodeStageBox(
     state: LoginScreenState,
     onRefreshQr: () -> Unit,
     onSwitchWebMode: () -> Unit,
+    stageSize: Dp = 224.dp,
 ) {
     val palette = FlameThemeTokens.palette
     val semantics = FlameThemeTokens.semanticColors
@@ -657,7 +772,7 @@ private fun QrCodeStageBox(
 
     Box(
         modifier = Modifier
-            .size(224.dp)
+            .size(stageSize)
             .clip(outerShape)
             .background(
                 if (state.qrBitmap != null) Color.White else palette.surfaceSubtle,
@@ -674,7 +789,7 @@ private fun QrCodeStageBox(
                 filterQuality = FilterQuality.None,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp),
+                    .padding(if (stageSize < 190.dp) 10.dp else 16.dp),
             )
 
             when (state.stage) {

@@ -135,25 +135,61 @@ fun resolveFlameToneColors(tone: FlameTone): FlameToneColors {
 fun FlameTopBar(
     title: String,
     modifier: Modifier = Modifier,
+    subtitle: String? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
+    val horizontalPadding = layout.horizontalGutterDp.dp
+    val verticalPadding = if (layout.isShortLandscape) 6.dp else 12.dp
+    val titleStyle = if (layout.isShortLandscape) {
+        MaterialTheme.typography.titleLarge
+    } else {
+        MaterialTheme.typography.headlineMedium
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineMedium,
-            color = palette.ink,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        if (subtitle.isNullOrBlank()) {
+            Text(
+                text = title,
+                style = titleStyle,
+                color = palette.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 1.dp else 2.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = titleStyle,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = if (layout.isShortLandscape) {
+                        MaterialTheme.typography.labelSmall
+                    } else {
+                        MaterialTheme.typography.bodySmall
+                    },
+                    color = palette.inkSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -372,11 +408,15 @@ fun FlameSubpageScaffold(
     modifier: Modifier = Modifier,
     trailingAction: @Composable RowScope.() -> Unit = {},
     snackbarHostState: SnackbarHostState? = null,
+    embeddedInSplitPane: Boolean = false,
     content: @Composable (PaddingValues) -> Unit,
 ) {
-    BackHandler(onBack = onBack)
+    if (!embeddedInSplitPane) {
+        BackHandler(onBack = onBack)
+    }
 
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = palette.canvas,
@@ -388,41 +428,79 @@ fun FlameSubpageScaffold(
             }
         },
         topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(palette.surface)
-                    .statusBarsPadding(),
-            ) {
-                Row(
+            if (embeddedInSplitPane) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        .background(palette.surface),
                 ) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "返回",
-                            tint = palette.ink,
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = layout.horizontalGutterDp.dp,
+                                vertical = if (layout.isShortLandscape) 10.dp else 13.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = title,
+                            style = if (layout.isShortLandscape) {
+                                MaterialTheme.typography.titleMedium
+                            } else {
+                                MaterialTheme.typography.titleLarge
+                            },
+                            color = palette.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            content = trailingAction,
                         )
                     }
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        content = trailingAction,
-                    )
+                    HorizontalDivider(thickness = 1.dp, color = palette.hairline)
                 }
-                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(palette.surface)
+                        .statusBarsPadding(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                contentDescription = "返回",
+                                tint = palette.ink,
+                            )
+                        }
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            content = trailingAction,
+                        )
+                    }
+                    HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+                }
             }
         },
         content = content,

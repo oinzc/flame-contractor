@@ -19,20 +19,24 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -74,9 +78,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -96,6 +102,7 @@ import io.github.oinzc.flamecontractor.data.db.FlameDatabase
 import io.github.oinzc.flamecontractor.data.db.MessageTemplateEntity
 import io.github.oinzc.flamecontractor.data.db.TemplateType
 import io.github.oinzc.flamecontractor.scheduler.ScheduleCoordinator
+import io.github.oinzc.flamecontractor.ui.components.FLAME_TWO_PANE_CONTENT_MIN_WIDTH
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
 import io.github.oinzc.flamecontractor.ui.components.FlameEmptyStateCard
 import io.github.oinzc.flamecontractor.ui.components.FlameFeedbackTopButton
@@ -115,6 +122,9 @@ import io.github.oinzc.flamecontractor.ui.components.FlameStatusPill
 import io.github.oinzc.flamecontractor.ui.components.FlameTone
 import io.github.oinzc.flamecontractor.ui.components.FlameTopBar
 import io.github.oinzc.flamecontractor.ui.components.FlameTopPillButton
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameChromeHandlesGlobalNav
+import io.github.oinzc.flamecontractor.ui.components.LocalFlameWindowLayout
+import io.github.oinzc.flamecontractor.ui.components.flameContentBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.flameDockBottomPadding
 import io.github.oinzc.flamecontractor.ui.components.officialSparkKindFullLabel
 import io.github.oinzc.flamecontractor.ui.components.officialSparkKindShortLabel
@@ -296,10 +306,13 @@ fun TargetsScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = FlameThemeTokens.palette
+    val layout = LocalFlameWindowLayout.current
+    val chromeHandlesGlobalNav = LocalFlameChromeHandlesGlobalNav.current
     val reducedMotion = rememberReducedMotion()
     val dockBottomClearance = flameDockBottomPadding()
     val navBarBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    var selectedTargetId by remember { mutableStateOf<String?>(null) }
+    var paneSelectedTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var modalDetailTargetId by remember { mutableStateOf<String?>(null) }
     var showScanActionSheet by remember { mutableStateOf(false) }
 
     val filterItems = remember(uiState.filterCounts) {
@@ -317,10 +330,11 @@ fun TargetsScreen(
             .fillMaxSize()
             .background(palette.canvas),
     ) {
-        val isWideScreen = maxWidth >= 600.dp
+        val useTwoPane = maxWidth >= FLAME_TWO_PANE_CONTENT_MIN_WIDTH
+        val hideGlobalTopActions = onBack == null && chromeHandlesGlobalNav
         val compactFeedbackButton = maxWidth < 430.dp
-        val hasBottomDock = onBack == null && !isWideScreen
-        val bottomClearance = if (hasBottomDock) dockBottomClearance else navBarBottomPadding + 20.dp
+        val hasBottomDock = onBack == null && layout.hasBottomFloatingDock
+        val bottomClearance = flameContentBottomPadding(hasBottomDock)
         val compactScanButton = onBack != null && maxWidth < 380.dp
 
         Scaffold(
@@ -334,7 +348,11 @@ fun TargetsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .statusBarsPadding()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                            .padding(
+                                horizontal = layout.horizontalGutter,
+                                vertical = if (layout.isShortLandscape) 6.dp else 12.dp,
+                            ),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -345,7 +363,11 @@ fun TargetsScreen(
                         )
                         Text(
                             text = "续火好友",
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = if (layout.isShortLandscape) {
+                                MaterialTheme.typography.titleLarge
+                            } else {
+                                MaterialTheme.typography.headlineSmall
+                            },
                             color = palette.ink,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -381,7 +403,14 @@ fun TargetsScreen(
                         )
                     }
                 } else {
-                    FlameTopBar(title = "好友") {
+                    FlameTopBar(
+                        title = "好友",
+                        subtitle = if (hideGlobalTopActions && uiState.allTargetsCount > 0) {
+                            "共 ${uiState.allTargetsCount} 位对象"
+                        } else {
+                            null
+                        },
+                    ) {
                         FlameTopPillButton(
                             text = if (uiState.scanRunning) {
                                 "扫描(${uiState.scanDiscoveredCount})"
@@ -405,15 +434,17 @@ fun TargetsScreen(
                             primary = true,
                             onClick = onOpenCreateTarget,
                         )
-                        FlameFeedbackTopButton(
-                            onClick = onOpenFeedback,
-                            compact = compactFeedbackButton,
-                        )
-                        FlameIconButton(
-                            icon = Icons.Outlined.Settings,
-                            contentDescription = "设置与维护",
-                            onClick = { onOpenSettings(null) },
-                        )
+                        if (!hideGlobalTopActions) {
+                            FlameFeedbackTopButton(
+                                onClick = onOpenFeedback,
+                                compact = compactFeedbackButton,
+                            )
+                            FlameIconButton(
+                                icon = Icons.Outlined.Settings,
+                                contentDescription = "设置与维护",
+                                onClick = { onOpenSettings(null) },
+                            )
+                        }
                     }
                 }
             },
@@ -430,22 +461,52 @@ fun TargetsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .padding(horizontal = if (isWideScreen) 20.dp else 16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .then(
+                        if (onBack != null) {
+                            Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .padding(horizontal = layout.horizontalGutter),
+                verticalArrangement = Arrangement.spacedBy(if (layout.isShortLandscape) 8.dp else 10.dp),
             ) {
-                FlameSearchPill(
-                    query = uiState.searchQuery,
-                    onQueryChange = onSearchQueryChanged,
-                    placeholder = "搜索好友昵称、群名、抖音号或绑定模板…",
-                )
+                if (layout.isShortLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlameSearchPill(
+                            query = uiState.searchQuery,
+                            onQueryChange = onSearchQueryChanged,
+                            placeholder = "搜索好友、群名或模板…",
+                            modifier = Modifier.weight(0.44f),
+                        )
+                        FlameFilterChipRow(
+                            items = filterItems,
+                            selectedKey = uiState.filter.name,
+                            onSelect = { key ->
+                                TargetFilter.entries.firstOrNull { it.name == key }?.let(onFilterSelected)
+                            },
+                            modifier = Modifier.weight(0.56f),
+                        )
+                    }
+                } else {
+                    FlameSearchPill(
+                        query = uiState.searchQuery,
+                        onQueryChange = onSearchQueryChanged,
+                        placeholder = "搜索好友昵称、群名、抖音号或绑定模板…",
+                    )
 
-                FlameFilterChipRow(
-                    items = filterItems,
-                    selectedKey = uiState.filter.name,
-                    onSelect = { key ->
-                        TargetFilter.entries.firstOrNull { it.name == key }?.let(onFilterSelected)
-                    },
-                )
+                    FlameFilterChipRow(
+                        items = filterItems,
+                        selectedKey = uiState.filter.name,
+                        onSelect = { key ->
+                            TargetFilter.entries.firstOrNull { it.name == key }?.let(onFilterSelected)
+                        },
+                    )
+                }
 
                 AnimatedVisibility(
                     visible = uiState.scanRunning,
@@ -521,30 +582,94 @@ fun TargetsScreen(
                             )
                         }
                     }
-                } else if (isWideScreen) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
+                } else if (useTwoPane) {
+                    val activePaneItem = remember(uiState.items, paneSelectedTargetId) {
+                        uiState.items.firstOrNull { it.target.id == paneSelectedTargetId }
+                            ?: uiState.items.firstOrNull()
+                    }
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .navigationBarsPadding(),
-                        contentPadding = PaddingValues(top = 2.dp, bottom = 24.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                            .navigationBarsPadding()
+                            .padding(bottom = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        items(
-                            items = uiState.items,
-                            key = { it.target.id },
-                        ) { item ->
-                            FlameCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                cornerRadius = 20.dp,
-                                contentPadding = PaddingValues(0.dp),
-                            ) {
-                                TargetGritListRow(
-                                    item = item,
-                                    showDivider = false,
-                                    onClick = { selectedTargetId = item.target.id },
+                        // 左栏：圆角卡片内独立滚动列表，选中项高对比微底 + 3dp 暖橙竖条指示
+                        Surface(
+                            modifier = Modifier
+                                .weight(0.44f)
+                                .fillMaxHeight(),
+                            shape = RoundedCornerShape(22.dp),
+                            color = palette.surface,
+                            contentColor = palette.ink,
+                            border = BorderStroke(1.dp, palette.hairline),
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        text = "续火名单",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = palette.ink,
+                                    )
+                                    Text(
+                                        text = if (uiState.items.size == uiState.allTargetsCount) {
+                                            "共 ${uiState.allTargetsCount} 位"
+                                        } else {
+                                            "${uiState.items.size} / ${uiState.allTargetsCount} 位"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.inkTertiary,
+                                    )
+                                }
+                                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f),
+                                ) {
+                                    items(
+                                        items = uiState.items,
+                                        key = { it.target.id },
+                                    ) { item ->
+                                        val isSelected = activePaneItem?.target?.id == item.target.id
+                                        TargetGritListRow(
+                                            item = item,
+                                            showDivider = item.target.id != uiState.items.lastOrNull()?.target?.id,
+                                            selected = isSelected,
+                                            onClick = { paneSelectedTargetId = item.target.id },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 右栏：常驻好友详情与快捷操作面板（纯 UI 复用 TargetActionDetailContent）
+                        Surface(
+                            modifier = Modifier
+                                .weight(0.56f)
+                                .fillMaxHeight(),
+                            shape = RoundedCornerShape(22.dp),
+                            color = palette.surface,
+                            contentColor = palette.ink,
+                            border = BorderStroke(1.dp, palette.hairline),
+                        ) {
+                            if (activePaneItem != null) {
+                                TargetDetailPane(
+                                    item = activePaneItem,
+                                    onToggleEnabled = { enabled -> onToggleEnabled(activePaneItem.target, enabled) },
+                                    onSingleSend = { onSingleSend(activePaneItem.target) },
+                                    onEdit = { onOpenEditTarget(activePaneItem.target) },
+                                    onRepairIdentity = { onRepairIdentity(activePaneItem.target) },
+                                    onDelete = { onRequestDelete(activePaneItem.target) },
+                                    modifier = Modifier.fillMaxSize(),
                                 )
                             }
                         }
@@ -576,7 +701,7 @@ fun TargetsScreen(
                                     TargetGritListRow(
                                         item = item,
                                         showDivider = index < uiState.items.lastIndex,
-                                        onClick = { selectedTargetId = item.target.id },
+                                        onClick = { modalDetailTargetId = item.target.id },
                                     )
                                 }
                             }
@@ -602,30 +727,30 @@ fun TargetsScreen(
         )
     }
 
-    val selectedItem = selectedTargetId?.let { id ->
+    val modalItem = modalDetailTargetId?.let { id ->
         uiState.items.firstOrNull { it.target.id == id }
     }
-    if (selectedItem != null) {
+    if (modalItem != null) {
         TargetActionDetailSheet(
-            item = selectedItem,
-            onToggleEnabled = { enabled -> onToggleEnabled(selectedItem.target, enabled) },
+            item = modalItem,
+            onToggleEnabled = { enabled -> onToggleEnabled(modalItem.target, enabled) },
             onSingleSend = {
-                selectedTargetId = null
-                onSingleSend(selectedItem.target)
+                modalDetailTargetId = null
+                onSingleSend(modalItem.target)
             },
             onEdit = {
-                selectedTargetId = null
-                onOpenEditTarget(selectedItem.target)
+                modalDetailTargetId = null
+                onOpenEditTarget(modalItem.target)
             },
             onRepairIdentity = {
-                selectedTargetId = null
-                onRepairIdentity(selectedItem.target)
+                modalDetailTargetId = null
+                onRepairIdentity(modalItem.target)
             },
             onDelete = {
-                selectedTargetId = null
-                onRequestDelete(selectedItem.target)
+                modalDetailTargetId = null
+                onRequestDelete(modalItem.target)
             },
-            onDismiss = { selectedTargetId = null },
+            onDismiss = { modalDetailTargetId = null },
         )
     }
 }
@@ -757,6 +882,7 @@ private fun RecentScanReconcileShortcut(
 private fun TargetGritListRow(
     item: TargetItemUi,
     showDivider: Boolean,
+    selected: Boolean = false,
     onClick: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
@@ -776,95 +902,111 @@ private fun TargetGritListRow(
     }
     val subtitleLine2 = formatTargetSecondaryLocalSummary(target, item.hasOfficialSpark)
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            FlameRowAvatar(tone = avatarMeta.tone) {
-                Icon(
-                    imageVector = avatarMeta.icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(17.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (selected) palette.surfaceSubtle else Color.Transparent),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(3.dp)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp))
+                        .background(palette.ember),
                 )
             }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Text(
-                        text = target.nicknameSnapshot,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (target.enabled) palette.ink else palette.inkSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
+                FlameRowAvatar(tone = avatarMeta.tone) {
+                    Icon(
+                        imageVector = avatarMeta.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
                     )
-                    if (target.conversationType == "group") {
-                        FlameMiniTag(text = "群聊", tone = FlameTone.NEUTRAL)
-                    }
-                    if (item.isAmbiguousInLatestScan) {
-                        FlameMiniTag(text = "同名冲突", tone = FlameTone.DANGER)
-                    } else if (!item.hasBoundIdentity) {
-                        FlameMiniTag(text = "未绑身份", tone = FlameTone.WARNING)
-                    }
-                    if (item.isTemplateMissingImage) {
-                        FlameMiniTag(text = "待补图", tone = FlameTone.DANGER)
-                    }
                 }
 
-                Text(
-                    text = subtitleLine1,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (item.isTemplateMissingImage) semantics.danger else palette.inkSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
-                Text(
-                    text = subtitleLine2,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.inkTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                FlameOfficialSparkBadge(
-                    sparkDays = target.sparkDays,
-                    sparkKind = target.sparkKind,
-                    sparkLabel = target.sparkLabel,
-                    hasOfficialSpark = item.hasOfficialSpark,
-                    litToday = item.officialSparkLitToday,
-                    compact = true,
-                )
-                item.todayStatusLabel?.let { statusText ->
-                    val statusColor = when {
-                        item.hasBlockingTodayJob -> semantics.danger
-                        item.hasSucceededTodayJob || item.officialSparkLitToday == true -> semantics.healthy
-                        !target.enabled -> palette.inkTertiary
-                        else -> palette.inkSecondary
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(
+                            text = target.nicknameSnapshot,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (target.enabled) palette.ink else palette.inkSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (target.conversationType == "group") {
+                            FlameMiniTag(text = "群聊", tone = FlameTone.NEUTRAL)
+                        }
+                        if (item.isAmbiguousInLatestScan) {
+                            FlameMiniTag(text = "同名冲突", tone = FlameTone.DANGER)
+                        } else if (!item.hasBoundIdentity) {
+                            FlameMiniTag(text = "未绑身份", tone = FlameTone.WARNING)
+                        }
+                        if (item.isTemplateMissingImage) {
+                            FlameMiniTag(text = "待补图", tone = FlameTone.DANGER)
+                        }
                     }
+
                     Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = statusColor,
+                        text = subtitleLine1,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (item.isTemplateMissingImage) semantics.danger else palette.inkSecondary,
                         maxLines = 1,
-                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
                     )
+
+                    Text(
+                        text = subtitleLine2,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FlameOfficialSparkBadge(
+                        sparkDays = target.sparkDays,
+                        sparkKind = target.sparkKind,
+                        sparkLabel = target.sparkLabel,
+                        hasOfficialSpark = item.hasOfficialSpark,
+                        litToday = item.officialSparkLitToday,
+                        compact = true,
+                    )
+                    item.todayStatusLabel?.let { statusText ->
+                        val statusColor = when {
+                            item.hasBlockingTodayJob -> semantics.danger
+                            item.hasSucceededTodayJob || item.officialSparkLitToday == true -> semantics.healthy
+                            !target.enabled -> palette.inkTertiary
+                            else -> palette.inkSecondary
+                        }
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = statusColor,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
                 }
             }
         }
@@ -988,6 +1130,72 @@ private fun ScanActionChoiceSheet(
 }
 
 @Composable
+private fun TargetDetailPane(
+    item: TargetItemUi,
+    onToggleEnabled: (Boolean) -> Unit,
+    onSingleSend: () -> Unit,
+    onEdit: () -> Unit,
+    onRepairIdentity: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    val target = item.target
+    val headerSubtitle = buildTargetHeaderSubtitle(item)
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    text = target.nicknameSnapshot,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = headerSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            FlameOfficialSparkBadge(
+                sparkDays = target.sparkDays,
+                sparkKind = target.sparkKind,
+                sparkLabel = target.sparkLabel,
+                hasOfficialSpark = item.hasOfficialSpark,
+                litToday = item.officialSparkLitToday,
+            )
+        }
+        HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+        TargetActionDetailContent(
+            item = item,
+            onToggleEnabled = onToggleEnabled,
+            onSingleSend = onSingleSend,
+            onEdit = onEdit,
+            onRepairIdentity = onRepairIdentity,
+            onDelete = onDelete,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        )
+    }
+}
+
+@Composable
 private fun TargetActionDetailSheet(
     item: TargetItemUi,
     onToggleEnabled: (Boolean) -> Unit,
@@ -997,31 +1205,8 @@ private fun TargetActionDetailSheet(
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val palette = FlameThemeTokens.palette
-    val semantics = FlameThemeTokens.semanticColors
     val target = item.target
-
-    val identitySummary = when {
-        item.hasBoundIdentity && target.conversationType == "group" -> "已绑群会话 ID"
-        item.hasBoundIdentity -> "已绑稳定身份"
-        item.isAmbiguousInLatestScan -> "同名冲突 · 尚未绑定"
-        else -> "未绑稳定身份"
-    }
-    val headerSubtitle = buildString {
-        append(
-            when (target.conversationType) {
-                "group" -> "群聊"
-                "friend" -> "好友"
-                else -> "会话"
-            },
-        )
-        if (!target.platformHandle.isNullOrBlank()) {
-            append(" · @")
-            append(target.platformHandle)
-        }
-        append(" · ")
-        append(identitySummary)
-    }
+    val headerSubtitle = buildTargetHeaderSubtitle(item)
 
     FlameModalSheet(
         onDismissRequest = onDismiss,
@@ -1037,12 +1222,63 @@ private fun TargetActionDetailSheet(
             )
         },
     ) {
-        Column(
+        TargetActionDetailContent(
+            item = item,
+            onToggleEnabled = onToggleEnabled,
+            onSingleSend = onSingleSend,
+            onEdit = onEdit,
+            onRepairIdentity = onRepairIdentity,
+            onDelete = onDelete,
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        )
+    }
+}
+
+private fun buildTargetHeaderSubtitle(item: TargetItemUi): String {
+    val target = item.target
+    val identitySummary = when {
+        item.hasBoundIdentity && target.conversationType == "group" -> "已绑群会话 ID"
+        item.hasBoundIdentity -> "已绑稳定身份"
+        item.isAmbiguousInLatestScan -> "同名冲突 · 尚未绑定"
+        else -> "未绑稳定身份"
+    }
+    return buildString {
+        append(
+            when (target.conversationType) {
+                "group" -> "群聊"
+                "friend" -> "好友"
+                else -> "会话"
+            },
+        )
+        if (!target.platformHandle.isNullOrBlank()) {
+            append(" · @")
+            append(target.platformHandle)
+        }
+        append(" · ")
+        append(identitySummary)
+    }
+}
+
+@Composable
+private fun TargetActionDetailContent(
+    item: TargetItemUi,
+    onToggleEnabled: (Boolean) -> Unit,
+    onSingleSend: () -> Unit,
+    onEdit: () -> Unit,
+    onRepairIdentity: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = FlameThemeTokens.palette
+    val semantics = FlameThemeTokens.semanticColors
+    val target = item.target
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
             // 详情快照卡（官方火花快照在先、本机续火记录在后，严格分列展示）
             FlameCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -1219,7 +1455,6 @@ private fun TargetActionDetailSheet(
                 )
             }
         }
-    }
 }
 
 @Composable

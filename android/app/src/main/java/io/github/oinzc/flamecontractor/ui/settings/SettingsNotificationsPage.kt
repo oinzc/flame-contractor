@@ -47,6 +47,7 @@ internal fun SettingsNotificationsPage(
     onOpenChannelSettings: (String) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
     val survival = uiState.survivalSnapshot
@@ -56,8 +57,12 @@ internal fun SettingsNotificationsPage(
         title = SettingsSection.NOTIFICATIONS.title,
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 本机通知总权限与严格既有的 2 个通知通道（紧急告警 + 每日汇总）
             FlameGroupedSection(title = "本机通知权限与分类通道") {
                 FlameListRow(

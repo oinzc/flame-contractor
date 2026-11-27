@@ -67,6 +67,7 @@ internal fun SettingsSchedulePage(
     onResetAutoScanDraft: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    embeddedInSplitPane: Boolean = false,
 ) {
     val palette = FlameThemeTokens.palette
     val textFieldColors = settingsTextFieldColors()
@@ -75,8 +76,12 @@ internal fun SettingsSchedulePage(
         title = SettingsSection.SCHEDULE.title,
         onBack = onBack,
         modifier = modifier,
+        embeddedInSplitPane = embeddedInSplitPane,
     ) { innerPadding ->
-        SettingsPageScrollColumn(contentPadding = innerPadding) {
+        SettingsPageScrollColumn(
+            contentPadding = innerPadding,
+            fullWidthInPane = embeddedInSplitPane,
+        ) {
             // 1. 每日自动调度
             FlameGroupedSection(
                 title = "每日自动调度与冷却",

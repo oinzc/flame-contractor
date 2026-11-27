@@ -294,6 +294,9 @@ fun AppUpdateSheet(
             },
             title = sheetTitle,
             subtitle = sheetSubtitle,
+            dismissOnClickOutside = canDismissByScrim,
+            dismissOnBackPress = canDismissByScrim,
+            showCloseButton = canDismissByScrim,
             trailingHeader = {
                 when {
                     isMandatory -> FlameStatusPill(
@@ -323,7 +326,9 @@ fun AppUpdateSheet(
             }
 
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (release != null) {
