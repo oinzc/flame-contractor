@@ -463,18 +463,24 @@ def test_send_skips_target_without_template(settings):
 
 
 def test_send_uses_account_business_date(settings, engine):
+    from zoneinfo import ZoneInfo
+
     from app.models import Account as AccountModel
 
     app = make_app(settings, [_page_for_send()])
     with TestClient(app) as client:
         account = _account_with_targets(client)
+        tz = ZoneInfo(account["timezone"])
+        before = datetime.now(tz).date()
         client.post(f"/api/accounts/{account['id']}/send")
+        after = datetime.now(tz).date()
 
     with Session(engine) as session:
         job = session.exec(select(SendJob)).one()
-        assert job.business_date == date.today()
-        account = session.get(AccountModel, job.account_id)
-        assert account is not None
+        account_row = session.get(AccountModel, job.account_id)
+        assert account_row is not None
+        assert account_row.timezone == account["timezone"]
+        assert before <= job.business_date <= after
 
 
 def test_create_image_template_validates(settings):
