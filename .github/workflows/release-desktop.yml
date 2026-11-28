@@ -37,6 +37,8 @@ jobs:
             python scripts/bump_version.py --check
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p "test_*.py" -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 安装 Node.js 22
         uses: actions/setup-node@v4
@@ -118,11 +120,49 @@ jobs:
           npm ci
           npm run build
 
+      - name: 打包 Windows 便携版 (.zip) 与 SHA-256 校验文件
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $version = "${{ github.ref_name }}".Substring(1)
+          } else {
+            $version = (python -c "from pathlib import Path; import sys; sys.path.insert(0, 'scripts'); import bump_version; print(bump_version.check_repo_versions(Path('.')))").Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $version) { exit 1 }
+          }
+
+          $distDir = "desktop/release-dist"
+          if (Test-Path $distDir) { Remove-Item -Recurse -Force $distDir }
+          New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
+          $installers = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*.exe"
+          if (-not $installers -or $installers.Count -eq 0) {
+            throw "未找到 Windows NSIS 安装包产物"
+          }
+          foreach ($inst in $installers) {
+            Copy-Item $inst.FullName -Destination $distDir
+          }
+
+          python scripts/release_packaging.py windows-portable `
+            --exe desktop/src-tauri/target/release/flame-contractor-desktop.exe `
+            --backend-dir desktop/src-tauri/resources/backend `
+            --version $version `
+            --out-dir $distDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $hashTargets = @(Get-ChildItem $distDir -File | Where-Object { $_.Extension -in @('.exe', '.zip') } | ForEach-Object { $_.FullName })
+          if ($hashTargets.Count -lt 2) {
+            throw "desktop/release-dist 产物数量不足，预期包含 .exe 与便携 .zip"
+          }
+          python scripts/release_packaging.py sha256sums `
+            --output "$distDir/SHA256SUMS-windows.txt" `
+            --files @hashTargets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: 上传 Windows 安装包产物
         uses: actions/upload-artifact@v7
         with:
           name: flame-contractor-windows-x64-installer
-          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: desktop/release-dist/*
           if-no-files-found: error
 
       - name: 附加安装包到 GitHub Release（仅 Tag 触发）
@@ -142,7 +182,7 @@ jobs:
               }
             }
           }
-          $files = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*.exe"
+          $files = Get-ChildItem "desktop/release-dist" -File
           foreach ($f in $files) {
             gh release upload $tag $f.FullName --clobber
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

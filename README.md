@@ -91,7 +91,7 @@ flowchart LR
 
 适合平时在 Windows 电脑上使用、不想装 Docker / Python / Node 的用户：
 
-1. 在 [GitHub Releases](https://github.com/oinzc/flame-contractor/releases) 下载最新的 Windows 安装包（`Flame Contractor_*_x64-setup.exe`），双击安装即可（无需管理员权限；首次运行如遇 Windows SmartScreen 提示，点「更多信息 → 仍要运行」）。
+1. 在 [GitHub Releases](https://github.com/oinzc/flame-contractor/releases) 下载最新的 Windows 安装包（`Flame.Contractor_*_x64-setup.exe`，双击即装）或绿色免安装便携版（`FlameContractor-*-windows-x64-portable.zip`，解压后双击运行，数据保存在同级 `data/` 目录；各端产物均附带 `SHA256SUMS-*.txt` 供完整性核对；首次运行如遇 Windows SmartScreen 提示，点「更多信息 → 仍要运行」）。
 2. 双击桌面图标直接进入独立软件窗口（单机免登，由桌面壳每次生成随机握手令牌保护 `127.0.0.1` 本地接口，自动复用本机 Microsoft Edge 或 Chrome，无需配置 `.env`）。
 3. 按首屏 3 步引导完成：添加抖音号并弹窗扫码 → 扫描会话勾选好友 → 绑定模板与时刻；在「系统与调度」里可直接开启开机自启与填写 Bark 手机通知地址。
 4. 点击窗口关闭 `×` 会最小化到右下角系统托盘继续准点续火（右键托盘选「彻底退出」才停止后端）；数据库、抖音登录态与日志默认保存在软件安装目录下的 `data` 文件夹（如装在只读目录则自动回退到 `%LOCALAPPDATA%\FlameContractor`），升级或重装软件不丢数据。

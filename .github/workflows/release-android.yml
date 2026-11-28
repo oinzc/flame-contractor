@@ -125,11 +125,17 @@ jobs:
             echo "signed=false" >> "${GITHUB_OUTPUT}"
           fi
 
+          python3 ../scripts/release_packaging.py sha256sums \
+            --output build-dist/SHA256SUMS-android.txt \
+            --files build-dist/*.apk
+
       - name: 上传 Android APK 构建产物
         uses: actions/upload-artifact@v7
         with:
           name: flame-contractor-android-apk
-          path: android/build-dist/*.apk
+          path: |
+            android/build-dist/*.apk
+            android/build-dist/SHA256SUMS-android.txt
           retention-days: 30
           if-no-files-found: error
 
@@ -221,6 +227,7 @@ jobs:
             --output "${MANIFEST_PATH}"
 
           gh release upload "${TAG}" "${MANIFEST_PATH}" --clobber
+          gh release upload "${TAG}" "android/build-dist/SHA256SUMS-android.txt" --clobber
 
       - name: 同步上传签名 APK 与 latest.json 到 Cloudflare R2（可选）
         if: startsWith(github.ref, 'refs/tags/v') && steps.build_apk.outputs.signed == 'true'
