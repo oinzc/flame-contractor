@@ -51,7 +51,7 @@ def _load_or_create_secret_key(data_dir: Path) -> str:
 
 class Settings(BaseSettings):
     app_name: str = "Flame Contractor"
-    version: str = "0.9.0"
+    version: str = "0.9.1"
     api_prefix: str = "/api"
     # 桌面应用可指定统一可写数据目录（如 %LOCALAPPDATA%\FlameContractor），自动派生 DB/Profile/Artifacts/密钥路径。
     data_dir: Path | None = None
