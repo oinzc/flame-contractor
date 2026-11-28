@@ -758,7 +758,7 @@ object SanitizedDiagnosticsBuilder {
         probeSummary: SanitizedProbeSummary?,
         runtimeLogLines: List<String>,
     ): String = buildString {
-        appendLine("=== 抖音续火工脱敏诊断报告 ===")
+        appendLine("=== 焰之契约者脱敏诊断报告 ===")
         appendLine("生成时间 (UTC): $generatedAtIso")
         appendLine("应用版本: $appVersionName ($appVersionCode)")
         appendLine("Android 系统: SDK $androidSdkInt (Android $androidRelease)")

@@ -690,7 +690,7 @@ fun OnboardingWizardScreen(
                                         item.importance == SetupItemImportance.REQUIRED &&
                                         !item.completed
                                     ) {
-                                        "点击「${item.primaryActionLabel}」打开「抖音续火工」的自启动开关，返回本页后会自动实时检测并亮绿勾解锁下一步。"
+                                        "点击「${item.primaryActionLabel}」打开「焰之契约者」的自启动开关，返回本页后会自动实时检测并亮绿勾解锁下一步。"
                                     } else {
                                         null
                                     },

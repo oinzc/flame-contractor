@@ -1137,7 +1137,7 @@ private fun copyDiagnosticsToClipboard(context: Context, text: String) {
 private fun shareDiagnosticsText(context: Context, text: String) {
     val sendIntent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
-        putExtra(Intent.EXTRA_SUBJECT, "抖音续火工脱敏诊断报告")
+        putExtra(Intent.EXTRA_SUBJECT, "焰之契约者脱敏诊断报告")
         putExtra(Intent.EXTRA_TEXT, text)
     }
     val chooser = Intent.createChooser(sendIntent, "分享脱敏诊断报告")

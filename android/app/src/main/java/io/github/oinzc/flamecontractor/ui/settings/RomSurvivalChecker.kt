@@ -859,6 +859,6 @@ object RomSurvivalChecker {
         val appInfo = context.applicationInfo
         pm.getApplicationLabel(appInfo).toString()
     } catch (_: Throwable) {
-        "抖音续火工"
+        "焰之契约者"
     }
 }

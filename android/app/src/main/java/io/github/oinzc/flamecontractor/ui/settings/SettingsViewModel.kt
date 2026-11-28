@@ -1355,7 +1355,7 @@ class SettingsViewModel(
             val result = try {
                 withContext(ioDispatcher) {
                     barkGateway.probe(
-                        title = "抖音续火工测试推送",
+                        title = "焰之契约者测试推送",
                         body = "Bark 通知通道配置正常，这是一条测试推送",
                         level = NotifyLevel.ACTIVE,
                     )

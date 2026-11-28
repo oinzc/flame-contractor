@@ -748,7 +748,7 @@ internal fun SettingsAppearancePage(
                     }
 
                     Text(
-                        text = "手动添加路径：桌面双指捏合 → 点底部「添加小部件」→ 点右上角搜索框进入搜索页 → 不输文字直接滑到最底部点「支持小部件的应用 / 安卓小部件」→ 抖音续火工。",
+                        text = "手动添加路径：桌面双指捏合 → 点底部「添加小部件」→ 点右上角搜索框进入搜索页 → 不输文字直接滑到最底部点「支持小部件的应用 / 安卓小部件」→ 焰之契约者。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.inkTertiary,
                     )

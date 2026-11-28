@@ -925,7 +925,7 @@ class ExecutionForegroundService : Service() {
             ) {
                 sendDailySummaryBoth(
                     accountId = accountId,
-                    title = "抖音续火工执行汇总",
+                    title = "焰之契约者执行汇总",
                     body = summary,
                     knownAccount = account,
                 )
@@ -2597,7 +2597,7 @@ class ExecutionForegroundService : Service() {
     private fun buildNotification(contentText: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("抖音续火工执行中")
+            .setContentTitle("焰之契约者执行中")
             .setContentText(contentText)
             .setOngoing(true)
             .setSilent(true)
