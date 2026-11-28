@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError, setToken } from '../../api.ts'
 import type { ThemePreference } from '../../lib/theme.ts'
-import { FlameIcon } from '../ui/Icons.tsx'
 import { ThemeSwitcher } from '../ui/ThemeSwitcher.tsx'
 
 export interface LoginViewProps {
@@ -110,7 +109,14 @@ export function LoginView({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
           <div className="fc-auth-brand">
             <span className="fc-auth-mark">
-              <FlameIcon width={18} height={18} />
+              <img
+                src={`${import.meta.env.BASE_URL}brand-icon-512.png`}
+                alt="焰之契约者品牌图标"
+                className="fc-auth-mark-img"
+                width={38}
+                height={38}
+                decoding="async"
+              />
             </span>
             <div>
               <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: '-0.01em' }}>

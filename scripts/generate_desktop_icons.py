@@ -1,144 +1,62 @@
-"""生成 Flame Contractor 桌面端应用图标（纯 Python 标准库，无需外部图形依赖）。
+"""从品牌定稿母版一键生成 Flame Contractor 三端应用图标（Windows Tauri / Web / Android）。
 
-视觉风格对齐工作台基线：碳黑圆角底板（#111317）+ 细腻微边框 + 暖橙色火花剪影（#f97316 / #fb923c）。
-产物写入 `desktop/src-tauri/icons/`：32x32.png、128x128.png、128x128@2x.png、icon.ico。
+默认读取仓库内无损定稿母版 `scripts/assets/brand-icon-master.png`（1024×1024，B-4P1 × SG-F3 朝阳琉璃宝石玫瑰窗），
+统一输出以下三端资源：
+
+- desktop (`desktop/src-tauri/icons/`):
+  32x32.png、128x128.png、128x128@2x.png、icon.png、icon.ico（多帧 16/24/32/48/64/128/256）
+- web (`frontend/public/`):
+  favicon.ico（多帧 16/32/48）、favicon-32x32.png、apple-touch-icon.png（180×180 全出血）、brand-icon-512.png（512×512）
+- android (`android/app/src/main/res/mipmap-*/ic_launcher_foreground.png`):
+  mdpi(108) / hdpi(162) / xhdpi(216) / xxhdpi(324) / xxxhdpi(432)，按 76% 安全区标定 + 琉璃边缘无痕延展，
+  确保 72dp 可见区与 66dp 圆形安全区在圆形/超椭圆/方圆角下均完整保留角色面部、耳链与领口金火徽。
+
+用法：
+    python scripts/generate_desktop_icons.py
+    python scripts/generate_desktop_icons.py --targets desktop web
+    python scripts/generate_desktop_icons.py --source path/to/master.png
 """
 
 from __future__ import annotations
 
-import math
+import argparse
+from io import BytesIO
 from pathlib import Path
 import struct
-import zlib
+from typing import Iterable
+
+from PIL import Image, ImageDraw, ImageFilter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ICONS_DIR = REPO_ROOT / "desktop" / "src-tauri" / "icons"
+DEFAULT_MASTER = REPO_ROOT / "scripts" / "assets" / "brand-icon-master.png"
+DESKTOP_ICONS_DIR = REPO_ROOT / "desktop" / "src-tauri" / "icons"
+WEB_PUBLIC_DIR = REPO_ROOT / "frontend" / "public"
+ANDROID_RES_DIR = REPO_ROOT / "android" / "app" / "src" / "main" / "res"
+
+ANDROID_ADAPTIVE_CONTENT_FRAC = 0.76
+ANDROID_DENSITIES: tuple[tuple[str, int], ...] = (
+    ("mipmap-mdpi", 108),
+    ("mipmap-hdpi", 162),
+    ("mipmap-xhdpi", 216),
+    ("mipmap-xxhdpi", 324),
+    ("mipmap-xxxhdpi", 432),
+)
 
 
-def _png_chunk(tag: bytes, data: bytes) -> bytes:
-    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+def _to_png_bytes(img: Image.Image) -> bytes:
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
-def _encode_png(width: int, height: int, rgba: bytes) -> bytes:
-    stride = width * 4
-    raw = bytearray()
-    for y in range(height):
-        raw.append(0)  # filter type 0
-        start = y * stride
-        raw.extend(rgba[start : start + stride])
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(b"IDAT", zlib.compress(bytes(raw), level=9))
-        + _png_chunk(b"IEND", b"")
-    )
-
-
-def _signed_rounded_rect(px: float, py: float, half_w: float, half_h: float, radius: float) -> float:
-    qx = abs(px) - (half_w - radius)
-    qy = abs(py) - (half_h - radius)
-    return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - radius
-
-
-def _in_outer_flame(nx: float, ny: float) -> bool:
-    """光滑无断层的现代水滴火花剪影（顶部尖锐轻曳、底部圆润闭合）。"""
-    # 火焰垂直区间：ny ∈ [-0.66, 0.64]
-    y_top, y_bot = -0.66, 0.64
-    if ny < y_top or ny > y_bot:
-        return False
-    t = (ny - y_top) / (y_bot - y_top)  # 0 = 焰尖, 1 = 焰底
-    # 经典水滴轮廓：t^0.95 * sqrt(1 - t^2) 乘以缩放，底部天然圆润无台阶
-    # 加入轻微 S 型中轴偏摆让火焰更有动态感
-    center_x = -0.05 * math.sin(t * math.pi * 1.15) * (1.0 - t)
-    half_width = 0.74 * math.pow(t, 0.85) * math.sqrt(max(0.0, 1.0 - t * t))
-    # 底部半圆平滑衔接（u = (ny - 0.19) / 0.45）
-    if ny > 0.19:
-        u = (ny - 0.19) / 0.45
-        if u <= 1.0:
-            circle_hw = 0.45 * math.sqrt(max(0.0, 1.0 - u * u))
-            # 平滑混合，绝不产生台阶
-            blend = min(1.0, (ny - 0.19) / 0.18)
-            half_width = half_width * (1.0 - blend) + max(half_width, circle_hw) * blend
-    return abs(nx - center_x) <= half_width
-
-
-def _in_inner_flame(nx: float, ny: float) -> bool:
-    y_top, y_bot = -0.08, 0.56
-    if ny < y_top or ny > y_bot:
-        return False
-    t = (ny - y_top) / (y_bot - y_top)
-    center_x = 0.02 * math.sin(t * math.pi)
-    half_width = 0.37 * math.pow(t, 0.88) * math.sqrt(max(0.0, 1.0 - t * t))
-    if ny > 0.34:
-        u = (ny - 0.34) / 0.22
-        if u <= 1.0:
-            circle_hw = 0.22 * math.sqrt(max(0.0, 1.0 - u * u))
-            blend = min(1.0, (ny - 0.34) / 0.10)
-            half_width = half_width * (1.0 - blend) + max(half_width, circle_hw) * blend
-    return abs(nx - center_x) <= half_width
-
-
-def _render_icon(size: int) -> bytes:
-    """使用 4x4 超采样渲染高清晰 RGBA 像素缓冲。"""
-    buf = bytearray(size * size * 4)
-    samples = (0.125, 0.375, 0.625, 0.875)
-    for y in range(size):
-        for x in range(size):
-            r_acc = g_acc = b_acc = a_acc = 0.0
-            for sy in samples:
-                for sx in samples:
-                    nx = ((x + sx) / size) * 2.0 - 1.0
-                    ny = ((y + sy) / size) * 2.0 - 1.0
-                    d_bg = _signed_rounded_rect(nx, ny, 0.92, 0.92, 0.26)
-                    if d_bg > 0.0:
-                        continue
-                    # 碳黑底板 + 1px 细腻边框
-                    if d_bg > -0.045:
-                        r, g, b, a = 42.0, 46.0, 54.0, 255.0
-                    else:
-                        # 极克制微纵深（顶略亮底略沉）
-                        shade = 1.0 - 0.12 * ((ny + 1.0) * 0.5)
-                        r, g, b, a = 19.0 * shade, 21.0 * shade, 26.0 * shade, 255.0
-
-                    if _in_outer_flame(nx, ny):
-                        # 外焰：#ea580c -> #fb923c 柔和渐变
-                        blend = max(0.0, min(1.0, (0.62 - ny) / 1.24))
-                        r = 234.0 + (251.0 - 234.0) * blend
-                        g = 88.0 + (146.0 - 88.0) * blend
-                        b = 12.0 + (60.0 - 12.0) * blend
-                    if _in_inner_flame(nx, ny):
-                        # 焰心：亮暖金 #fde047 -> #fed7aa
-                        blend = max(0.0, min(1.0, (0.56 - ny) / 0.70))
-                        r = 254.0
-                        g = 215.0 + (240.0 - 215.0) * blend
-                        b = 138.0 + (170.0 - 138.0) * blend
-
-                    r_acc += r
-                    g_acc += g
-                    b_acc += b
-                    a_acc += a
-
-            inv = 1.0 / 16.0
-            a_val = a_acc * inv
-            idx = (y * size + x) * 4
-            if a_val > 0.0:
-                scale = 255.0 / a_val if a_val < 255.0 else 1.0
-                buf[idx] = min(255, int(round(r_acc * inv * scale)))
-                buf[idx + 1] = min(255, int(round(g_acc * inv * scale)))
-                buf[idx + 2] = min(255, int(round(b_acc * inv * scale)))
-                buf[idx + 3] = min(255, int(round(a_val)))
-    return bytes(buf)
-
-
-def _encode_ico(png_entries: list[tuple[int, bytes]]) -> bytes:
-    """将多尺寸 PNG 封装为标准 Windows ICO（Vista+ 原生支持 PNG 帧）。"""
-    header = struct.pack("<HHH", 0, 1, len(png_entries))
+def _encode_ico(png_entries: Iterable[tuple[int, bytes]]) -> bytes:
+    """将多尺寸 PNG 封装为标准 Windows ICO（Vista+ / Chromium 原生支持 PNG 帧）。"""
+    entries = list(png_entries)
+    header = struct.pack("<HHH", 0, 1, len(entries))
     directory = bytearray()
-    offset = 6 + 16 * len(png_entries)
+    offset = 6 + 16 * len(entries)
     payload = bytearray()
-    for size, png_bytes in png_entries:
+    for size, png_bytes in entries:
         dim = 0 if size >= 256 else size
         directory.extend(
             struct.pack(
@@ -158,20 +76,171 @@ def _encode_ico(png_entries: list[tuple[int, bytes]]) -> bytes:
     return header + bytes(directory) + bytes(payload)
 
 
-def main() -> None:
-    ICONS_DIR.mkdir(parents=True, exist_ok=True)
-    rendered: dict[int, bytes] = {}
-    for size in (16, 32, 48, 128, 256):
-        rendered[size] = _encode_png(size, size, _render_icon(size))
-
-    (ICONS_DIR / "32x32.png").write_bytes(rendered[32])
-    (ICONS_DIR / "128x128.png").write_bytes(rendered[128])
-    (ICONS_DIR / "128x128@2x.png").write_bytes(rendered[256])
-    (ICONS_DIR / "icon.png").write_bytes(rendered[256])
-    (ICONS_DIR / "icon.ico").write_bytes(
-        _encode_ico([(s, rendered[s]) for s in (16, 32, 48, 128, 256)])
+def _render_rounded_icon(
+    master: Image.Image,
+    size: int,
+    radius_frac: float = 0.22,
+    border_rgba: tuple[int, int, int, int] | None = (255, 255, 255, 28),
+) -> Image.Image:
+    """生成带平滑抗锯齿圆角与细腻内描边的方圆角图标。"""
+    # 4x 超采样生成圆角蒙版，消除小尺寸边缘锯齿
+    scale = 4
+    hi = size * scale
+    radius = max(2, round(hi * radius_frac))
+    mask_hi = Image.new("L", (hi, hi), 0)
+    ImageDraw.Draw(mask_hi).rounded_rectangle(
+        (0, 0, hi - 1, hi - 1), radius=radius, fill=255
     )
-    print(f"Generated desktop icons in {ICONS_DIR}", flush=True)
+    mask = mask_hi.resize((size, size), Image.Resampling.LANCZOS)
+
+    resized = master.resize((size, size), Image.Resampling.LANCZOS)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(resized, (0, 0), mask)
+
+    if size >= 28 and border_rgba is not None:
+        r_px = max(2, round(size * radius_frac))
+        overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rounded_rectangle(
+            (0, 0, size - 1, size - 1), radius=r_px, outline=border_rgba, width=1
+        )
+        out = Image.alpha_composite(out, overlay)
+    return out
+
+
+def _build_android_adaptive_432(
+    master: Image.Image, content_frac: float = ANDROID_ADAPTIVE_CONTENT_FRAC
+) -> Image.Image:
+    """构造 432×432（108dp @ xxxhdpi）自适应图标前景：76% 核心画面 + 琉璃边缘无痕延展。"""
+    canvas_size = 432
+    inner_size = round(canvas_size * content_frac)
+    pad = (canvas_size - inner_size) // 2
+
+    # 外圈延展：柔和琉璃氛围底，桌面视差晃动时绝不露黑边
+    bleed = master.resize(
+        (canvas_size, canvas_size), Image.Resampling.LANCZOS
+    ).filter(ImageFilter.GaussianBlur(14))
+    core = master.resize((inner_size, inner_size), Image.Resampling.LANCZOS)
+
+    # 仅羽化核心外圈 8px，确保 72dp 可见区（±36dp）完全落在 100% 锐利区内
+    feather_px = 8
+    mask = Image.new("L", (inner_size, inner_size), 255)
+    draw = ImageDraw.Draw(mask)
+    for k in range(feather_px):
+        alpha = int(255 * (k + 1) / feather_px)
+        draw.rectangle(
+            (k, k, inner_size - 1 - k, inner_size - 1 - k), outline=alpha
+        )
+
+    canvas = bleed.copy()
+    canvas.paste(core, (pad, pad), mask)
+    return canvas
+
+
+def generate_desktop_icons(master: Image.Image) -> None:
+    DESKTOP_ICONS_DIR.mkdir(parents=True, exist_ok=True)
+    rendered: dict[int, bytes] = {}
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        is_tiny = size <= 24
+        img = _render_rounded_icon(
+            master,
+            size,
+            radius_frac=0.18 if is_tiny else 0.22,
+            border_rgba=None if is_tiny else (255, 255, 255, 28),
+        )
+        rendered[size] = _to_png_bytes(img)
+
+    (DESKTOP_ICONS_DIR / "32x32.png").write_bytes(rendered[32])
+    (DESKTOP_ICONS_DIR / "128x128.png").write_bytes(rendered[128])
+    (DESKTOP_ICONS_DIR / "128x128@2x.png").write_bytes(rendered[256])
+    (DESKTOP_ICONS_DIR / "icon.png").write_bytes(rendered[256])
+    (DESKTOP_ICONS_DIR / "icon.ico").write_bytes(
+        _encode_ico((s, rendered[s]) for s in (16, 24, 32, 48, 64, 128, 256))
+    )
+    print(f"[desktop] Generated icons in {DESKTOP_ICONS_DIR}", flush=True)
+
+
+def generate_web_icons(master: Image.Image) -> None:
+    WEB_PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+    ico_entries: list[tuple[int, bytes]] = []
+    for size in (16, 32, 48):
+        is_tiny = size <= 24
+        img = _render_rounded_icon(
+            master,
+            size,
+            radius_frac=0.18 if is_tiny else 0.22,
+            border_rgba=None if is_tiny else (255, 255, 255, 28),
+        )
+        png = _to_png_bytes(img)
+        ico_entries.append((size, png))
+        if size == 32:
+            (WEB_PUBLIC_DIR / "favicon-32x32.png").write_bytes(png)
+
+    (WEB_PUBLIC_DIR / "favicon.ico").write_bytes(_encode_ico(ico_entries))
+
+    # iOS/macOS 会自动为 apple-touch-icon 添加圆角蒙版，必须输出全出血正方形
+    apple_icon = master.resize((180, 180), Image.Resampling.LANCZOS)
+    (WEB_PUBLIC_DIR / "apple-touch-icon.png").write_bytes(_to_png_bytes(apple_icon))
+
+    # 高清 512×512 全出血正方形供 Web 登录页 / 分享卡片使用（容器自行裁剪圆角）
+    brand_512 = master.resize((512, 512), Image.Resampling.LANCZOS)
+    (WEB_PUBLIC_DIR / "brand-icon-512.png").write_bytes(_to_png_bytes(brand_512))
+    print(f"[web] Generated favicons & brand assets in {WEB_PUBLIC_DIR}", flush=True)
+
+
+def generate_android_icons(master: Image.Image) -> None:
+    adaptive_432 = _build_android_adaptive_432(master)
+    for folder, size in ANDROID_DENSITIES:
+        out_dir = ANDROID_RES_DIR / folder
+        out_dir.mkdir(parents=True, exist_ok=True)
+        img = (
+            adaptive_432
+            if size == 432
+            else adaptive_432.resize((size, size), Image.Resampling.LANCZOS)
+        )
+        (out_dir / "ic_launcher_foreground.png").write_bytes(_to_png_bytes(img))
+    print(f"[android] Generated adaptive foreground mipmaps in {ANDROID_RES_DIR}", flush=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Generate Flame Contractor icons for Windows Tauri, Web, and Android."
+    )
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=DEFAULT_MASTER,
+        help="Path to the square master brand icon PNG/JPG (default: scripts/assets/brand-icon-master.png)",
+    )
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        choices=("all", "desktop", "web", "android"),
+        default=["all"],
+        help="Target platforms to generate (default: all)",
+    )
+    args = parser.parse_args()
+
+    source_path = args.source.resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Master brand icon not found: {source_path}")
+
+    master = Image.open(source_path).convert("RGBA")
+    if master.width != master.height:
+        raise ValueError(
+            f"Master brand icon must be square, got {master.width}x{master.height}"
+        )
+
+    targets = (
+        {"desktop", "web", "android"}
+        if "all" in args.targets
+        else set(args.targets)
+    )
+    if "desktop" in targets:
+        generate_desktop_icons(master)
+    if "web" in targets:
+        generate_web_icons(master)
+    if "android" in targets:
+        generate_android_icons(master)
 
 
 if __name__ == "__main__":

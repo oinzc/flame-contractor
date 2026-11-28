@@ -286,7 +286,7 @@ backend/    FastAPI + SQLModel + SQLite + Alembic + asyncio 调度 + Playwright
 frontend/   React + TypeScript + Vite 控制台
 desktop/    Tauri v2 Windows 独立窗口桌面壳与 NSIS 打包配置
 android/    Kotlin + Jetpack Compose + Room + 桌面模式 WebView 独立 Android 客户端
-docs/       PRD、技术设计、API 文档、数据库 Schema、Docker 部署与轻量反馈中转脚本
+docs/       PRD、技术设计、API 文档、数据库 Schema、Docker 部署、品牌图标演进记录与反馈中转脚本
 ```
 
 ## 常见问题
