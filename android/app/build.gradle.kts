@@ -8,7 +8,7 @@ plugins {
 }
 
 val requestedVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.9.1-dev"
+val requestedVersionName = (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "0.9.2-dev"
 
 val localProps = Properties().apply {
     val propsFile = rootProject.file("local.properties")
