@@ -603,6 +603,131 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code2, 0, msg=err2)
         self.assertEqual(fmt_out.read_text(encoding="utf-8"), "【修复与优化】\n• 问题：已修复 bug。\n")
 
+    def test_extract_recent_changelog_entries_filters_dedups_and_sorts(self) -> None:
+        sample_md = (
+            "# 更新日志\n\n"
+            "## [Unreleased]\n\n"
+            "### 新增\n"
+            "- 尚未发布的改动。\n\n"
+            "## [v0.9.1] - 2026-11-29\n\n"
+            "### 新增\n"
+            "- 高于上限版本的条目。\n\n"
+            "## [v0.9.0] - 2026-11-28\n\n"
+            "### 新增\n"
+            "- **极简模式默认开启**：更直观。\n\n"
+            "## [v0.8.0] - 2026-11-28\n\n"
+            "## What's Changed\n"
+            "* chore(ci): bump actions/setup-java from 4 to 6 by @dependabot[bot] in https://github.com/o/r/pull/28\n\n"
+            "## 0.7.2 - 2026-11-27\n\n"
+            "### 新增\n"
+            "- **跳过今日已亮火花**：默认关闭。\n\n"
+            "## [v0.7.2] - 2026-11-20\n\n"
+            "### 修复\n"
+            "- 重复版本号不应覆盖先出现条目。\n\n"
+            "## v0.7.0\n\n"
+            "### 新增\n"
+            "- 初版极简模式。\n"
+        )
+        entries = manifest_mod.extract_recent_changelog_entries(
+            sample_md,
+            up_to_version="0.9.0",
+            max_entries=2,
+        )
+        self.assertEqual([e["versionName"] for e in entries], ["0.9.0", "0.7.2"])
+        self.assertEqual([e["versionCode"] for e in entries], [900, 702])
+        self.assertEqual([e["publishedAt"] for e in entries], ["2026-11-28", "2026-11-27"])
+        self.assertEqual(entries[0]["changelog"], "【新增功能】\n• 极简模式默认开启：更直观。")
+        self.assertIn("跳过今日已亮火花", str(entries[1]["changelog"]))
+        self.assertNotIn("重复版本号", str(entries[1]["changelog"]))
+
+        all_entries = manifest_mod.extract_recent_changelog_entries(
+            sample_md,
+            up_to_version="0.9.0",
+            max_entries=10,
+        )
+        self.assertEqual([e["versionName"] for e in all_entries], ["0.9.0", "0.7.2", "0.7.0"])
+        self.assertEqual(all_entries[-1]["publishedAt"], "")
+
+    def test_build_manifest_with_recent_releases_and_backward_compatibility(self) -> None:
+        base_manifest = manifest_mod.build_android_latest_manifest(
+            apk_path=self.apk_path,
+            version_name="0.9.0",
+            base_url="https://dl.20190415.cloud",
+            apk_object_key="android/releases/FlameContractor-0.9.0-android-universal-release.apk",
+            changelog="• 最新版本说明",
+        )
+        self.assertNotIn("recentReleases", base_manifest)
+
+        with_recent = manifest_mod.build_android_latest_manifest(
+            apk_path=self.apk_path,
+            version_name="0.9.0",
+            base_url="https://dl.20190415.cloud",
+            apk_object_key="android/releases/FlameContractor-0.9.0-android-universal-release.apk",
+            changelog="• 最新版本说明",
+            recent_releases=[
+                {
+                    "versionName": "v0.7.0",
+                    "versionCode": 700,
+                    "publishedAt": "2026-11-26",
+                    "changelog": "• 0.7.0 说明",
+                },
+                {
+                    "versionName": "0.8.0",
+                    "versionCode": 800,
+                    "publishedAt": "2026-11-28T01:00:00Z",
+                    "changelog": "• 0.8.0 说明",
+                },
+                {
+                    "versionName": "0.8.0",
+                    "versionCode": 800,
+                    "publishedAt": "2026-11-28",
+                    "changelog": "• 重复项应被去重",
+                },
+                {
+                    "versionName": "0.6.2",
+                    "versionCode": 602,
+                    "publishedAt": "",
+                    "changelog": "   ",
+                },
+            ],
+        )
+        recent = with_recent["recentReleases"]
+        assert isinstance(recent, list)
+        self.assertEqual([item["versionCode"] for item in recent], [800, 700])
+        self.assertEqual(recent[0]["versionName"], "0.8.0")
+        self.assertEqual(recent[1]["versionName"], "0.7.0")
+
+    def test_cli_build_manifest_with_repo_changelog_md(self) -> None:
+        repo_changelog = SCRIPTS_DIR.parent / "CHANGELOG.md"
+        self.assertTrue(repo_changelog.is_file())
+        output_path = self.tmp_dir / "latest_with_history.json"
+        code, _, err = self._run_main(
+            [
+                "--build-manifest",
+                "--apk",
+                str(self.apk_path),
+                "--version-name",
+                "0.9.0",
+                "--base-url",
+                "https://dl.20190415.cloud",
+                "--apk-object-key",
+                "android/releases/FlameContractor-0.9.0-android-universal-release.apk",
+                "--changelog",
+                "• 0.9.0 更新",
+                "--changelog-md",
+                str(repo_changelog),
+                "--output",
+                str(output_path),
+            ]
+        )
+        self.assertEqual(code, 0, msg=err)
+        raw_bytes = output_path.read_bytes()
+        self.assertLess(len(raw_bytes), 256 * 1024)
+        parsed = json.loads(raw_bytes.decode("utf-8"))
+        versions = [item["versionName"] for item in parsed["recentReleases"]]
+        for expected in ("0.9.0", "0.8.0", "0.7.2", "0.7.1", "0.7.0"):
+            self.assertIn(expected, versions)
+
 
 if __name__ == "__main__":
     unittest.main()

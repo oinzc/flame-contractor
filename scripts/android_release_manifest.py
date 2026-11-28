@@ -18,6 +18,8 @@ MAX_MINOR = 99
 MAX_PATCH = 99
 MAX_ANDROID_VERSION_CODE = 2_100_000_000
 HASH_CHUNK_SIZE = 1024 * 1024
+DEFAULT_MAX_RECENT_RELEASES = 8
+MAX_RECENT_RELEASES_LIMIT = 20
 
 SEMVER_WITH_OPTIONAL_V_RE = re.compile(
     r"\Av?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -26,6 +28,7 @@ SEMVER_WITH_OPTIONAL_V_RE = re.compile(
 )
 
 UTC_ISO8601_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+DATE_YYYY_MM_DD_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 
 
 def _parse_semver_components(version: str) -> tuple[str, int, int, int]:
@@ -180,6 +183,73 @@ def _validate_published_at(published_at: str | None) -> str:
     return published_at
 
 
+def _validate_recent_published_at(published_at: object) -> str:
+    if published_at is None or published_at == "":
+        return ""
+    if not isinstance(published_at, str):
+        raise ValueError(f"recentReleases.publishedAt 必须为字符串，实际为：{type(published_at).__name__}")
+    trimmed = published_at.strip()
+    if not trimmed:
+        return ""
+    if DATE_YYYY_MM_DD_RE.fullmatch(trimmed):
+        try:
+            datetime.strptime(trimmed, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(f"recentReleases.publishedAt 日期无效：{trimmed!r}") from exc
+        return trimmed
+    return _validate_published_at(trimmed)
+
+
+def _validate_recent_releases(recent_releases: object) -> list[dict[str, object]]:
+    if not isinstance(recent_releases, list):
+        raise ValueError(f"recentReleases 必须为列表，实际为：{type(recent_releases).__name__}")
+
+    deduped: list[dict[str, object]] = []
+    seen_codes: set[int] = set()
+    for idx, item in enumerate(recent_releases):
+        if not isinstance(item, dict):
+            raise ValueError(f"recentReleases[{idx}] 必须为对象，实际为：{type(item).__name__}")
+
+        raw_version = item.get("versionName")
+        normalized_version, _, _, _ = _parse_semver_components(raw_version)  # type: ignore[arg-type]
+
+        raw_code = item.get("versionCode")
+        if raw_code is None:
+            resolved_code = compute_version_code(normalized_version)
+        else:
+            resolved_code = _validate_int_field(raw_code, field_name=f"recentReleases[{idx}].versionCode")
+            if not (0 < resolved_code <= MAX_ANDROID_VERSION_CODE):
+                raise ValueError(
+                    f"recentReleases[{idx}].versionCode 越界：{resolved_code}（允许范围 1..{MAX_ANDROID_VERSION_CODE}）"
+                )
+
+        published_at = _validate_recent_published_at(item.get("publishedAt", ""))
+
+        raw_changelog = item.get("changelog")
+        if not isinstance(raw_changelog, str):
+            raise ValueError(
+                f"recentReleases[{idx}].changelog 必须为字符串，实际为：{type(raw_changelog).__name__}"
+            )
+        normalized_changelog = raw_changelog.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized_changelog:
+            continue
+
+        if resolved_code in seen_codes:
+            continue
+        seen_codes.add(resolved_code)
+        deduped.append(
+            {
+                "versionName": normalized_version,
+                "versionCode": resolved_code,
+                "publishedAt": published_at,
+                "changelog": normalized_changelog,
+            }
+        )
+
+    deduped.sort(key=lambda entry: int(entry["versionCode"]), reverse=True)
+    return deduped[:MAX_RECENT_RELEASES_LIMIT]
+
+
 def build_android_latest_manifest(
     *,
     apk_path: Path | str,
@@ -192,6 +262,7 @@ def build_android_latest_manifest(
     changelog: str = "",
     min_version_code: int = 0,
     published_at: str | None = None,
+    recent_releases: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """基于真实 APK 文件构建符合 Android 客户端契约的 latest.json 清单对象。"""
     normalized_version_name, _, _, _ = _parse_semver_components(version_name)
@@ -236,7 +307,7 @@ def build_android_latest_manifest(
         raise ValueError(f"changelog 必须为字符串，实际为：{type(changelog).__name__}")
     normalized_changelog = changelog.replace("\r\n", "\n").replace("\r", "\n").strip()
 
-    return {
+    manifest: dict[str, object] = {
         "schemaVersion": SCHEMA_VERSION,
         "platform": PLATFORM_ANDROID,
         "versionName": normalized_version_name,
@@ -249,6 +320,11 @@ def build_android_latest_manifest(
         "releasePageUrl": resolved_release_page_url,
         "changelog": normalized_changelog,
     }
+    if recent_releases is not None:
+        validated_recent = _validate_recent_releases(recent_releases)
+        if validated_recent:
+            manifest["recentReleases"] = validated_recent
+    return manifest
 
 
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -294,6 +370,88 @@ def extract_changelog_section(changelog_md: str, version: str) -> str:
             break
 
     return "\n".join(lines[start_idx:end_idx]).strip()
+
+
+_RECENT_HEADING_RE = re.compile(
+    r"^\s*##\s+\[?([^\]\s]+)\]?(?:\s+-\s+(\d{4}-\d{2}-\d{2})(?:\s+.*)?|\s*)$"
+)
+
+
+def _parse_version_h2_header(line: str) -> tuple[bool, str | None, int | None, str]:
+    """判定二级标题是否为版本段落分界。返回 (是否为版本分界, 归一化版本名, versionCode, 发布日期)。"""
+    match = _RECENT_HEADING_RE.match(line)
+    if match is None:
+        return False, None, None, ""
+    raw_token = match.group(1)
+    if raw_token.lower() == "unreleased":
+        return True, None, None, ""
+    raw_date = match.group(2) or ""
+    try:
+        normalized_version, _, _, _ = _parse_semver_components(raw_token)
+        version_code = compute_version_code(normalized_version)
+    except ValueError:
+        return False, None, None, ""
+
+    published_at = ""
+    if raw_date and DATE_YYYY_MM_DD_RE.fullmatch(raw_date):
+        try:
+            datetime.strptime(raw_date, "%Y-%m-%d")
+            published_at = raw_date
+        except ValueError:
+            published_at = ""
+    return True, normalized_version, version_code, published_at
+
+
+def extract_recent_changelog_entries(
+    changelog_md: str,
+    *,
+    up_to_version: str | None = None,
+    max_entries: int = DEFAULT_MAX_RECENT_RELEASES,
+) -> list[dict[str, object]]:
+    """从 CHANGELOG.md 中按版本倒序提取最近若干个已清洗的用户向版本更新日志。"""
+    if isinstance(max_entries, bool) or not isinstance(max_entries, int) or not (1 <= max_entries <= MAX_RECENT_RELEASES_LIMIT):
+        raise ValueError(f"max_entries 必须为 1..{MAX_RECENT_RELEASES_LIMIT} 的整数，实际为：{max_entries!r}")
+
+    max_code: int | None = None
+    if up_to_version is not None:
+        max_code = compute_version_code(up_to_version)
+
+    lines = changelog_md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    boundaries: list[tuple[int, str | None, int | None, str]] = []
+    for idx, line in enumerate(lines):
+        is_boundary, normalized_version, version_code, published_at = _parse_version_h2_header(line)
+        if is_boundary:
+            boundaries.append((idx, normalized_version, version_code, published_at))
+
+    entries: list[dict[str, object]] = []
+    seen_codes: set[int] = set()
+    for pos, (start_line_idx, normalized_version, version_code, published_at) in enumerate(boundaries):
+        if normalized_version is None or version_code is None:
+            continue
+
+        if max_code is not None and version_code > max_code:
+            continue
+
+        end_line_idx = boundaries[pos + 1][0] if pos + 1 < len(boundaries) else len(lines)
+        raw_body = "\n".join(lines[start_line_idx + 1 : end_line_idx]).strip()
+        cleaned_body = format_user_facing_changelog(raw_body)
+        if not cleaned_body:
+            continue
+
+        if version_code in seen_codes:
+            continue
+        seen_codes.add(version_code)
+        entries.append(
+            {
+                "versionName": normalized_version,
+                "versionCode": version_code,
+                "publishedAt": published_at,
+                "changelog": cleaned_body,
+            }
+        )
+
+    entries.sort(key=lambda item: int(item["versionCode"]), reverse=True)
+    return entries[:max_entries]
 
 
 def _clean_inline_markdown(text: str) -> str:
@@ -463,6 +621,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--changelog", default=None, help="内联更新说明文本")
     parser.add_argument("--changelog-file", type=Path, default=None, help="UTF-8 更新说明文件路径")
     parser.add_argument(
+        "--changelog-md",
+        type=Path,
+        default=None,
+        help="可选 CHANGELOG.md 路径，在 --build-manifest 时自动提取最近版本日志写入 recentReleases",
+    )
+    parser.add_argument(
+        "--max-recent-releases",
+        type=int,
+        default=DEFAULT_MAX_RECENT_RELEASES,
+        help=f"随 --changelog-md 写入 recentReleases 的最大版本数量（默认 {DEFAULT_MAX_RECENT_RELEASES}，上限 {MAX_RECENT_RELEASES_LIMIT}）",
+    )
+    parser.add_argument(
         "--user-facing",
         action="store_true",
         help="仅与 --extract-changelog 同用：输出面向弹窗展示的清洗后纯文本",
@@ -532,6 +702,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             changelog_text = args.changelog if args.changelog is not None else ""
 
+        recent_releases: list[dict[str, object]] | None = None
+        if args.changelog_md is not None:
+            if not args.changelog_md.is_file():
+                raise FileNotFoundError(f"找不到 CHANGELOG 文件：{args.changelog_md}")
+            full_changelog_md = args.changelog_md.read_bytes().decode("utf-8")
+            recent_releases = extract_recent_changelog_entries(
+                full_changelog_md,
+                up_to_version=args.version_name,
+                max_entries=args.max_recent_releases,
+            )
+
         manifest = build_android_latest_manifest(
             apk_path=args.apk,
             version_name=args.version_name,
@@ -543,6 +724,7 @@ def main(argv: list[str] | None = None) -> int:
             changelog=changelog_text,
             min_version_code=args.min_version_code,
             published_at=args.published_at,
+            recent_releases=recent_releases,
         )
 
         rendered = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"

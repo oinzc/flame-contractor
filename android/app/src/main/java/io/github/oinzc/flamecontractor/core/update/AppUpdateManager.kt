@@ -241,6 +241,7 @@ class AppUpdateManager(
             }
 
             preferencesStore.recordKnownLatestRelease(release.versionName, release.versionCode)
+            val resolvedHistory = resolveHistoryEntries(release)
             val evaluation = AppVersionComparator.evaluateUpdate(
                 release = release,
                 currentVersionName = currentVersionName,
@@ -254,6 +255,7 @@ class AppUpdateManager(
                         status = AppUpdateStatus.UpToDate,
                         showDialog = false,
                         pendingInstallAfterPermissionGrant = false,
+                        recentReleases = resolvedHistory,
                     )
                 }
                 diagnosticLog(
@@ -288,6 +290,7 @@ class AppUpdateManager(
                     ignoredVersionCode = ignoredCode.takeIf { code -> code > 0L },
                     status = nextStatus,
                     showDialog = shouldOpenDialog,
+                    recentReleases = resolvedHistory,
                 )
             }
             diagnosticLog(
@@ -499,6 +502,66 @@ class AppUpdateManager(
         if (_state.value.hasAvailableUpdate) {
             _state.update { it.copy(showDialog = true) }
         }
+    }
+
+    /**
+     * 从应用直连更新源加载最近版本历史更新日志（免代理直连 `latest.json`），
+     * 仅更新 `recentReleases` 缓存，不修改 `status` 与 `showDialog`。
+     */
+    suspend fun loadRecentReleases(
+        forceRefresh: Boolean = false,
+    ): Result<List<AppUpdateReleaseHistoryItem>> {
+        val cached = _state.value.recentReleases
+        if (!forceRefresh && cached.isNotEmpty()) {
+            return Result.success(cached)
+        }
+        val manifestUrl = normalizeManifestUrl(manifestUrlProvider(), allowCleartextForTests)
+            ?: return Result.failure(IllegalStateException(UNCONFIGURED_MESSAGE))
+
+        return try {
+            val release = fetchAndParseManifest(manifestUrl)
+            val entries = resolveHistoryEntries(release)
+            _state.update {
+                it.copy(
+                    isConfigured = true,
+                    recentReleases = entries,
+                )
+            }
+            Result.success(entries)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (exc: AppUpdateManifestException) {
+            Result.failure(IllegalStateException(exc.userMessage, exc))
+        } catch (exc: HttpStatusException) {
+            val msg = when (exc.statusCode) {
+                404 -> "历史更新清单暂不可用（HTTP 404），请稍后再试"
+                in 500..599 -> "更新服务暂时繁忙（HTTP ${exc.statusCode}），请稍后重试"
+                else -> "加载历史更新失败（HTTP ${exc.statusCode}），请稍后重试"
+            }
+            Result.failure(IllegalStateException(msg, exc))
+        } catch (exc: IOException) {
+            Result.failure(IllegalStateException("网络连接失败，请检查网络后重试", exc))
+        } catch (exc: Throwable) {
+            Result.failure(IllegalStateException("加载历史更新失败，请稍后重试", exc))
+        }
+    }
+
+    private fun resolveHistoryEntries(release: AppUpdateRelease): List<AppUpdateReleaseHistoryItem> {
+        if (release.recentReleases.isNotEmpty()) {
+            return release.recentReleases
+        }
+        val fallbackChangelog = release.changelog.trim()
+        if (fallbackChangelog.isNotEmpty()) {
+            return listOf(
+                AppUpdateReleaseHistoryItem(
+                    versionName = release.versionName,
+                    versionCode = release.versionCode,
+                    publishedAt = release.publishedAt,
+                    changelog = fallbackChangelog,
+                ),
+            )
+        }
+        return emptyList()
     }
 
     /**

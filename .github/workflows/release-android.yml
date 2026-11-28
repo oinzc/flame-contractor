@@ -203,6 +203,11 @@ jobs:
             APK_OBJECT_KEY="${APK_FILENAME}"
           fi
 
+          EXTRA_CHANGELOG_MD_ARGS=()
+          if [[ -f CHANGELOG.md ]]; then
+            EXTRA_CHANGELOG_MD_ARGS+=(--changelog-md CHANGELOG.md)
+          fi
+
           python3 scripts/android_release_manifest.py --build-manifest \
             --apk "${APK_PATH}" \
             --version-name "${VERSION}" \
@@ -211,6 +216,7 @@ jobs:
             --apk-object-key "${APK_OBJECT_KEY}" \
             --release-page-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
             --changelog-file "${NOTES_FILE}" \
+            "${EXTRA_CHANGELOG_MD_ARGS[@]}" \
             --min-version-code "${MIN_VERSION_CODE}" \
             --output "${MANIFEST_PATH}"
 

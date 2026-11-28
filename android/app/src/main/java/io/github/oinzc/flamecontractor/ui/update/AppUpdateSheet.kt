@@ -37,7 +37,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.VerifiedUser
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -64,6 +67,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -78,6 +82,7 @@ import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.update.AppUpdateInstallOutcome
 import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
 import io.github.oinzc.flamecontractor.core.update.AppUpdateRelease
+import io.github.oinzc.flamecontractor.core.update.AppUpdateReleaseHistoryItem
 import io.github.oinzc.flamecontractor.core.update.AppUpdateStatus
 import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.ui.components.FlameMiniTag
@@ -352,7 +357,13 @@ fun AppUpdateSheet(
                 }
 
                 if (release != null) {
-                    UpdateChangelogBox(changelog = release.changelog)
+                    UpdateChangelogBox(
+                        changelog = release.changelog,
+                        currentVersionCode = uiState.currentVersionCode,
+                        targetVersionCode = release.versionCode,
+                        recentReleases = release.recentReleases,
+                        reducedMotion = reducedMotion,
+                    )
                 }
 
                 when (status) {
@@ -882,16 +893,202 @@ internal fun parseUpdateChangelog(raw: String): List<UpdateChangelogSection> {
     return sections
 }
 
+internal data class UpdateHistoryPartition(
+    val skippedVersions: List<AppUpdateReleaseHistoryItem>,
+    val earlierVersions: List<AppUpdateReleaseHistoryItem>,
+) {
+    val allHistory: List<AppUpdateReleaseHistoryItem>
+        get() = skippedVersions + earlierVersions
+}
+
+internal fun partitionReleaseHistory(
+    currentVersionCode: Long,
+    targetVersionCode: Long,
+    recentReleases: List<AppUpdateReleaseHistoryItem>,
+): UpdateHistoryPartition {
+    val seenCodes = mutableSetOf<Long>()
+    val filtered = recentReleases
+        .asSequence()
+        .filter { item ->
+            item.versionCode > 0L &&
+                item.versionCode < targetVersionCode &&
+                item.changelog.isNotBlank() &&
+                seenCodes.add(item.versionCode)
+        }
+        .sortedByDescending { it.versionCode }
+        .toList()
+
+    val skipped = filtered.filter { it.versionCode > currentVersionCode }
+    val earlier = filtered.filter { it.versionCode <= currentVersionCode }
+    return UpdateHistoryPartition(
+        skippedVersions = skipped,
+        earlierVersions = earlier,
+    )
+}
+
+@Composable
+private fun UpdateChangelogSectionList(
+    sections: List<UpdateChangelogSection>,
+) {
+    val palette = FlameThemeTokens.palette
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        sections.forEach { section ->
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                section.title?.let { sectionTitle ->
+                    val tagTone = when (section.tone) {
+                        UpdateChangelogTone.FEATURE -> FlameTone.EMBER
+                        UpdateChangelogTone.FIX -> FlameTone.HEALTHY
+                        UpdateChangelogTone.NOTICE -> FlameTone.WARNING
+                        UpdateChangelogTone.GENERAL -> FlameTone.NEUTRAL
+                    }
+                    FlameMiniTag(text = sectionTitle, tone = tagTone)
+                }
+
+                section.items.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = if (item.isSubItem) 12.dp else 0.dp),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text(
+                            text = if (item.isSubItem) "·" else "•",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (item.isSubItem) palette.inkTertiary else palette.inkSecondary,
+                        )
+                        Text(
+                            text = buildAnnotatedString {
+                                if (!item.lead.isNullOrBlank()) {
+                                    withStyle(
+                                        SpanStyle(
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.ink,
+                                        ),
+                                    ) {
+                                        append(item.lead)
+                                        append("：")
+                                    }
+                                }
+                                withStyle(SpanStyle(color = palette.inkSecondary)) {
+                                    append(item.body)
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            lineHeight = 19.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun UpdateHistoryEntryCard(
+    item: AppUpdateReleaseHistoryItem,
+    isSkippedPending: Boolean,
+    isCurrentVersion: Boolean,
+) {
+    val palette = FlameThemeTokens.palette
+    val sections = remember(item.versionCode, item.changelog) {
+        parseUpdateChangelog(item.changelog)
+    }
+    val dateLabel = remember(item.publishedAt) {
+        formatUpdatePublishedDate(item.publishedAt.orEmpty())
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(11.dp),
+        color = palette.surface,
+        border = BorderStroke(1.dp, palette.hairline),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    FlameMiniTag(
+                        text = formatPrefixedVersion(item.versionName),
+                        tone = if (isSkippedPending) FlameTone.EMBER else FlameTone.NEUTRAL,
+                    )
+                    if (isSkippedPending) {
+                        FlameMiniTag(
+                            text = "本次将一并更新",
+                            tone = FlameTone.EMBER,
+                        )
+                    } else if (isCurrentVersion) {
+                        FlameMiniTag(
+                            text = "当前版本",
+                            tone = FlameTone.HEALTHY,
+                        )
+                    }
+                }
+                if (dateLabel.isNotEmpty()) {
+                    Text(
+                        text = dateLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.inkTertiary,
+                    )
+                }
+            }
+            UpdateChangelogSectionList(sections = sections)
+        }
+    }
+}
+
 @Composable
 private fun UpdateChangelogBox(
     changelog: String,
+    currentVersionCode: Long,
+    targetVersionCode: Long,
+    recentReleases: List<AppUpdateReleaseHistoryItem>,
+    reducedMotion: Boolean,
 ) {
     val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
     val sections = remember(changelog) { parseUpdateChangelog(changelog) }
+    val partition = remember(currentVersionCode, targetVersionCode, recentReleases) {
+        partitionReleaseHistory(
+            currentVersionCode = currentVersionCode,
+            targetVersionCode = targetVersionCode,
+            recentReleases = recentReleases,
+        )
+    }
+    var historyExpanded by remember(targetVersionCode) { mutableStateOf(false) }
+    var earlierExpanded by remember(targetVersionCode) { mutableStateOf(false) }
+
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (historyExpanded) 180f else 0f,
+        animationSpec = tween(
+            durationMillis = if (reducedMotion) 0 else 180,
+            easing = FlameMotionSpec.easeOut,
+        ),
+        label = "update_changelog_history_arrow",
+    )
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 260.dp),
+            .heightIn(max = if (historyExpanded) 340.dp else 260.dp),
         shape = RoundedCornerShape(14.dp),
         color = palette.surfaceSubtle,
         border = BorderStroke(1.dp, palette.hairline),
@@ -910,56 +1107,265 @@ private fun UpdateChangelogBox(
                 color = palette.inkTertiary,
             )
 
-            sections.forEach { section ->
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    section.title?.let { sectionTitle ->
-                        val tagTone = when (section.tone) {
-                            UpdateChangelogTone.FEATURE -> FlameTone.EMBER
-                            UpdateChangelogTone.FIX -> FlameTone.HEALTHY
-                            UpdateChangelogTone.NOTICE -> FlameTone.WARNING
-                            UpdateChangelogTone.GENERAL -> FlameTone.NEUTRAL
-                        }
-                        FlameMiniTag(text = sectionTitle, tone = tagTone)
-                    }
+            UpdateChangelogSectionList(sections = sections)
 
-                    section.items.forEach { item ->
-                        Row(
+            if (partition.allHistory.isNotEmpty()) {
+                HorizontalDivider(thickness = 1.dp, color = palette.hairline)
+
+                val hasSkipped = partition.skippedVersions.isNotEmpty()
+                val toggleTitle = if (hasSkipped) {
+                    "包含中间 ${partition.skippedVersions.size} 个版本的更新"
+                } else {
+                    "查看历史版本更新"
+                }
+                val toggleMeta = if (hasSkipped) {
+                    val oldest = formatPrefixedVersion(partition.skippedVersions.last().versionName)
+                    val newest = formatPrefixedVersion(partition.skippedVersions.first().versionName)
+                    if (partition.skippedVersions.size == 1) newest else "$oldest ~ $newest"
+                } else {
+                    "最近 ${partition.earlierVersions.size} 个版本"
+                }
+
+                Surface(
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        historyExpanded = !historyExpanded
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    color = palette.surface,
+                    border = BorderStroke(1.dp, palette.hairline),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 11.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = if (item.isSubItem) 12.dp else 0.dp),
-                            horizontalArrangement = Arrangement.spacedBy(7.dp),
-                            verticalAlignment = Alignment.Top,
+                                .weight(1f)
+                                .padding(end = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Text(
-                                text = if (item.isSubItem) "·" else "•",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (item.isSubItem) palette.inkTertiary else palette.inkSecondary,
+                                text = toggleTitle,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.ink,
                             )
                             Text(
-                                text = buildAnnotatedString {
-                                    if (!item.lead.isNullOrBlank()) {
-                                        withStyle(
-                                            SpanStyle(
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = palette.ink,
-                                            ),
-                                        ) {
-                                            append(item.lead)
-                                            append("：")
-                                        }
-                                    }
-                                    withStyle(SpanStyle(color = palette.inkSecondary)) {
-                                        append(item.body)
-                                    }
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                lineHeight = 19.sp,
-                                modifier = Modifier.weight(1f),
+                                text = toggleMeta,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        Icon(
+                            imageVector = Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = if (historyExpanded) "收起历史版本更新" else "展开历史版本更新",
+                            tint = palette.inkSecondary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .graphicsLayer { rotationZ = arrowRotation },
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = historyExpanded,
+                    enter = if (reducedMotion) {
+                        fadeIn(tween(0))
+                    } else {
+                        fadeIn(tween(160, easing = FlameMotionSpec.easeOut)) +
+                            expandVertically(tween(FlameMotionSpec.COLLAPSE_ENTER_MS, easing = FlameMotionSpec.easeOut))
+                    },
+                    exit = if (reducedMotion) {
+                        fadeOut(tween(0))
+                    } else {
+                        fadeOut(tween(130, easing = FlameMotionSpec.easeOut)) +
+                            shrinkVertically(tween(FlameMotionSpec.COLLAPSE_EXIT_MS, easing = FlameMotionSpec.easeOut))
+                    },
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (hasSkipped) {
+                            partition.skippedVersions.forEach { entry ->
+                                UpdateHistoryEntryCard(
+                                    item = entry,
+                                    isSkippedPending = true,
+                                    isCurrentVersion = false,
+                                )
+                            }
+                            if (partition.earlierVersions.isNotEmpty()) {
+                                Surface(
+                                    onClick = {
+                                        haptics.performFlameLightTick()
+                                        earlierExpanded = !earlierExpanded
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = palette.surfaceSubtle,
+                                    border = BorderStroke(1.dp, palette.hairline),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 11.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text = if (earlierExpanded) {
+                                                "收起更早 ${partition.earlierVersions.size} 个历史版本"
+                                            } else {
+                                                "查看更早 ${partition.earlierVersions.size} 个历史版本"
+                                            },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.inkSecondary,
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Outlined.History,
+                                            contentDescription = null,
+                                            tint = palette.inkTertiary,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                    }
+                                }
+                                if (earlierExpanded) {
+                                    partition.earlierVersions.forEach { entry ->
+                                        UpdateHistoryEntryCard(
+                                            item = entry,
+                                            isSkippedPending = false,
+                                            isCurrentVersion = entry.versionCode == currentVersionCode,
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            partition.earlierVersions.forEach { entry ->
+                                UpdateHistoryEntryCard(
+                                    item = entry,
+                                    isSkippedPending = false,
+                                    isCurrentVersion = entry.versionCode == currentVersionCode,
+                                )
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 应用内历史版本更新弹窗：通过应用直连更新源加载，全程无需外部跳转或代理。
+ */
+@Composable
+fun UpdateHistorySheet(
+    currentVersionName: String,
+    currentVersionCode: Long,
+    items: List<AppUpdateReleaseHistoryItem>,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = FlameThemeTokens.palette
+    val haptics = LocalHapticFeedback.current
+
+    FlameModalSheet(
+        onDismissRequest = onDismiss,
+        title = "历史版本更新",
+        subtitle = "通过应用更新源直连加载，无需代理",
+        dismissOnClickOutside = true,
+        dismissOnBackPress = true,
+        showCloseButton = true,
+        trailingHeader = {
+            FlameMiniTag(
+                text = formatPrefixedVersion(currentVersionName),
+                tone = FlameTone.NEUTRAL,
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (isLoading && items.isEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = palette.surfaceSubtle,
+                    border = BorderStroke(1.dp, palette.hairline),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.2.dp,
+                            color = palette.ember,
+                        )
+                        Text(
+                            text = "正在加载历史版本更新日志…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkSecondary,
+                        )
+                    }
+                }
+            }
+
+            if (!errorMessage.isNullOrBlank()) {
+                UpdateInfoBanner(
+                    message = errorMessage,
+                    tone = FlameTone.WARNING,
+                    icon = Icons.Outlined.WarningAmber,
+                )
+                if (items.isEmpty() && !isLoading) {
+                    UpdateSecondaryActionButton(
+                        text = "重试加载",
+                        leadingIcon = Icons.Outlined.Refresh,
+                        onClick = {
+                            haptics.performFlameLightTick()
+                            onRetry()
+                        },
+                    )
+                }
+            }
+
+            if (items.isNotEmpty()) {
+                items.forEach { item ->
+                    UpdateHistoryEntryCard(
+                        item = item,
+                        isSkippedPending = item.versionCode > currentVersionCode,
+                        isCurrentVersion = item.versionCode == currentVersionCode,
+                    )
+                }
+            } else if (!isLoading && errorMessage.isNullOrBlank()) {
+                UpdateInfoBanner(
+                    message = "当前更新源暂未收录历史版本日志，请稍后刷新重试。",
+                    tone = FlameTone.NEUTRAL,
+                    icon = Icons.Outlined.Info,
+                )
+                UpdateSecondaryActionButton(
+                    text = "重新加载",
+                    leadingIcon = Icons.Outlined.Refresh,
+                    onClick = {
+                        haptics.performFlameLightTick()
+                        onRetry()
+                    },
+                )
             }
         }
     }

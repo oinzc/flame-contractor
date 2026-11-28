@@ -5,6 +5,16 @@ import java.util.Locale
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
+ * 更新清单中单条历史版本日志摘要（用于应用内免代理查看历史/跨版本变更）。
+ */
+data class AppUpdateReleaseHistoryItem(
+    val versionName: String,
+    val versionCode: Long,
+    val publishedAt: String? = null,
+    val changelog: String,
+)
+
+/**
  * 远端 Android 更新清单（`latest.json`）解析后的不可变版本发布契约。
  */
 data class AppUpdateRelease(
@@ -19,6 +29,7 @@ data class AppUpdateRelease(
     val downloadUrl: String,
     val releasePageUrl: String? = null,
     val changelog: String = "",
+    val recentReleases: List<AppUpdateReleaseHistoryItem> = emptyList(),
 )
 
 /**
@@ -194,6 +205,8 @@ object AppUpdateManifestParser {
     const val MAX_MANIFEST_BYTES: Int = 256 * 1024
     const val MAX_VERSION_NAME_LEN: Int = 64
     const val MAX_CHANGELOG_CHARS: Int = 16_000
+    const val MAX_RECENT_RELEASES: Int = 12
+    const val MAX_HISTORY_CHANGELOG_CHARS: Int = 4_000
 
     private val SHA256_HEX_REGEX = Regex("""^[0-9a-fA-F]{64}$""")
     private val WHITESPACE_OR_CONTROL_REGEX = Regex("""[\s\u0000-\u001F\u007F]""")
@@ -340,6 +353,7 @@ object AppUpdateManifestParser {
         val changelog = ((root["changelog"] as? String) ?: "")
             .trim()
             .take(MAX_CHANGELOG_CHARS)
+        val recentReleases = parseRecentReleases(root["recentReleases"])
 
         return AppUpdateRelease(
             schemaVersion = schemaVersion,
@@ -353,7 +367,60 @@ object AppUpdateManifestParser {
             downloadUrl = downloadUrl,
             releasePageUrl = releasePageUrl,
             changelog = changelog,
+            recentReleases = recentReleases,
         )
+    }
+
+    private fun parseRecentReleases(raw: Any?): List<AppUpdateReleaseHistoryItem> {
+        val rawList = raw as? List<*> ?: return emptyList()
+        val items = mutableListOf<AppUpdateReleaseHistoryItem>()
+        val seenCodes = mutableSetOf<Long>()
+
+        for (entry in rawList) {
+            val obj = entry as? Map<*, *> ?: continue
+            val rawVersion = (obj["versionName"] as? String)?.trim().orEmpty()
+            if (rawVersion.isEmpty() ||
+                rawVersion.length > MAX_VERSION_NAME_LEN ||
+                WHITESPACE_OR_CONTROL_REGEX.containsMatchIn(rawVersion) ||
+                AppVersionComparator.parseOrNull(rawVersion) == null
+            ) {
+                continue
+            }
+            val normalizedVersion = if (
+                rawVersion.startsWith("v", ignoreCase = true) &&
+                rawVersion.length > 1 &&
+                rawVersion[1].isDigit()
+            ) {
+                rawVersion.substring(1)
+            } else {
+                rawVersion
+            }
+
+            val vCode = parseExactLong(obj["versionCode"]) ?: continue
+            if (vCode <= 0L) continue
+
+            val publishedAt = (obj["publishedAt"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            val changelogText = ((obj["changelog"] as? String) ?: "")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .trim()
+                .take(MAX_HISTORY_CHANGELOG_CHARS)
+            if (changelogText.isEmpty()) continue
+
+            if (!seenCodes.add(vCode)) continue
+            items.add(
+                AppUpdateReleaseHistoryItem(
+                    versionName = normalizedVersion,
+                    versionCode = vCode,
+                    publishedAt = publishedAt,
+                    changelog = changelogText,
+                ),
+            )
+        }
+
+        return items
+            .sortedByDescending { it.versionCode }
+            .take(MAX_RECENT_RELEASES)
     }
 
     internal fun validateDownloadUrl(raw: String, allowCleartext: Boolean): String? {
@@ -445,6 +512,7 @@ data class AppUpdateUiState(
     val status: AppUpdateStatus = AppUpdateStatus.Idle,
     val showDialog: Boolean = false,
     val pendingInstallAfterPermissionGrant: Boolean = false,
+    val recentReleases: List<AppUpdateReleaseHistoryItem> = emptyList(),
 ) {
     /** 当前状态关联的目标更新版本（若已发现新版 / 正在下载 / 校验 / 待安装 / 下载出错）。 */
     val activeRelease: AppUpdateRelease?

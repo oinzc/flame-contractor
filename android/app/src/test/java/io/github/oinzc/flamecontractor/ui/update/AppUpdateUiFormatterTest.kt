@@ -2,6 +2,7 @@ package io.github.oinzc.flamecontractor.ui.update
 
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.update.AppUpdateRelease
+import io.github.oinzc.flamecontractor.core.update.AppUpdateReleaseHistoryItem
 import io.github.oinzc.flamecontractor.core.update.AppUpdateStatus
 import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import org.junit.Assert.assertEquals
@@ -323,5 +324,35 @@ class AppUpdateUiFormatterTest {
 
         val parsedBlank = parseUpdateChangelog("   \n  ")
         assertEquals("本次更新包含稳定性改进与体验优化。", parsedBlank.single().items.single().body)
+    }
+
+    @Test
+    fun `partitionReleaseHistory splits skipped and earlier versions with deduplication and blank filtering`() {
+        val releases = listOf(
+            AppUpdateReleaseHistoryItem("0.9.0", 900L, "2026-11-28", "• 最新版 0.9.0"),
+            AppUpdateReleaseHistoryItem("0.7.2", 702L, "2026-11-27", "• 跳过今日已亮火花"),
+            AppUpdateReleaseHistoryItem("0.8.0", 800L, "2026-11-28", "• 平板自适应重构"),
+            AppUpdateReleaseHistoryItem("0.8.0", 800L, "2026-11-28", "• 重复版本应忽略"),
+            AppUpdateReleaseHistoryItem("0.7.1", 701L, "2026-11-26", "   "),
+            AppUpdateReleaseHistoryItem("0.7.0", 700L, "2026-11-26", "• 极简模式首版"),
+            AppUpdateReleaseHistoryItem("0.6.2", 602L, "2026-11-26", "• 分离更新与反馈页面"),
+        )
+
+        val jumped = partitionReleaseHistory(
+            currentVersionCode = 700L,
+            targetVersionCode = 900L,
+            recentReleases = releases,
+        )
+        assertEquals(listOf(800L, 702L), jumped.skippedVersions.map { it.versionCode })
+        assertEquals(listOf(700L, 602L), jumped.earlierVersions.map { it.versionCode })
+        assertEquals(listOf(800L, 702L, 700L, 602L), jumped.allHistory.map { it.versionCode })
+
+        val sequential = partitionReleaseHistory(
+            currentVersionCode = 800L,
+            targetVersionCode = 900L,
+            recentReleases = releases,
+        )
+        assertTrue(sequential.skippedVersions.isEmpty())
+        assertEquals(listOf(800L, 702L, 700L, 602L), sequential.earlierVersions.map { it.versionCode })
     }
 }

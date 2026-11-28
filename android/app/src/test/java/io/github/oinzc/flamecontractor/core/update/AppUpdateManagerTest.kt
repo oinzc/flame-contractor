@@ -59,7 +59,14 @@ class AppUpdateManagerTest {
         downloadUrl: String = server.url("/android/releases/FlameContractor-$versionName.apk").toString(),
         releasePageUrl: String = "https://github.com/oinzc/flame-contractor/releases/tag/v$versionName",
         changelog: String = "- 新增自动检查更新",
-    ): String = """
+        recentReleasesJson: String? = null,
+    ): String {
+        val recentField = if (recentReleasesJson != null) {
+            ",\n          \"recentReleases\": $recentReleasesJson"
+        } else {
+            ""
+        }
+        return """
         {
           "schemaVersion": 1,
           "platform": "android",
@@ -71,9 +78,10 @@ class AppUpdateManagerTest {
           "sha256": "$sha256",
           "downloadUrl": "$downloadUrl",
           "releasePageUrl": "$releasePageUrl",
-          "changelog": "$changelog"
+          "changelog": "$changelog"$recentField
         }
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     private fun createManager(
         manifestUrl: () -> String = { server.url("/android/latest.json").toString() },
@@ -543,4 +551,102 @@ class AppUpdateManagerTest {
         assertFalse(stalePart.exists())
         assertTrue(unrelated.exists())
     }
+
+    @Test
+    fun `loadRecentReleases fetches caches refreshes and keeps update status intact`() = runBlocking {
+        val recentJsonFirst = """
+            [
+              {"versionName": "0.8.0", "versionCode": 800, "publishedAt": "2026-11-28", "changelog": "• 平板自适应重构"},
+              {"versionName": "0.9.0", "versionCode": 900, "publishedAt": "2026-11-28", "changelog": "• 默认极简模式"},
+              {"versionName": "0.7.0", "versionCode": 700, "publishedAt": "2026-11-26", "changelog": "• 极简模式首版"}
+            ]
+        """.trimIndent()
+        val recentJsonSecond = """
+            [
+              {"versionName": "0.9.1", "versionCode": 901, "publishedAt": "2026-11-29", "changelog": "• 补丁修复"},
+              {"versionName": "0.9.0", "versionCode": 900, "publishedAt": "2026-11-28", "changelog": "• 默认极简模式"}
+            ]
+        """.trimIndent()
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                manifestJson(
+                    versionName = "0.9.0",
+                    versionCode = 900L,
+                    changelog = "• 默认极简模式",
+                    recentReleasesJson = recentJsonFirst,
+                ),
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                manifestJson(
+                    versionName = "0.9.1",
+                    versionCode = 901L,
+                    changelog = "• 补丁修复",
+                    recentReleasesJson = recentJsonSecond,
+                ),
+            ),
+        )
+
+        val manager = createManager(currentVersionName = "0.7.0", currentVersionCode = 700L)
+        val firstResult = manager.loadRecentReleases()
+        assertTrue(firstResult.isSuccess)
+        val firstList = firstResult.getOrThrow()
+        assertEquals(listOf(900L, 800L, 700L), firstList.map { it.versionCode })
+        assertEquals(firstList, manager.state.value.recentReleases)
+        assertEquals(AppUpdateStatus.Idle, manager.state.value.status)
+        assertFalse(manager.state.value.showDialog)
+        assertEquals(1, server.requestCount)
+
+        // 第二次非强制刷新直接命中缓存，不发网络请求
+        val cachedResult = manager.loadRecentReleases(forceRefresh = false)
+        assertTrue(cachedResult.isSuccess)
+        assertEquals(firstList, cachedResult.getOrThrow())
+        assertEquals(1, server.requestCount)
+
+        // 强制刷新发起新请求并覆盖缓存
+        val refreshedResult = manager.loadRecentReleases(forceRefresh = true)
+        assertTrue(refreshedResult.isSuccess)
+        val refreshedList = refreshedResult.getOrThrow()
+        assertEquals(listOf(901L, 900L), refreshedList.map { it.versionCode })
+        assertEquals(refreshedList, manager.state.value.recentReleases)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `loadRecentReleases falls back to current changelog on legacy manifest and reports friendly errors`() =
+        runBlocking {
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    manifestJson(
+                        versionName = "0.9.0",
+                        versionCode = 900L,
+                        changelog = "• 仅最新版更新说明",
+                    ),
+                ),
+            )
+            server.enqueue(MockResponse().setResponseCode(404))
+
+            val manager = createManager(currentVersionName = "0.7.0", currentVersionCode = 700L)
+            val fallbackResult = manager.loadRecentReleases()
+            assertTrue(fallbackResult.isSuccess)
+            val fallbackItems = fallbackResult.getOrThrow()
+            assertEquals(1, fallbackItems.size)
+            assertEquals("0.9.0", fallbackItems.single().versionName)
+            assertEquals(900L, fallbackItems.single().versionCode)
+            assertEquals("• 仅最新版更新说明", fallbackItems.single().changelog)
+
+            val httpErr = manager.loadRecentReleases(forceRefresh = true)
+            assertTrue(httpErr.isFailure)
+            val errMsg = httpErr.exceptionOrNull()?.message.orEmpty()
+            assertTrue("Unexpected error message: $errMsg", errMsg.contains("404") || errMsg.contains("暂不可用"))
+
+            val unconfiguredManager = createManager(manifestUrl = { "" })
+            val unconfiguredErr = unconfiguredManager.loadRecentReleases()
+            assertTrue(unconfiguredErr.isFailure)
+            assertTrue(
+                unconfiguredErr.exceptionOrNull()?.message.orEmpty().contains("未配置自动更新源"),
+            )
+        }
 }

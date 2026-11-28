@@ -220,4 +220,73 @@ class AppUpdateModelsTest {
         )
         assertNull(sanitizedReleasePage.releasePageUrl)
     }
+
+    @Test
+    fun `manifest parser tolerantly parses recentReleases and keeps backward compatibility`() {
+        val raw = """
+            {
+              "schemaVersion": 1,
+              "platform": "android",
+              "versionName": "0.9.0",
+              "versionCode": 900,
+              "sha256": "$validSha256",
+              "downloadUrl": "https://dl.example.com/FlameContractor-0.9.0.apk",
+              "changelog": "【新增功能】\n• 最新版本功能",
+              "recentReleases": [
+                {
+                  "versionName": "v0.7.0",
+                  "versionCode": 700,
+                  "publishedAt": "2026-11-26",
+                  "changelog": "• 初版极简模式"
+                },
+                {
+                  "versionName": "0.8.0",
+                  "versionCode": 800,
+                  "publishedAt": "2026-11-28",
+                  "changelog": "• 平板横竖屏自适应"
+                },
+                {
+                  "versionName": "0.8.0",
+                  "versionCode": 800,
+                  "publishedAt": "2026-11-28",
+                  "changelog": "• 重复版本应去重忽略"
+                },
+                {
+                  "versionName": "invalid_ver",
+                  "versionCode": 999,
+                  "changelog": "• 坏版本号应容错跳过"
+                },
+                {
+                  "versionName": "0.6.2",
+                  "versionCode": 602,
+                  "changelog": "   "
+                },
+                "not-an-object"
+              ]
+            }
+        """.trimIndent()
+
+        val release = AppUpdateManifestParser.parse(raw)
+        assertEquals(2, release.recentReleases.size)
+        assertEquals("0.8.0", release.recentReleases[0].versionName)
+        assertEquals(800L, release.recentReleases[0].versionCode)
+        assertEquals("2026-11-28", release.recentReleases[0].publishedAt)
+        assertEquals("0.7.0", release.recentReleases[1].versionName)
+        assertEquals(700L, release.recentReleases[1].versionCode)
+
+        val badArrayRaw = """
+            {
+              "schemaVersion": 1,
+              "platform": "android",
+              "versionName": "0.9.0",
+              "versionCode": 900,
+              "sha256": "$validSha256",
+              "downloadUrl": "https://dl.example.com/FlameContractor-0.9.0.apk",
+              "changelog": "• 正常更新",
+              "recentReleases": "broken"
+            }
+        """.trimIndent()
+        val tolerated = AppUpdateManifestParser.parse(badArrayRaw)
+        assertTrue(tolerated.recentReleases.isEmpty())
+    }
 }

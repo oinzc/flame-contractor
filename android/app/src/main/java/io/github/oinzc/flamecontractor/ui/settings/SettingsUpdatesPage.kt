@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SystemUpdate
@@ -39,8 +40,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +59,7 @@ import io.github.oinzc.flamecontractor.BuildConfig
 import io.github.oinzc.flamecontractor.core.support.ProjectLinks
 import io.github.oinzc.flamecontractor.core.update.AppUpdateCheckResult
 import io.github.oinzc.flamecontractor.core.update.AppUpdateManager
+import io.github.oinzc.flamecontractor.core.update.AppUpdateReleaseHistoryItem
 import io.github.oinzc.flamecontractor.core.update.AppUpdateStatus
 import io.github.oinzc.flamecontractor.core.update.AppUpdateUiState
 import io.github.oinzc.flamecontractor.ui.components.FlameCard
@@ -69,6 +74,7 @@ import io.github.oinzc.flamecontractor.ui.components.flamePressScale
 import io.github.oinzc.flamecontractor.ui.components.performFlameLightTick
 import io.github.oinzc.flamecontractor.ui.shell.SettingsSection
 import io.github.oinzc.flamecontractor.ui.theme.FlameThemeTokens
+import io.github.oinzc.flamecontractor.ui.update.UpdateHistorySheet
 import io.github.oinzc.flamecontractor.ui.update.formatLastCheckedLabel
 import io.github.oinzc.flamecontractor.ui.update.formatPrefixedVersion
 import io.github.oinzc.flamecontractor.ui.update.formatUpdateStatusSummary
@@ -93,6 +99,32 @@ internal fun SettingsUpdatesPage(
 
     val versionLabel = remember {
         ProjectLinks.formatVersionLabel(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+    }
+
+    var showHistorySheet by remember { mutableStateOf(false) }
+    var historyLoading by remember { mutableStateOf(false) }
+    var historyError by remember { mutableStateOf<String?>(null) }
+    var loadedHistoryItems by remember { mutableStateOf<List<AppUpdateReleaseHistoryItem>>(emptyList()) }
+    val resolvedHistoryItems = remember(updateUiState?.recentReleases, loadedHistoryItems) {
+        val stateItems = updateUiState?.recentReleases.orEmpty()
+        if (stateItems.isNotEmpty()) stateItems else loadedHistoryItems
+    }
+
+    fun fetchUpdateHistory(forceRefresh: Boolean = false) {
+        val manager = appUpdateManager ?: return
+        if (historyLoading) return
+        historyLoading = true
+        historyError = null
+        coroutineScope.launch {
+            val result = manager.loadRecentReleases(forceRefresh = forceRefresh)
+            historyLoading = false
+            result.onSuccess { items ->
+                loadedHistoryItems = items
+                historyError = null
+            }.onFailure { exc ->
+                historyError = exc.message ?: "加载历史更新失败，请稍后重试"
+            }
+        }
     }
 
     fun showNotice(message: String) {
@@ -157,6 +189,15 @@ internal fun SettingsUpdatesPage(
                 onReopenUpdateDialog = {
                     haptics.performFlameLightTick()
                     appUpdateManager?.reopenUpdateDialog()
+                },
+                onOpenHistory = {
+                    haptics.performFlameLightTick()
+                    showHistorySheet = true
+                    if (resolvedHistoryItems.isEmpty()) {
+                        fetchUpdateHistory(forceRefresh = false)
+                    } else {
+                        historyError = null
+                    }
                 },
                 onOpenReleases = {
                     openUrlWithFeedback(resolveReleaseFallbackUrl(updateUiState?.activeRelease))
@@ -288,8 +329,8 @@ internal fun SettingsUpdatesPage(
                 )
 
                 FlameListRow(
-                    title = "历史版本发布（Releases）",
-                    subtitle = "查看完整更新日志，获取 Android APK 与 Windows 安装包",
+                    title = "GitHub Releases（开源发布页）",
+                    subtitle = "查看全平台安装包与源码发布页（部分网络需代理）",
                     leading = {
                         FlameRowAvatar(tone = FlameTone.NEUTRAL) {
                             Icon(
@@ -353,6 +394,18 @@ internal fun SettingsUpdatesPage(
             }
         }
     }
+
+    if (showHistorySheet) {
+        UpdateHistorySheet(
+            currentVersionName = updateUiState?.currentVersionName ?: BuildConfig.VERSION_NAME,
+            currentVersionCode = updateUiState?.currentVersionCode ?: BuildConfig.VERSION_CODE.toLong(),
+            items = resolvedHistoryItems,
+            isLoading = historyLoading,
+            errorMessage = historyError,
+            onRetry = { fetchUpdateHistory(forceRefresh = true) },
+            onDismiss = { showHistorySheet = false },
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -364,6 +417,7 @@ private fun AppUpdateSectionCard(
     onAutoCheckChanged: (Boolean) -> Unit,
     onCheckNow: () -> Unit,
     onReopenUpdateDialog: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenReleases: () -> Unit,
 ) {
     val palette = FlameThemeTokens.palette
@@ -674,6 +728,27 @@ private fun AppUpdateSectionCard(
                                 modifier = Modifier.padding(start = 5.dp),
                             )
                         }
+                    }
+                }
+
+                if (canManageUpdates && isConfigured) {
+                    OutlinedButton(
+                        onClick = onOpenHistory,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, palette.hairlineStrong),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.History,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = "历史更新",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(start = 5.dp),
+                        )
                     }
                 }
             }
