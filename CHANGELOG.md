@@ -2,6 +2,12 @@
 
 本文件记录 Flame Contractor 的主要版本变更。
 
+## [v0.9.3] - 2026-11-29
+
+### 新增
+- **Windows 绿色免安装便携版**：GitHub Releases 同步提供 `FlameContractor-*-windows-x64-portable.zip`，解压到任意可写目录后双击 `Flame Contractor.exe` 即可直接运行，数据默认保存在同级 `data/` 目录，删目录即卸载。
+- **发版产物 SHA-256 校验清单**：Windows 与 Android 发版产物分别附带标准 `SHA256SUMS-windows.txt` 与 `SHA256SUMS-android.txt` 校验文件，方便下载后一键核对文件完整性。
+
 ## [v0.9.2] - 2026-11-28
 
 ### 新增
